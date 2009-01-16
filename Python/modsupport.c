@@ -69,9 +69,25 @@ Py_InitModule4(const char *name, PyMethodDef *methods, const char *doc,
 		if (n == NULL)
 			return NULL;
 		for (ml = methods; ml->ml_name != NULL; ml++) {
+			if (ml->ml_flags == METH_UNPACK) {
+				if (ml->ml_min_args < MIN_METH_UNPACK_ARGS ||
+				    ml->ml_max_args > MAX_METH_UNPACK_ARGS) {
+					PyErr_Format(
+						PyExc_SystemError,
+						"METH_UNPACK functions must"
+						"have between %d and %d args"
+						" (min=%d, max=%d given)",
+						MIN_METH_UNPACK_ARGS,
+						MAX_METH_UNPACK_ARGS,
+						ml->ml_min_args,
+						ml->ml_max_args);
+					Py_DECREF(n);
+					return NULL;
+				}
+			}
 			if ((ml->ml_flags & METH_CLASS) ||
 			    (ml->ml_flags & METH_STATIC)) {
-				PyErr_SetString(PyExc_ValueError,
+				PyErr_Format(PyExc_ValueError,
 						"module functions cannot set"
 						" METH_CLASS or METH_STATIC");
 				Py_DECREF(n);

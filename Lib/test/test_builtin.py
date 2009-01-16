@@ -175,6 +175,11 @@ class BuiltinTest(unittest.TestCase):
         self.assertRaises(ValueError, chr, 256)
         self.assertRaises(TypeError, chr)
 
+        # Verify Python warngs about a float input.
+        with test.test_support.check_warnings() as caught:
+            self.assertEqual(chr(5.3), '\x05')
+            self.assertEqual(caught.category, DeprecationWarning)
+
     def test_cmp(self):
         self.assertEqual(cmp(-1, 1), -1)
         self.assertEqual(cmp(1, -1), 1)

@@ -13,6 +13,10 @@ static int numfree = 0;
 #define PyCFunction_MAXFREELIST 256
 #endif
 
+/* Used for invoking METH_UNPACK functions. */
+static PyObject*
+fast_pycfunction(PyObject *func, PyObject *self, PyObject *arg);
+
 PyObject *
 PyCFunction_NewEx(PyMethodDef *ml, PyObject *self, PyObject *module)
 {
@@ -116,6 +120,21 @@ PyCFunction_Call(PyObject *func, PyObject *arg, PyObject *kw)
 			return (*meth)(self, arg);
 		}
 		break;
+	case METH_UNPACK:
+		if (kw == NULL || PyDict_Size(kw) == 0) {
+			size = PyTuple_GET_SIZE(arg);
+			if (size >= PyCFunction_GET_MIN_ARGS(f) &&
+			    size <= PyCFunction_GET_MAX_ARGS(f))
+				return fast_pycfunction(func, self, arg);
+			PyErr_Format(PyExc_TypeError,
+			    "%.200s() takes %d-%d arguments (%zd given)",
+			    f->m_ml->ml_name,
+			    PyCFunction_GET_MIN_ARGS(f),
+			    PyCFunction_GET_MAX_ARGS(f),
+			    size);
+			return NULL;
+		}
+		break;
 	default:
 		PyErr_BadInternalCall();
 		return NULL;
@@ -124,6 +143,78 @@ PyCFunction_Call(PyObject *func, PyObject *arg, PyObject *kw)
 		     f->m_ml->ml_name);
 	return NULL;
 }
+
+
+typedef PyObject *(*PyCVarArgFunction)(PyObject*, ...);
+
+static PyObject*
+fast_pycfunction(PyObject *func, PyObject *self, PyObject *args) {
+	PyObject *arg1 = NULL, *arg2 = NULL, *arg3 = NULL,
+		 *arg4 = NULL, *arg5 = NULL, *arg6 = NULL,
+		 *arg7 = NULL, *arg8 = NULL, *arg9 = NULL;
+	PyCVarArgFunction meth =
+		(PyCVarArgFunction) PyCFunction_GET_FUNCTION(func);
+
+	/* XXX: need to determine best # of args to support */
+
+	/* XXX: If we know that na == max_args, this can be optimized
+	   by having a single switch, which should be a moderate win.
+	 */
+
+	/* Handle varargs, note that if na > 0 each case falls through. */
+	switch (PyTuple_GET_SIZE(args)) {
+	case 0: break;
+	case 9: arg9 = PyTuple_GET_ITEM(args, 8);
+	case 8: arg8 = PyTuple_GET_ITEM(args, 7);
+	case 7: arg7 = PyTuple_GET_ITEM(args, 6);
+	case 6: arg6 = PyTuple_GET_ITEM(args, 5);
+	case 5: arg5 = PyTuple_GET_ITEM(args, 4);
+	case 4: arg4 = PyTuple_GET_ITEM(args, 3);
+	case 3: arg3 = PyTuple_GET_ITEM(args, 2);
+	case 2: arg2 = PyTuple_GET_ITEM(args, 1);
+	case 1: arg1 = PyTuple_GET_ITEM(args, 0);
+		break;
+
+	default:
+		PyErr_Format(
+			PyExc_SystemError,
+			"FIXME: methodobject: busted METH_UNPACK, na=%zd\n",
+			PyTuple_GET_SIZE(args));
+		return NULL;
+	}
+
+	/* It would be nice to handle the DECREFs here so they are unwound and
+	   we don't need a loop. As it is, EXT_POP() modifies stack_pointer on
+	   the stack.  In call_function(), stack_pointer is PyObject ***.  But
+	   in fast_pycfunction(), stack_pointer is only PyObject **.  So the
+	   modifications by EXT_POP to stack_pointer (moving it down) are lost
+	   in fast_pycfunction().  So when it returns to call_function(), the
+	   stack_pointer is still at the top of the stack. The while loop pops
+	   off the arguments.
+	*/
+	switch (PyCFunction_GET_MAX_ARGS(func)) {
+	case 0: return (*meth)(self);
+	case 1: return (*meth)(self, arg1);
+	case 2: return (*meth)(self, arg1, arg2);
+	case 3: return (*meth)(self, arg1, arg2, arg3);
+	case 4: return (*meth)(self, arg1, arg2, arg3, arg4);
+	case 5: return (*meth)(self, arg1, arg2, arg3, arg4, arg5);
+	case 6: return (*meth)(self, arg1, arg2, arg3, arg4, arg5, arg6);
+	case 7: return (*meth)(self, arg1, arg2, arg3, arg4, arg5, arg6, arg7);
+	case 8: return (*meth)(self, arg1, arg2, arg3, arg4,
+			       arg5, arg6, arg7, arg8);
+	case 9: return (*meth)(self, arg1, arg2, arg3, arg4,
+			       arg5, arg6, arg7, arg8, arg9);
+
+	default:
+		PyErr_Format(
+			PyExc_SystemError,
+			"FIXME: methodobject: busted METH_UNPACK, max args=%d\n",
+			PyCFunction_GET_MAX_ARGS(func));
+		return NULL;
+	}
+}
+
 
 /* Methods (the standard built-in methods, that is) */
 
@@ -298,8 +389,8 @@ PyTypeObject PyCFunction_Type = {
 	0,					/* tp_setattro */
 	0,					/* tp_as_buffer */
 	Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,/* tp_flags */
- 	0,					/* tp_doc */
- 	(traverseproc)meth_traverse,		/* tp_traverse */
+	0,					/* tp_doc */
+	(traverseproc)meth_traverse,		/* tp_traverse */
 	0,					/* tp_clear */
 	meth_richcompare,					/* tp_richcompare */
 	0,					/* tp_weaklistoffset */

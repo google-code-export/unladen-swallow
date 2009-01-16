@@ -705,12 +705,10 @@ proxy_has_key(proxyobject *pp, PyObject *key)
 }
 
 static PyObject *
-proxy_get(proxyobject *pp, PyObject *args)
+proxy_get(proxyobject *pp, PyObject *key, PyObject *def)
 {
-	PyObject *key, *def = Py_None;
-
-	if (!PyArg_UnpackTuple(args, "get", 1, 2, &key, &def))
-		return NULL;
+	if (def == NULL)
+		def = Py_None;
 	return PyObject_CallMethod(pp->dict, "get", "(OO)", key, def);
 }
 
@@ -756,26 +754,26 @@ proxy_copy(proxyobject *pp)
 }
 
 static PyMethodDef proxy_methods[] = {
-	{"has_key",   (PyCFunction)proxy_has_key,    METH_O,
-	 PyDoc_STR("D.has_key(k) -> True if D has a key k, else False")},
-	{"get",       (PyCFunction)proxy_get,        METH_VARARGS,
+	{"has_key",   (PyCFunction)proxy_has_key,    METH_UNPACK,
+	 PyDoc_STR("D.has_key(k) -> True if D has a key k, else False"), 1, 1},
+	{"get",       (PyCFunction)proxy_get,        METH_UNPACK,
 	 PyDoc_STR("D.get(k[,d]) -> D[k] if D.has_key(k), else d."
-	 				"  d defaults to None.")},
-	{"keys",      (PyCFunction)proxy_keys,       METH_NOARGS,
-	 PyDoc_STR("D.keys() -> list of D's keys")},
-	{"values",    (PyCFunction)proxy_values,     METH_NOARGS,
-	 PyDoc_STR("D.values() -> list of D's values")},
-	{"items",     (PyCFunction)proxy_items,      METH_NOARGS,
-	 PyDoc_STR("D.items() -> list of D's (key, value) pairs, as 2-tuples")},
-	{"iterkeys",  (PyCFunction)proxy_iterkeys,   METH_NOARGS,
-	 PyDoc_STR("D.iterkeys() -> an iterator over the keys of D")},
-	{"itervalues",(PyCFunction)proxy_itervalues, METH_NOARGS,
-	 PyDoc_STR("D.itervalues() -> an iterator over the values of D")},
-	{"iteritems", (PyCFunction)proxy_iteritems,  METH_NOARGS,
+	 				"  d defaults to None."), 1, 2},
+	{"keys",      (PyCFunction)proxy_keys,       METH_UNPACK,
+	 PyDoc_STR("D.keys() -> list of D's keys"), 0, 0},
+	{"values",    (PyCFunction)proxy_values,     METH_UNPACK,
+	 PyDoc_STR("D.values() -> list of D's values"), 0, 0},
+	{"items",     (PyCFunction)proxy_items,      METH_UNPACK,
+	 PyDoc_STR("D.items() -> list of D's (key, value) pairs, as 2-tuples"), 0, 0},
+	{"iterkeys",  (PyCFunction)proxy_iterkeys,   METH_UNPACK,
+	 PyDoc_STR("D.iterkeys() -> an iterator over the keys of D"), 0, 0},
+	{"itervalues",(PyCFunction)proxy_itervalues, METH_UNPACK,
+	 PyDoc_STR("D.itervalues() -> an iterator over the values of D"), 0, 0},
+	{"iteritems", (PyCFunction)proxy_iteritems,  METH_UNPACK,
 	 PyDoc_STR("D.iteritems() ->"
-	 	   " an iterator over the (key, value) items of D")},
-	{"copy",      (PyCFunction)proxy_copy,       METH_NOARGS,
-	 PyDoc_STR("D.copy() -> a shallow copy of D")},
+	 	   " an iterator over the (key, value) items of D"), 0, 0},
+	{"copy",      (PyCFunction)proxy_copy,       METH_UNPACK,
+	 PyDoc_STR("D.copy() -> a shallow copy of D"), 0, 0},
 	{0}
 };
 

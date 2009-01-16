@@ -28,11 +28,21 @@ PyAPI_FUNC(int) PyCFunction_GetFlags(PyObject *);
    done, so use with care. */
 #define PyCFunction_GET_FUNCTION(func) \
         (((PyCFunctionObject *)func) -> m_ml -> ml_meth)
+#define PyCFunction_GET_MIN_ARGS(func) \
+        (((PyCFunctionObject *)func) -> m_ml -> ml_min_args)
+#define PyCFunction_GET_MAX_ARGS(func) \
+        (((PyCFunctionObject *)func) -> m_ml -> ml_max_args)
 #define PyCFunction_GET_SELF(func) \
 	(((PyCFunctionObject *)func) -> m_self)
 #define PyCFunction_GET_FLAGS(func) \
 	(((PyCFunctionObject *)func) -> m_ml -> ml_flags)
 PyAPI_FUNC(PyObject *) PyCFunction_Call(PyObject *, PyObject *, PyObject *);
+
+/* Min and max values for ml_min_args and ml_max_args below. These are
+   enforced in modsupport.c
+ */
+#define MIN_METH_UNPACK_ARGS 0
+#define MAX_METH_UNPACK_ARGS 9
 
 struct PyMethodDef {
     const char	*ml_name;	/* The name of the built-in function/method */
@@ -40,13 +50,15 @@ struct PyMethodDef {
     int		 ml_flags;	/* Combination of METH_xxx flags, which mostly
 				   describe the args expected by the C func */
     const char	*ml_doc;	/* The __doc__ attribute, or NULL */
+    int		 ml_min_args;	/* The minimum # args to pass for METH_UNPACK */
+    int		 ml_max_args;	/* The maximum # args to pass for METH_UNPACK */
 };
 typedef struct PyMethodDef PyMethodDef;
 
 PyAPI_FUNC(PyObject *) Py_FindMethod(PyMethodDef[], PyObject *, const char *);
 
 #define PyCFunction_New(ML, SELF) PyCFunction_NewEx((ML), (SELF), NULL)
-PyAPI_FUNC(PyObject *) PyCFunction_NewEx(PyMethodDef *, PyObject *, 
+PyAPI_FUNC(PyObject *) PyCFunction_NewEx(PyMethodDef *, PyObject *,
 					 PyObject *);
 
 /* Flag passed to newmethodobject */
@@ -69,6 +81,13 @@ PyAPI_FUNC(PyObject *) PyCFunction_NewEx(PyMethodDef *, PyObject *,
    slot like sq_contains. */
 
 #define METH_COEXIST   0x0040
+
+/* METH_UNPACK cannot be used with:
+             METH_OLDARGS, METH_VARARGS, METH_NOARGS, or METH_O
+   Its purpose is to expand the arguments when calling the C function
+   rather than passing a tuple as the second argument.
+*/
+#define METH_UNPACK    0x0080
 
 typedef struct PyMethodChain {
     PyMethodDef *methods;		/* Methods of this type */

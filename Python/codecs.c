@@ -774,7 +774,7 @@ static int _PyCodecRegistry_Init(void)
 	    {
 		"strict_errors",
 		strict_errors,
-		METH_O
+		METH_UNPACK, NULL, 1, 1
 	    }
 	},
 #ifdef Py_USING_UNICODE
@@ -783,7 +783,7 @@ static int _PyCodecRegistry_Init(void)
 	    {
 		"ignore_errors",
 		ignore_errors,
-		METH_O
+		METH_UNPACK, NULL, 1, 1
 	    }
 	},
 	{
@@ -791,7 +791,7 @@ static int _PyCodecRegistry_Init(void)
 	    {
 		"replace_errors",
 		replace_errors,
-		METH_O
+		METH_UNPACK, NULL, 1, 1
 	    }
 	},
 	{
@@ -799,7 +799,7 @@ static int _PyCodecRegistry_Init(void)
 	    {
 		"xmlcharrefreplace_errors",
 		xmlcharrefreplace_errors,
-		METH_O
+		METH_UNPACK, NULL, 1, 1
 	    }
 	},
 	{
@@ -807,7 +807,7 @@ static int _PyCodecRegistry_Init(void)
 	    {
 		"backslashreplace_errors",
 		backslashreplace_errors,
-		METH_O
+		METH_UNPACK, NULL, 1, 1
 	    }
 	}
 #endif

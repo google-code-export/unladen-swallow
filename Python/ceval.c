@@ -3407,6 +3407,13 @@ err_args(PyObject *func, int flags, int nargs)
 			     "%.200s() takes no arguments (%d given)",
 			     ((PyCFunctionObject *)func)->m_ml->ml_name,
 			     nargs);
+	else if (flags & METH_UNPACK)
+		PyErr_Format(PyExc_TypeError,
+			     "%.200s() takes %d-%d arguments (%d given)",
+			     ((PyCFunctionObject *)func)->m_ml->ml_name,
+			     ((PyCFunctionObject *)func)->m_ml->ml_min_args,
+			     ((PyCFunctionObject *)func)->m_ml->ml_max_args,
+			     nargs);
 	else
 		PyErr_Format(PyExc_TypeError,
 			     "%.200s() takes exactly one argument (%d given)",
@@ -3447,6 +3454,9 @@ if (tstate->use_tracing && tstate->c_profilefunc) { \
 	}
 
 static PyObject *
+fast_pycfunction(PyObject *meth, int na, PyObject **pp_stack);
+
+static PyObject *
 call_function(PyObject ***pp_stack, int oparg
 #ifdef WITH_TSC
 		, uint64* pintr0, uint64* pintr1
@@ -3468,7 +3478,12 @@ call_function(PyObject ***pp_stack, int oparg
 		PyThreadState *tstate = PyThreadState_GET();
 
 		PCALL(PCALL_CFUNCTION);
-		if (flags & (METH_NOARGS | METH_O)) {
+		if (flags & METH_UNPACK &&
+			(na >= PyCFunction_GET_MIN_ARGS(func) &&
+			 na <= PyCFunction_GET_MAX_ARGS(func))) {
+			x = fast_pycfunction(func, na, *pp_stack);
+		}
+		else if (flags & (METH_NOARGS | METH_O)) {
 			PyCFunction meth = PyCFunction_GET_FUNCTION(func);
 			PyObject *self = PyCFunction_GET_SELF(func);
 			if (flags & METH_NOARGS && na == 0) {
@@ -3525,6 +3540,94 @@ call_function(PyObject ***pp_stack, int oparg
 		Py_DECREF(w);
 		PCALL(PCALL_POP);
 	}
+	return x;
+}
+
+typedef PyObject *(*PyCVarArgFunction)(PyObject*, ...);
+
+/* XXX: if we passed pp_stack as PyObject ***, it is faster
+        it looks like we have less work to do unwinding stack in
+	above.  However, the following tests fail if it is ***
+
+		test_array,test_bsddb,test_class,test_descr,test_gc,
+		test_iter,test_socket,test_sys,test_weakref
+*/
+
+/* XXX: does not support METH_KEYWORDS */
+/* Note that a very similar version of this code exists in methodobject.c. */
+static PyObject*
+fast_pycfunction(PyObject *func, int na, PyObject **pp_stack) {
+	PyObject *x;
+	/* XXX: we only need to init arg[na] .. arg[max_args] */
+	PyObject *arg1 = NULL, *arg2 = NULL, *arg3 = NULL,
+		 *arg4 = NULL, *arg5 = NULL, *arg6 = NULL,
+		 *arg7 = NULL, *arg8 = NULL, *arg9 = NULL;
+	PyThreadState *tstate = PyThreadState_GET();
+	PyCVarArgFunction meth =
+		(PyCVarArgFunction) PyCFunction_GET_FUNCTION(func);
+	PyObject *self = PyCFunction_GET_SELF(func);
+
+	/* XXX: need to determine best # of args to support */
+
+	/* XXX: If we know that na == max_args, this can be optimized
+	   by having a single switch, which should be a moderage win
+	 */
+
+	/* Handle varargs, note that if na > 0 each case falls through. */
+	switch (na) {
+	case 0: break;
+	case 9: arg9 = EXT_POP(pp_stack);
+	case 8: arg8 = EXT_POP(pp_stack);
+	case 7: arg7 = EXT_POP(pp_stack);
+	case 6: arg6 = EXT_POP(pp_stack);
+	case 5: arg5 = EXT_POP(pp_stack);
+	case 4: arg4 = EXT_POP(pp_stack);
+	case 3: arg3 = EXT_POP(pp_stack);
+	case 2: arg2 = EXT_POP(pp_stack);
+	case 1: arg1 = EXT_POP(pp_stack);
+		break;
+
+	default:
+		PyErr_Format(
+			PyExc_SystemError,
+			"FIXME: ceval: busted METH_UNPACK, na=%d\n", na);
+		return NULL;
+	}
+
+	// FIXME: it would be nice to handle the DECREFs here
+	// so they are unwound and we don't need a loop (in the caller)
+	switch (PyCFunction_GET_MAX_ARGS(func)) {
+	case 0: C_TRACE(x, (*meth)(self));
+		break;
+	case 1: C_TRACE(x, (*meth)(self, arg1));
+		break;
+	case 2: C_TRACE(x, (*meth)(self, arg1, arg2));
+		break;
+	case 3: C_TRACE(x, (*meth)(self, arg1, arg2, arg3));
+		break;
+	case 4: C_TRACE(x, (*meth)(self, arg1, arg2, arg3, arg4));
+		break;
+	case 5: C_TRACE(x, (*meth)(self, arg1, arg2, arg3, arg4, arg5));
+		break;
+	case 6: C_TRACE(x, (*meth)(self, arg1, arg2, arg3, arg4, arg5, arg6));
+		break;
+	case 7: C_TRACE(x, (*meth)(self, arg1, arg2, arg3, arg4, arg5, arg6, arg7));
+		break;
+	case 8: C_TRACE(x, (*meth)(self, arg1, arg2, arg3, arg4,
+				   arg5, arg6, arg7, arg8));
+		break;
+	case 9: C_TRACE(x, (*meth)(self, arg1, arg2, arg3, arg4,
+	                           arg5, arg6, arg7, arg8, arg9));
+		break;
+
+	default:
+		PyErr_Format(
+			PyExc_SystemError,
+			"FIXME: ceval: busted METH_UNPACK, max args=%d\n",
+			PyCFunction_GET_MAX_ARGS(func));
+		return NULL;
+	}
+
 	return x;
 }
 
