@@ -4,7 +4,7 @@ Python News
 
 (editors: check NEWS.help for information about editing NEWS using ReST.)
 
-What's New in Unladen Swallow 2008Q1 (Python 2.6.1)
+What's New in Unladen Swallow 2009Q1 (Python 2.6.1)
 ===================================================
 
 *Release date: 01-Apr-2009*
@@ -27,7 +27,7 @@ Library
 
 - Unladen Swallow 2008Q1 ships with Psyco 1.6.
 
-- The cPickle module is significantly faster and uses 
+- The cPickle module is significantly faster.
 
 - cPickle.Unpickler objects no longer support repeated load() calls on the same
   input data. This will be rectified in 2009Q1.1.
