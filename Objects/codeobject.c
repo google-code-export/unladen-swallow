@@ -51,6 +51,18 @@ PyCode_New(int argcount, int nlocals, int stacksize, int flags,
 	PyCodeObject *co;
 	Py_ssize_t i;
 	/* Check argument types */
+
+	if (PyString_Check(code)) {
+		if (PyString_Size(code) == 0) {
+			code = (PyObject *)_PyInstructions_New(0);
+			if (code == NULL)
+				return NULL;
+		} else {
+			PyErr_BadInternalCall();
+			return NULL;
+		}
+	}
+	
 	if (argcount < 0 || nlocals < 0 ||
 	    code == NULL || !PyInstructions_Check(code) ||
 	    consts == NULL || !PyTuple_Check(consts) ||
