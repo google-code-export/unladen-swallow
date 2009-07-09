@@ -4,6 +4,18 @@ Python News
 
 (editors: check NEWS.help for information about editing NEWS using ReST.)
 
+What's New in Unladen Swallow 2009Q1.1 (Python 2.6.1)
+=====================================================
+
+*Release date: XX-Jul-2009*
+
+Library
+-------
+
+- A number of bugs have been fixed in the cPickle module, bringing some tricky
+  corner cases into line with CPython 2.6.1.
+
+
 What's New in Unladen Swallow 2009Q1 (Python 2.6.1)
 ===================================================
 
