@@ -7,13 +7,14 @@ Python News
 What's New in Unladen Swallow 2009Q1.1 (Python 2.6.1)
 =====================================================
 
-*Release date: XX-Jul-2009*
+*Release date: 13-Jul-2009*
 
 Library
 -------
 
 - A number of bugs have been fixed in the cPickle module, bringing some tricky
-  corner cases into line with CPython 2.6.1.
+  corner cases into line with CPython 2.6.1. Applications that previously failed
+  to work under 2009Q1 like cvs2svn and ZODB now work correctly.
 
 
 What's New in Unladen Swallow 2009Q1 (Python 2.6.1)
