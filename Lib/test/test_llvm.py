@@ -22,6 +22,7 @@ DEFAULT_OPT_LEVEL = _foo.__code__.co_optimization
 del _foo
 
 
+JIT_SPIN_COUNT = _llvm.get_hotness_threshold() / 10 + 1000
 JIT_OPT_LEVEL = sys.flags.optimize if sys.flags.optimize > 2 else 2
 
 
@@ -152,7 +153,7 @@ def foo():
                          in str(test_func.__code__.co_llvm))
 
     # -j always will cause this test to always fail.
-    if sys.flags.jit_control != "always":
+    if _llvm.get_jit_control() != "always":
         def test_fetch_unset_co_llvm(self):
             def test_func():
                 pass
@@ -1337,7 +1338,7 @@ def generator(obj):
 
     # Getting this to work under -j always is a pain in the ass, and not worth
     # the effort IMHO.
-    if sys.flags.jit_control != "always":
+    if _llvm.get_jit_control() != "always":
         def test_toggle_generator(self):
             # Toggling between native code and the interpreter between yields
             # used to cause crashes because f_lasti doesn't get translated
@@ -1565,11 +1566,13 @@ def loop():
         def cause_bail():
             sys.settrace(lambda *args: None)
 
-        def foo():
-            try:
-                return cause_bail()
-            finally:
-                len([])  # This can be anything.
+        foo = compile_for_llvm("foo", """
+def foo():
+    try:
+        return cause_bail()
+    finally:
+        len([])  # This can be anything.
+""", optimization_level=None, globals_dict={"cause_bail": cause_bail})
         foo.__code__.__use_llvm__ = True
 
         orig_func = sys.gettrace()
@@ -2369,15 +2372,26 @@ class OptimizationTests(LlvmTestCase):
     def test_hotness(self):
         foo = compile_for_llvm("foo", "def foo(): pass",
                                optimization_level=None)
-        iterations = 11000  # Threshold is 10000.
-        # Because code objects are stored in the co_consts array, the
-        # callcount will increase by `iterations` every time this test is run,
-        # which breaks regrtest.py.
-        base_count = foo.__code__.co_callcount
+        iterations = JIT_SPIN_COUNT
         l = [foo() for _ in xrange(iterations)]
-        self.assertEqual(foo.__code__.co_callcount, base_count + iterations)
+        self.assertEqual(foo.__code__.co_hotness, iterations * 10)
         self.assertEqual(foo.__code__.__use_llvm__, True)
         self.assertEqual(foo.__code__.co_optimization, JIT_OPT_LEVEL)
+
+    def test_loop_hotness(self):
+        # Test that long-running loops count toward the hotness metric. A
+        # function doing 1e6 inner loop iterations per call should be worthy
+        # of optimization.
+        foo = compile_for_llvm("foo", """
+def foo():
+    for x in xrange(1000):
+        for y in xrange(1000):
+            pass
+""", optimization_level=None)
+        self.assertFalse(foo.__code__.__use_llvm__)
+        foo()
+        foo()  # Hot-or-not calculations are done on function-entry.
+        self.assertTrue(foo.__code__.__use_llvm__)
 
     def test_generator_hotness(self):
         foo = compile_for_llvm("foo", """
@@ -2385,16 +2399,12 @@ def foo():
     yield 5
     yield 6
 """, optimization_level=None)
-        iterations = 11000  # Threshold is 10000.
-        # Because code objects are stored in the co_consts array, the
-        # callcount will increase by `iterations` every time this test is run,
-        # which breaks regrtest.py.
-        base_count = foo.__code__.co_callcount
+        iterations = JIT_SPIN_COUNT
         l = [foo() for _ in xrange(iterations)]
-        self.assertEqual(foo.__code__.co_callcount, base_count + iterations)
+        self.assertEqual(foo.__code__.co_hotness, iterations * 10)
 
         l = map(list, l)
-        self.assertEqual(foo.__code__.co_callcount, base_count + iterations)
+        self.assertEqual(foo.__code__.co_hotness, iterations * 10)
         self.assertEqual(foo.__code__.__use_llvm__, True)
         self.assertEqual(foo.__code__.co_optimization, JIT_OPT_LEVEL)
 
@@ -2403,7 +2413,7 @@ def foo():
         # implementation. We do this by asserting that if their assumptions
         # about globals/builtins no longer hold, they bail.
         with test_support.swap_attr(__builtin__, "len", len):
-            iterations = 11000
+            iterations = JIT_SPIN_COUNT
             foo = compile_for_llvm("foo", """
 def foo(x, callback):
     callback()
@@ -2456,7 +2466,7 @@ def foo(trigger):
     else:
         return 5
 """, optimization_level=None)
-        for _ in xrange(11000):  # Spin foo() until it becomes hot.
+        for _ in xrange(JIT_SPIN_COUNT):  # Spin foo() until it becomes hot.
             foo(False)
         self.assertEquals(foo.__code__.__use_llvm__, True)
         self.assertEquals(foo(False), 5)
@@ -2471,13 +2481,199 @@ def foo(trigger):
         self.assertEquals(foo.__code__.co_fatalbailcount, 0)
         del match
 
+    def test_setprofile_in_leaf_function(self):
+        # Make sure that the fast version of CALL_FUNCTION supports profiling.
+        data = []
+        def record_profile(*args):
+            data.append(args)
+
+        def profiling_leaf():
+            sys.setprofile(record_profile)
+
+        def outer(leaf):
+            [leaf(), len([])]
+
+        # This will specialize the len() call in outer, but not the leaf() call,
+        # since lambdas are created anew each time through the loop.
+        for _ in xrange(JIT_SPIN_COUNT):
+            outer(lambda: None)
+        self.assertTrue(outer.__code__.__use_llvm__)
+        sys.setbailerror(False)
+        outer(profiling_leaf)
+        sys.setprofile(None)
+
+        len_event = data[1]
+        # Slice off the frame object.
+        self.assertEqual(len_event[1:], ("c_call", len))
+
+    def test_fastcalls_bail_on_unknown_function(self):
+        # If the function is different than the one that we've assumed, we
+        # need to bail to the interpreter.
+        def foo(f):
+            return f([])
+
+        for _ in xrange(JIT_SPIN_COUNT):
+            foo(len)
+        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertRaises(RuntimeError, foo, lambda x: 7)
+
+        # Make sure bailing does the right thing.
+        self.assertTrue(foo.__code__.__use_llvm__)
+        sys.setbailerror(False)
+        self.assertEqual(foo(lambda x: 7), 7)
+
+    def test_guard_failure_blocks_native_code(self):
+        # Until we can recompile things, failing a guard should force use of the
+        # eval loop forever after. Even once we can recompile things, we should
+        # limit how often we're willing to recompile highly-dynamic functions.
+        # test_mutants has a good example of this.
+
+        # Compile like this so we get a new code object every time.
+        foo = compile_for_llvm("foo", "def foo(): return len([])",
+                               optimization_level=None)
+        for _ in xrange(JIT_SPIN_COUNT):
+            foo()
+        self.assertEqual(foo.__code__.__use_llvm__, True)
+        self.assertEqual(foo.__code__.co_fatalbailcount, 0)
+        self.assertEqual(foo(), 0)
+
+        with test_support.swap_attr(__builtin__, "len", lambda x: 7):
+            self.assertEqual(foo.__code__.__use_llvm__, False)
+            self.assertEqual(foo.__code__.co_fatalbailcount, 1)
+            # Since we can't recompile things yet, __use_llvm__ should be left
+            # at False and execution should use the eval loop.
+            for _ in xrange(JIT_SPIN_COUNT):
+                foo()
+            self.assertEqual(foo.__code__.__use_llvm__, False)
+            self.assertEqual(foo(), 7)
+
+    def test_fast_calls_method(self):
+        # This used to crash at one point while developing CALL_FUNCTION's
+        # FDO-ified machine code. We include it here as a simple regression
+        # test.
+        d = dict.fromkeys(range(12000))
+        foo = compile_for_llvm('foo', 'def foo(x): return x()',
+                               optimization_level=None)
+        for _ in xrange(JIT_SPIN_COUNT):
+            foo(d.popitem)
+        self.assertTrue(foo.__code__.__use_llvm__)
+
+        k, v = foo(d.popitem)
+        self.assertTrue(k < 12000, k)
+        self.assertEqual(v, None)
+
+    def test_fast_calls_same_method_different_invocant(self):
+        # For all strings, x.join will resolve to the same C function, so
+        # it should use the fast version of CALL_FUNCTION that calls the
+        # function pointer directly.
+        foo = compile_for_llvm('foo', 'def foo(x): return x.join(["c", "d"])',
+                               optimization_level=None)
+        for _ in xrange(JIT_SPIN_COUNT):
+            foo("a")
+            foo("c")
+        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertEqual(foo("a"), "cad")
+
+        # A new, unknown-to-the-feedback-system instance should reuse the
+        # same function, just with a different invocant.
+        self.assertEqual(foo("b"), "cbd")
+
+    @at_each_optimization_level
+    def test_access_frame_locals_via_vars(self, level):
+        # We need to be able to call vars() inside an LLVM-compiled function
+        # and have it still work. This complicates some LLVM-side optimizations.
+        foo = compile_for_llvm("foo", """
+def foo(x):
+    y = 7
+    return vars()
+""", optimization_level=level)
+
+        got_vars = foo(8)
+        self.assertEqual(got_vars, {"x": 8, "y": 7})
+
+    @at_each_optimization_level
+    def test_access_frame_locals_via_dir(self, level):
+        # We need to be able to call dir() inside an LLVM-compiled function
+        # and have it still work. This complicates some LLVM-side optimizations.
+        foo = compile_for_llvm("foo", """
+def foo(x):
+    y = 7
+    return dir()
+""", optimization_level=level)
+
+        got_dir = foo(8)
+        self.assertEqual(set(got_dir), set(["x", "y"]))
+
+    @at_each_optimization_level
+    def test_access_frame_locals_via_locals(self, level):
+        # We need to be able to call locals() inside an LLVM-compiled function
+        # and have it still work. This complicates some LLVM-side optimizations.
+        foo = compile_for_llvm("foo", """
+def foo(x):
+    z = 9
+    y = 7
+    del z
+    return locals()
+""", optimization_level=level)
+
+        got_locals = foo(8)
+        self.assertEqual(got_locals, {"x": 8, "y": 7})
+
+    @at_each_optimization_level
+    def test_access_frame_locals_via_traceback(self, level):
+        # Some production code, like Django's fancy debugging pages, rely on
+        # being able to pull locals out of frame objects. This complicates some
+        # LLVM-side optimizations.
+        foo = compile_for_llvm("foo", """
+def foo(x):
+    y = 7
+    raise ZeroDivisionError
+""", optimization_level=level)
+
+        try:
+            foo(8)
+        except ZeroDivisionError:
+            tb = sys.exc_info()[2]
+        else:
+            self.fail("Failed to raise ZeroDivisionError")
+
+        # Sanity check to make sure we're getting the right frame.
+        self.assertEqual(tb.tb_next.tb_frame.f_code.co_name, "foo")
+        self.assertEqual(tb.tb_next.tb_frame.f_locals, {"y": 7, "x": 8})
+
+    @at_each_optimization_level
+    def test_access_frame_locals_in_finally_via_traceback(self, level):
+        # Some production code, like Django's fancy debugging pages, rely on
+        # being able to pull locals out of frame objects. This complicates some
+        # LLVM-side optimizations. This particular case is a strange corner
+        # case Jeffrey Yasskin thought up.
+        foo = compile_for_llvm("foo", """
+def foo(x):
+    y = 7
+    try:
+        raise ZeroDivisionError
+    finally:
+        z = 9
+""", optimization_level=level)
+
+        try:
+            foo(8)
+        except ZeroDivisionError:
+            tb = sys.exc_info()[2]
+        else:
+            self.fail("Failed to raise ZeroDivisionError")
+
+        # Sanity check to make sure we're getting the right frame.
+        self.assertEqual(tb.tb_next.tb_frame.f_code.co_name, "foo")
+        self.assertEqual(tb.tb_next.tb_frame.f_locals, {"y": 7, "x": 8, "z": 9})
+
 
 class LlvmRebindBuiltinsTests(test_dynamic.RebindBuiltinsTests):
 
     def configure_func(self, func, *args):
         # Spin the function until it triggers as hot. Setting co_optimization
         # doesn't trigger the full range of optimizations.
-        for _ in xrange(11000):
+        for _ in xrange(JIT_SPIN_COUNT):
             func(*args)
 
     def test_changing_globals_invalidates_function(self):
@@ -2497,29 +2693,6 @@ class LlvmRebindBuiltinsTests(test_dynamic.RebindBuiltinsTests):
 
         with test_support.swap_attr(__builtin__, "len", lambda x: 7):
             self.assertEqual(foo.__code__.__use_llvm__, False)
-
-    def test_guard_failure_blocks_native_code(self):
-        # Until we can recompile things, failing a guard should force use of the
-        # eval loop forever after. Even once we can recompile things, we should
-        # limit how often we're willing to recompile highly-dynamic functions.
-        # test_mutants has a good example of this.
-
-        # Compile like this so we get a new code object every time.
-        foo = compile_for_llvm("foo", "def foo(): return len([])",
-                               optimization_level=None)
-        self.configure_func(foo)
-        self.assertEqual(foo.__code__.__use_llvm__, True)
-        self.assertEqual(foo.__code__.co_fatalbailcount, 0)
-        self.assertEqual(foo(), 0)
-
-        with test_support.swap_attr(__builtin__, "len", lambda x: 7):
-            self.assertEqual(foo.__code__.__use_llvm__, False)
-            self.assertEqual(foo.__code__.co_fatalbailcount, 1)
-            # Since we can't recompile things yet, __use_llvm__ should be left
-            # at False and execution should use the eval loop.
-            self.configure_func(foo)
-            self.assertEqual(foo.__code__.__use_llvm__, False)
-            self.assertEqual(foo(), 7)
 
     def test_nondict_builtins_class(self):
         # Regression test: this used to trigger a fatal assertion when trying
@@ -2541,7 +2714,7 @@ def test_main():
     if sys.flags.optimize >= 1:
         print >>sys.stderr, "test_llvm -- skipping some tests due to -O flag."
         sys.stderr.flush()
-    if sys.flags.jit_control != "whenhot":
+    if _llvm.get_jit_control() != "whenhot":
         print >>sys.stderr, "test_llvm -- skipping some tests due to -j flag."
         sys.stderr.flush()
     else:

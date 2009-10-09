@@ -984,6 +984,11 @@ class T2JTI<dag oops, dag iops, InstrItinClass itin,
             string asm, list<dag> pattern>
   : Thumb2XI<oops, iops, AddrModeNone, SizeSpecial, itin, asm, "", pattern>;
 
+class T2Ix2<dag oops, dag iops, InstrItinClass itin,
+          string opc, string asm, list<dag> pattern>
+  : Thumb2I<oops, iops, AddrModeNone, Size8Bytes, itin, opc, asm, "", pattern>;
+
+
 // T2Iidxldst - Thumb2 indexed load / store instructions.
 class T2Iidxldst<dag oops, dag iops, AddrMode am, IndexMode im,
                  InstrItinClass itin,
@@ -1210,7 +1215,8 @@ class NI4<dag oops, dag iops, InstrItinClass itin, string asm, list<dag> pattern
   : NeonI<oops, iops, AddrMode4, IndexModeNone, itin, asm, "", pattern> {
 }
 
-class NLdSt<dag oops, dag iops, InstrItinClass itin,
+class NLdSt<bit op23, bits<2> op21_20, bits<4> op11_8, bits<4> op7_4,
+            dag oops, dag iops, InstrItinClass itin,
             string asm, string cstr, list<dag> pattern>
   : NeonI<oops, iops, AddrMode6, IndexModeNone, itin, asm, cstr, pattern> {
   let Inst{31-24} = 0b11110100;

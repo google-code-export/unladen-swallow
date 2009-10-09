@@ -11,6 +11,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "CGDebugInfo.h"
 #include "CodeGenFunction.h"
 #include "CodeGenModule.h"
 #include "clang/AST/DeclObjC.h"
@@ -127,7 +128,8 @@ llvm::Value *CodeGenFunction::BuildBlockLiteralTmp(const BlockExpr *BE) {
     llvm::SmallVector<const Expr *, 8> subBlockDeclRefDecls;
     bool subBlockHasCopyDispose = false;
     llvm::Function *Fn
-      = CodeGenFunction(CGM).GenerateBlockFunction(BE, Info, CurFuncDecl, LocalDeclMap,
+      = CodeGenFunction(CGM).GenerateBlockFunction(BE, Info, CurFuncDecl,
+                                                   LocalDeclMap,
                                                    subBlockSize,
                                                    subBlockAlign,
                                                    subBlockDeclRefDecls,
@@ -660,9 +662,44 @@ CodeGenFunction::GenerateBlockFunction(const BlockExpr *BExpr,
 
   StartFunction(BD, ResultType, Fn, Args,
                 BExpr->getBody()->getLocEnd());
+
   CurFuncDecl = OuterFuncDecl;
   CurCodeDecl = BD;
+
+  // Save a spot to insert the debug information for all the BlockDeclRefDecls.
+  llvm::BasicBlock *entry = Builder.GetInsertBlock();
+  llvm::BasicBlock::iterator entry_ptr = Builder.GetInsertPoint();
+  --entry_ptr;
+
   EmitStmt(BExpr->getBody());
+
+  // Remember where we were...
+  llvm::BasicBlock *resume = Builder.GetInsertBlock();
+
+  // Go back to the entry.
+  ++entry_ptr;
+  Builder.SetInsertPoint(entry, entry_ptr);
+
+  if (CGDebugInfo *DI = getDebugInfo()) {
+    // Emit debug information for all the BlockDeclRefDecls.
+    for (unsigned i=0; i < BlockDeclRefDecls.size(); ++i) {
+      const Expr *E = BlockDeclRefDecls[i];
+      const BlockDeclRefExpr *BDRE = dyn_cast<BlockDeclRefExpr>(E);
+      if (BDRE) {
+        const ValueDecl *D = BDRE->getDecl();
+        DI->setLocation(D->getLocation());
+        DI->EmitDeclareOfBlockDeclRefVariable(BDRE,
+                                             LocalDeclMap[getBlockStructDecl()],
+                                              Builder, this);
+      }
+    }
+  }
+  // And resume where we left off.
+  if (resume == 0)
+    Builder.ClearInsertionPoint();
+  else
+    Builder.SetInsertPoint(resume);
+
   FinishFunction(cast<CompoundStmt>(BExpr->getBody())->getRBracLoc());
 
   // The runtime needs a minimum alignment of a void *.

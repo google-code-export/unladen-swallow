@@ -447,28 +447,6 @@ void Verifier::visitGlobalVariable(GlobalVariable &GV) {
       Assert1(!GV.isConstant(), "'common' global may not be marked constant!",
               &GV);
     }
-
-    // Verify that any metadata used in a global initializer points only to
-    // other globals.
-    if (MDNode *FirstNode = dyn_cast<MDNode>(GV.getInitializer())) {
-      SmallVector<const MDNode *, 4> NodesToAnalyze;
-      NodesToAnalyze.push_back(FirstNode);
-      while (!NodesToAnalyze.empty()) {
-        const MDNode *N = NodesToAnalyze.back();
-        NodesToAnalyze.pop_back();
-
-        for (MDNode::const_elem_iterator I = N->elem_begin(),
-               E = N->elem_end(); I != E; ++I)
-          if (const Value *V = *I) {
-            if (const MDNode *Next = dyn_cast<MDNode>(V))
-              NodesToAnalyze.push_back(Next);
-            else
-              Assert3(isa<Constant>(V),
-                      "reference to instruction from global metadata node",
-                      &GV, N, V);
-          }
-      }
-    }
   } else {
     Assert1(GV.hasExternalLinkage() || GV.hasDLLImportLinkage() ||
             GV.hasExternalWeakLinkage(),
@@ -622,12 +600,11 @@ void Verifier::visitFunction(Function &F) {
           "# formal arguments must match # of arguments for function type!",
           &F, FT);
   Assert1(F.getReturnType()->isFirstClassType() ||
-          F.getReturnType() == Type::getVoidTy(F.getContext()) || 
+          F.getReturnType()->isVoidTy() || 
           isa<StructType>(F.getReturnType()),
           "Functions cannot return aggregate values!", &F);
 
-  Assert1(!F.hasStructRetAttr() ||
-          F.getReturnType() == Type::getVoidTy(F.getContext()),
+  Assert1(!F.hasStructRetAttr() || F.getReturnType()->isVoidTy(),
           "Invalid struct return type!", &F);
 
   const AttrListPtr &Attrs = F.getAttributes();
@@ -654,9 +631,6 @@ void Verifier::visitFunction(Function &F) {
 
   bool isLLVMdotName = F.getName().size() >= 5 &&
                        F.getName().substr(0, 5) == "llvm.";
-  if (!isLLVMdotName)
-    Assert1(F.getReturnType() != Type::getMetadataTy(F.getContext()),
-            "Function may not return metadata unless it's an intrinsic", &F);
 
   // Check that the argument values match the function type for this function...
   unsigned i = 0;
@@ -668,7 +642,7 @@ void Verifier::visitFunction(Function &F) {
     Assert1(I->getType()->isFirstClassType(),
             "Function arguments must have first-class types!", I);
     if (!isLLVMdotName)
-      Assert2(I->getType() != Type::getMetadataTy(F.getContext()),
+      Assert2(!I->getType()->isMetadataTy(),
               "Function takes metadata but isn't an intrinsic", I, &F);
   }
 
@@ -763,7 +737,7 @@ void Verifier::visitTerminatorInst(TerminatorInst &I) {
 void Verifier::visitReturnInst(ReturnInst &RI) {
   Function *F = RI.getParent()->getParent();
   unsigned N = RI.getNumOperands();
-  if (F->getReturnType() == Type::getVoidTy(RI.getContext())) 
+  if (F->getReturnType()->isVoidTy()) 
     Assert2(N == 0,
             "Found return instr that returns non-void in Function of void "
             "return type!", &RI, F->getReturnType());
@@ -1126,11 +1100,9 @@ void Verifier::VerifyCallSite(CallSite CS) {
   // Verify that there's no metadata unless it's a direct call to an intrinsic.
   if (!CS.getCalledFunction() || CS.getCalledFunction()->getName().size() < 5 ||
       CS.getCalledFunction()->getName().substr(0, 5) != "llvm.") {
-    Assert1(FTy->getReturnType() != Type::getMetadataTy(I->getContext()),
-            "Only intrinsics may return metadata", I);
     for (FunctionType::param_iterator PI = FTy->param_begin(),
            PE = FTy->param_end(); PI != PE; ++PI)
-      Assert1(PI->get() != Type::getMetadataTy(I->getContext()),
+      Assert1(!PI->get()->isMetadataTy(),
               "Function has metadata parameter but isn't an intrinsic", I);
   }
 
@@ -1297,8 +1269,6 @@ void Verifier::visitLoadInst(LoadInst &LI) {
   const Type *ElTy = PTy->getElementType();
   Assert2(ElTy == LI.getType(),
           "Load result type does not match pointer operand type!", &LI, ElTy);
-  Assert1(ElTy != Type::getMetadataTy(LI.getContext()),
-          "Can't load metadata!", &LI);
   visitInstruction(LI);
 }
 
@@ -1309,8 +1279,6 @@ void Verifier::visitStoreInst(StoreInst &SI) {
   Assert2(ElTy == SI.getOperand(0)->getType(),
           "Stored value type does not match pointer operand type!",
           &SI, ElTy);
-  Assert1(ElTy != Type::getMetadataTy(SI.getContext()),
-          "Can't store metadata!", &SI);
   visitInstruction(SI);
 }
 
@@ -1360,26 +1328,20 @@ void Verifier::visitInstruction(Instruction &I) {
     Assert1(BB->getTerminator() == &I, "Terminator not at end of block!", &I);
 
   // Check that void typed values don't have names
-  Assert1(I.getType() != Type::getVoidTy(I.getContext()) || !I.hasName(),
+  Assert1(!I.getType()->isVoidTy() || !I.hasName(),
           "Instruction has a name, but provides a void value!", &I);
 
   // Check that the return value of the instruction is either void or a legal
   // value type.
-  Assert1(I.getType() == Type::getVoidTy(I.getContext()) || 
-          I.getType()->isFirstClassType()
-          || ((isa<CallInst>(I) || isa<InvokeInst>(I)) 
-              && isa<StructType>(I.getType())),
+  Assert1(I.getType()->isVoidTy() || 
+          I.getType()->isFirstClassType(),
           "Instruction returns a non-scalar type!", &I);
 
-  // Check that the instruction doesn't produce metadata or metadata*. Calls
-  // all already checked against the callee type.
-  Assert1(I.getType() != Type::getMetadataTy(I.getContext()) ||
+  // Check that the instruction doesn't produce metadata. Calls are already
+  // checked against the callee type.
+  Assert1(!I.getType()->isMetadataTy() ||
           isa<CallInst>(I) || isa<InvokeInst>(I),
           "Invalid use of metadata!", &I);
-
-  if (const PointerType *PTy = dyn_cast<PointerType>(I.getType()))
-    Assert1(PTy->getElementType() != Type::getMetadataTy(I.getContext()),
-            "Instructions may not produce pointer to metadata.", &I);
 
   // Check that all uses of the instruction, if they are instructions
   // themselves, actually have parent basic blocks.  If the use is not an
@@ -1403,11 +1365,6 @@ void Verifier::visitInstruction(Instruction &I) {
     if (!I.getOperand(i)->getType()->isFirstClassType()) {
       Assert1(0, "Instruction operands must be first-class values!", &I);
     }
-
-    if (const PointerType *PTy =
-            dyn_cast<PointerType>(I.getOperand(i)->getType()))
-      Assert1(PTy->getElementType() != Type::getMetadataTy(I.getContext()),
-              "Invalid use of metadata pointer.", &I);
 
     if (Function *F = dyn_cast<Function>(I.getOperand(i))) {
       // Check to make sure that the "address of" an intrinsic function is never

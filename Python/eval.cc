@@ -47,21 +47,7 @@ _PyObject_Call(PyObject *func, PyObject *arg, PyObject *kw)
 }
 
 
-/* Simple function for determinining when we should (re)optimize a function
-   with the given call count. The threshold value of 10000 is arbitrary. This
-   function is very simple, and should only be taken as a baseline for future
-   improvements.
-   TODO(collinwinter): tune this. */
-#define Py_HOT_OR_NOT(call_count) ((call_count) % 10000 == 0)
-
-/* #define Py_PROFILE_HOTNESS
-   Define this if you want stats on how many pure-Python functions were judged
-   hot. This will keep track of how many times each hot function (as determined
-   by Py_HOT_OR_NOT) was called; cold functions will not be counted. The sorted
-   breakdown will be shown at interpreter-shutdown.
-   TODO(collinwinter): add hotness stats over time.
-   */
-#ifdef Py_PROFILE_HOTNESS
+#ifdef Py_WITH_INSTRUMENTATION
 class HotnessTracker {
 	// llvm::DenseSet or llvm::SmallPtrSet may be better, but as of this
 	// writing, they don't seem to work with std::vector.
@@ -80,65 +66,64 @@ public:
 static bool
 compare_hotness(const PyCodeObject *first, const PyCodeObject *second)
 {
-	return first->co_callcount > second->co_callcount;
+	return first->co_hotness > second->co_hotness;
 }
 
 HotnessTracker::~HotnessTracker()
 {
-	printf("%d code objects deemed hot\n", this->hot_code_.size());
+	printf("\n%zd code objects deemed hot\n", this->hot_code_.size());
 
-	printf("Code call counts:\n");
+	printf("Code hotness metric:\n");
 	std::vector<PyCodeObject*> to_sort(this->hot_code_.begin(),
 					   this->hot_code_.end());
 	std::sort(to_sort.begin(), to_sort.end(), compare_hotness);
 	for (std::vector<PyCodeObject*>::iterator co = to_sort.begin();
 	     co != to_sort.end(); ++co) {
-		printf("%s:%d (%s)\t%d\n",
+		printf("%s:%d (%s)\t%ld\n",
 			PyString_AsString((*co)->co_filename),
 			(*co)->co_firstlineno,
 			PyString_AsString((*co)->co_name),
-			(*co)->co_callcount);
+			(*co)->co_hotness);
 	}
 }
 
 static llvm::ManagedStatic<HotnessTracker> hot_code;
-#endif
 
-#ifdef Py_WITH_INSTRUMENTATION
+
 // Keep track of which functions failed fatal guards, but kept being called.
 // This can help gauge the efficacy of optimizations that involve fatal guards.
 class FatalBailTracker {
 public:
 	~FatalBailTracker() {
 		printf("\nCode objects that failed fatal guards:\n");
-		printf("\tfile:line (funcname) bail callcount -> final callcount\n");
+		printf("\tfile:line (funcname) bail hotness -> final hotness\n");
 
 		for (TrackerData::const_iterator it = this->code_.begin();
 				it != this->code_.end(); ++it) {
 			PyCodeObject *code = it->first;
-			if (code->co_callcount == it->second)
+			if (code->co_hotness == it->second)
 				continue;
-			printf("\t%s:%d (%s)\t%d -> %d\n",
+			printf("\t%s:%d (%s)\t%ld -> %ld\n",
 				PyString_AsString(code->co_filename),
 				code->co_firstlineno,
 				PyString_AsString(code->co_name),
 				it->second,
-				code->co_callcount);
+				code->co_hotness);
 		}
 	}
 
 	void RecordFatalBail(PyCodeObject *code) {
 		Py_INCREF(code);
-		this->code_.push_back(std::make_pair(code, code->co_callcount));
+		this->code_.push_back(std::make_pair(code, code->co_hotness));
 	}
 
 private:
-	// Keep a list of (code object, callcount) where callcount is the
-	// value of co_callcount when RecordFatalBail() was called. This is
+	// Keep a list of (code object, hotness) where hotness is the
+	// value of co_hotness when RecordFatalBail() was called. This is
 	// used to hide code objects whose machine code functions are
 	// invalidated during shutdown because their module dict has gone away;
 	// these code objects are uninteresting for our analysis.
-	typedef std::pair<PyCodeObject *, int> DataPoint;
+	typedef std::pair<PyCodeObject *, long> DataPoint;
 	typedef std::vector<DataPoint> TrackerData;
 
 	TrackerData code_;
@@ -189,8 +174,6 @@ typedef PyObject *(*callproc)(PyObject *, PyObject *, PyObject *);
 /* Forward declarations */
 #ifdef WITH_LLVM
 static int mark_called_and_maybe_compile(PyCodeObject *co, PyFrameObject *f);
-static void record_type(PyCodeObject *, int, int, int, PyObject *);
-static void inc_feedback_counter(PyCodeObject *, int, int, int);
 #endif
 static PyObject * fast_function(PyObject *, PyObject ***, int, int, int);
 static PyObject * do_call(PyObject *, PyObject ***, int, int);
@@ -200,7 +183,13 @@ static PyObject * update_keyword_args(PyObject *, int, PyObject ***,
 static PyObject * update_star_args(int, int, PyObject *, PyObject ***);
 static PyObject * load_args(PyObject ***, int);
 
+/* Record data for use in generating optimized machine code. */
+static void record_type(PyCodeObject *, int, int, int, PyObject *);
+static void record_func(PyCodeObject *, int, int, int, PyObject *);
+static void inc_feedback_counter(PyCodeObject *, int, int, int);
+
 int _Py_TracingPossible = 0;
+int _Py_ProfilingPossible = 0;
 
 /* Keep this in sync with llvm_fbuilder.cc */
 #define CALL_FLAG_VAR 1
@@ -796,6 +785,8 @@ PyEval_EvalFrame(PyFrameObject *f)
 #ifdef WITH_LLVM
 #define RECORD_TYPE(arg_index, obj) \
 	record_type(co, opcode, f->f_lasti, arg_index, obj)
+#define RECORD_FUNC(obj) \
+	record_func(co, opcode, f->f_lasti, 0, obj)
 #define RECORD_TRUE() \
 	inc_feedback_counter(co, opcode, f->f_lasti, PY_FDO_JUMP_TRUE)
 #define RECORD_FALSE() \
@@ -943,28 +934,43 @@ PyEval_EvalFrame(PyFrameObject *f)
 			goto exit_eval_frame;
 		}
 	}
-#endif  /* WITH_LLVM */
 
-	if ((bail_reason == _PYFRAME_NO_BAIL ||
-	     bail_reason == _PYFRAME_TRACE_ON_ENTRY) &&
-	    tstate->use_tracing) {
-		if (_PyEval_TraceEnterFunction(tstate, f)) {
-			/* Trace or profile function raised an error. */
-			goto exit_eval_frame;
-		}
-	}
-	if (bail_reason == _PYFRAME_BACKEDGE_TRACE) {
-		/* If we bailed because of a backedge, set instr_prev
-		   to ensure a line trace call. */
-		instr_prev = INT_MAX;
-	}
-#ifdef WITH_LLVM
 	if (bail_reason != _PYFRAME_NO_BAIL && _Py_BailError) {
 		PyErr_SetString(PyExc_RuntimeError,
-		                "bailed to the interpreter");
+			        "bailed to the interpreter");
 		goto exit_eval_frame;
 	}
 #endif  /* WITH_LLVM */
+
+	switch (bail_reason) {
+		case _PYFRAME_NO_BAIL:
+		case _PYFRAME_TRACE_ON_ENTRY:
+			if (tstate->use_tracing) {
+				if (_PyEval_TraceEnterFunction(tstate, f))
+					/* Trace or profile function raised
+					   an error. */
+					goto exit_eval_frame;
+			}
+			break;
+
+		case _PYFRAME_BACKEDGE_TRACE:
+			/* If we bailed because of a backedge, set instr_prev
+			   to ensure a line trace call. */
+			instr_prev = INT_MAX;
+			break;
+
+		case _PYFRAME_CALL_PROFILE:
+		case _PYFRAME_LINE_TRACE:
+		case _PYFRAME_FATAL_GUARD_FAIL:
+		case _PYFRAME_GUARD_FAIL:
+			/* These are handled by the opcode dispatch loop. */
+			break;
+
+		default:
+			PyErr_Format(PyExc_SystemError, "unknown bail reason");
+			goto exit_eval_frame;
+	}
+
 
 	names = co->co_names;
 	consts = co->co_consts;
@@ -2455,6 +2461,11 @@ PyEval_EvalFrame(PyFrameObject *f)
 			RECORD_TYPE(0, v);
 			x = (*v->ob_type->tp_iternext)(v);
 			if (x != NULL) {
+#ifdef WITH_LLVM
+				/* Putting the ++hotness here simulates doing
+				   this on the loop backedge. */
+				++co->co_hotness;
+#endif  /* WITH_LLVM */
 				PUSH(x);
 				PREDICT(STORE_FAST);
 				PREDICT(UNPACK_SEQUENCE);
@@ -2596,9 +2607,18 @@ PyEval_EvalFrame(PyFrameObject *f)
 			int num_args, num_kwargs, num_stack_slots;
 			PY_LOG_TSC_EVENT(CALL_START_EVAL);
 			PCALL(PCALL_ALL);
-			// TODO(jyasskin): Add feedback gathering.
 			num_args = oparg & 0xff;
 			num_kwargs = (oparg>>8) & 0xff;
+#ifdef WITH_LLVM
+			// We'll focus on these simple calls with only positional args for
+			// now (since they're easy to implement).
+			if (num_kwargs == 0) {
+				// Duplicate this bit of logic from
+				// _PyEval_CallFunction().
+				PyObject **func = stack_pointer - num_args - 1;
+				RECORD_FUNC(*func);
+			}
+#endif
 			x = _PyEval_CallFunction(stack_pointer,
 						 num_args, num_kwargs);
 			// +1 for the actual function object.
@@ -3770,6 +3790,8 @@ PyEval_SetProfile(Py_tracefunc func, PyObject *arg)
 {
 	PyThreadState *tstate = PyThreadState_GET();
 	PyObject *temp = tstate->c_profileobj;
+	_Py_ProfilingPossible +=
+		(func != NULL) - (tstate->c_profilefunc != NULL);
 	Py_XINCREF(arg);
 	tstate->c_profilefunc = NULL;
 	tstate->c_profileobj = NULL;
@@ -3977,7 +3999,7 @@ err_args(PyObject *func, int flags, int nargs)
 }
 
 #ifdef WITH_LLVM
-// Increments co's call counter and, if it has passed the hotness
+// Increments co's hotness level and, if it has passed the hotness
 // threshold, compiles the bytecode to native code.  If the code
 // object was marked as needing to be run through LLVM, also compiles
 // the bytecode to native code, even if the code object isn't hot yet.
@@ -3993,14 +4015,14 @@ err_args(PyObject *func, int flags, int nargs)
 static int
 mark_called_and_maybe_compile(PyCodeObject *co, PyFrameObject *f)
 {
-	++co->co_callcount;
+	co->co_hotness += 10;
 	if (co->co_fatalbailcount >= PY_MAX_FATALBAILCOUNT) {
 		co->co_use_llvm = f->f_use_llvm = 0;
 		return 0;
 	}
 
-	if (Py_HOT_OR_NOT(co->co_callcount)) {
-#ifdef Py_PROFILE_HOTNESS
+	if (co->co_hotness > PY_HOTNESS_THRESHOLD) {
+#ifdef Py_WITH_INSTRUMENTATION
 		hot_code->AddHotCode(co);
 #endif
 		if (Py_JitControl == PY_JIT_WHENHOT)
@@ -4025,8 +4047,12 @@ mark_called_and_maybe_compile(PyCodeObject *co, PyFrameObject *f)
 				r = _PyCode_ToOptimizedLlvmIr(
 					co, target_optimization);
 				PY_LOG_TSC_EVENT(LLVM_COMPILE_END);
-				if (r < 0)
+				if (r < 0)  // Error
 					return -1;
+				if (r == 1) {  // Codegen refused
+					co->co_use_llvm = f->f_use_llvm = 0;
+					return 0;
+				}
 			}
 		}
 		if (co->co_native_function == NULL) {
@@ -4046,7 +4072,7 @@ mark_called_and_maybe_compile(PyCodeObject *co, PyFrameObject *f)
 #endif  /* WITH_LLVM */
 
 #define C_TRACE(x, call) \
-if (tstate->use_tracing && tstate->c_profilefunc) { \
+if (_Py_ProfilingPossible && tstate->use_tracing && tstate->c_profilefunc) { \
 	if (_PyEval_CallTrace(tstate->c_profilefunc, \
 		tstate->c_profileobj, \
 		tstate->frame, PyTrace_C_CALL, \
@@ -4077,7 +4103,7 @@ if (tstate->use_tracing && tstate->c_profilefunc) { \
 } else { \
 	PY_LOG_TSC_EVENT(CALL_ENTER_C); \
 	x = call; \
-	}
+}
 
 /* Consumes a reference to each of the arguments and the called function,
    but the caller must adjust the stack pointer down by (na + 2*nk + 1).
@@ -4470,11 +4496,11 @@ ext_call_fail:
 	return result;
 }
 
-#ifdef WITH_LLVM
 // Records the type of obj into the feedback array.
 void record_type(PyCodeObject *co, int expected_opcode,
 		 int opcode_index, int arg_index, PyObject *obj)
 {
+#ifdef WITH_LLVM
 #ifndef NDEBUG
 	unsigned char actual_opcode =
 		PyString_AS_STRING(co->co_code)[opcode_index];
@@ -4486,11 +4512,13 @@ void record_type(PyCodeObject *co, int expected_opcode,
 		co->co_runtime_feedback->GetOrCreateFeedbackEntry(
 			opcode_index, arg_index);
 	feedback.AddTypeSeen(obj);
+#endif  /* WITH_LLVM */
 }
 
 void inc_feedback_counter(PyCodeObject *co, int expected_opcode,
 			  int opcode_index, int counter_id)
 {
+#ifdef WITH_LLVM
 #ifndef NDEBUG
 	unsigned char actual_opcode =
 		PyString_AS_STRING(co->co_code)[opcode_index];
@@ -4502,8 +4530,27 @@ void inc_feedback_counter(PyCodeObject *co, int expected_opcode,
 		co->co_runtime_feedback->GetOrCreateFeedbackEntry(
 			opcode_index, 0);
 	feedback.IncCounter(counter_id);
-}
 #endif  /* WITH_LLVM */
+}
+
+// Records func into the feedback array.
+void record_func(PyCodeObject *co, int expected_opcode,
+                 int opcode_index, int arg_index, PyObject *func)
+{
+#ifdef WITH_LLVM
+#ifndef NDEBUG
+	unsigned char actual_opcode =
+		PyString_AS_STRING(co->co_code)[opcode_index];
+	assert((actual_opcode == expected_opcode ||
+		actual_opcode == EXTENDED_ARG) &&
+	       "Mismatch between feedback and opcode array.");
+#endif  /* NDEBUG */
+	PyRuntimeFeedback &feedback =
+		co->co_runtime_feedback->GetOrCreateFeedbackEntry(
+			opcode_index, arg_index);
+	feedback.AddFuncSeen(func);
+#endif  /* WITH_LLVM */
+}
 
 
 /* Extract a slice index from a PyInt or PyLong or an object with the

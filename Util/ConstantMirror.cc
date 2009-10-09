@@ -4,6 +4,7 @@
 
 #include "llvm/Constants.h"
 #include "llvm/DerivedTypes.h"
+#include "llvm/Function.h"
 #include "llvm/GlobalVariable.h"
 #include "llvm/Module.h"
 #include "llvm/ExecutionEngine/ExecutionEngine.h"
@@ -19,6 +20,7 @@ using llvm::ConstantFP;
 using llvm::ConstantInt;
 using llvm::ConstantStruct;
 using llvm::ExecutionEngine;
+using llvm::Function;
 using llvm::GlobalValue;
 using llvm::GlobalVariable;
 using llvm::IntegerType;
@@ -303,9 +305,9 @@ PyConstantMirror::ConstantFromMemory(const Type *type, const void *memory) const
         const uint64_t element_size =
             this->target_data_.getTypeAllocSize(element_type);
         std::vector<Constant*> contents;
-        contents.reserve(array_type->getNumElements());
+        contents.reserve((size_t)array_type->getNumElements());
         const char *const cmemory = static_cast<const char*>(memory);
-        for (unsigned i = 0, end = array_type->getNumElements();
+        for (uint64_t i = 0, end = array_type->getNumElements();
              i < end; ++i) {
             uint64_t offset = i * element_size;
             contents.push_back(
@@ -317,11 +319,14 @@ PyConstantMirror::ConstantFromMemory(const Type *type, const void *memory) const
         void *the_pointer = read_as<void*>(memory);
         // Try to find a GlobalValue that's mapped to this address.
         // This will let LLVM's optimizers pull values out of here.
-        if (const GlobalValue *known_constant =
-            this->engine_.getGlobalValueAtAddress(the_pointer)) {
+        if (GlobalValue *known_constant =
             // You can't put a const Constant into another Constant,
             // so make it non-const.
-            return const_cast<GlobalValue*>(known_constant);
+            const_cast<GlobalValue*>(
+                this->engine_.getGlobalValueAtAddress(the_pointer))) {
+            if (known_constant->getType() == type)
+                return known_constant;
+            return llvm::ConstantExpr::getBitCast(known_constant, type);
         }
         // If we don't already have a mapping for the requested
         // address, emit it as an inttoptr.
@@ -339,6 +344,8 @@ PyConstantMirror::ConstantFromMemory(const Type *type, const void *memory) const
     raw_string_ostream(type_dump)
         << "Can't emit type " << type << " to memory.";
     Py_FatalError(type_dump.c_str());
+    /* NOTREACHED */
+    return NULL;
 }
 
 // This can only be allocated by new, and it deletes itself when the
@@ -395,4 +402,25 @@ PyConstantMirror::GetGlobalVariableForOwned(T *ptr, PyObject *owner)
         new RemovePyObjFromGlobalMappingsVH(this, result, owner);
     }
     return result;
+}
+
+Constant *
+PyConstantMirror::GetGlobalForCFunction(PyCFunction cfunc_ptr,
+                                        const llvm::StringRef &name)
+{
+    // Reuse an existing LLVM global if we can.
+    void *func_ptr = (void *)cfunc_ptr;
+    if (GlobalValue *found =
+            const_cast<GlobalValue*>
+                (this->engine_.getGlobalValueAtAddress(func_ptr)))
+        return found;
+
+    // Create a new LLVM global if we haven't seen this function pointer before.
+    Function *global_func = Function::Create(
+        PyTypeBuilder<PyObject*(PyObject*, PyObject*)>::get(this->context()),
+        GlobalVariable::ExternalLinkage,
+        name,
+        this->llvm_data_.module());
+    this->engine_.addGlobalMapping(global_func, func_ptr);
+    return global_func;
 }

@@ -56,37 +56,37 @@ def FSTS  : ASI5<0b1101, 0b00, (outs), (ins SPR:$src, addrmode5:$addr),
 //  Load / store multiple Instructions.
 //
 
-let mayLoad = 1 in {
-def FLDMD : AXDI5<(outs), (ins addrmode5:$addr, pred:$p, reglist:$dst1,
+let mayLoad = 1, hasExtraDefRegAllocReq = 1 in {
+def FLDMD : AXDI5<(outs), (ins addrmode5:$addr, pred:$p, reglist:$wb,
                            variable_ops), IIC_fpLoadm,
-                  "fldm${addr:submode}d${p} ${addr:base}, $dst1",
+                  "fldm${addr:submode}d${p} ${addr:base}, $wb",
                   []> {
   let Inst{20} = 1;
 }
 
-def FLDMS : AXSI5<(outs), (ins addrmode5:$addr, pred:$p, reglist:$dst1,
+def FLDMS : AXSI5<(outs), (ins addrmode5:$addr, pred:$p, reglist:$wb,
                            variable_ops), IIC_fpLoadm, 
-                  "fldm${addr:submode}s${p} ${addr:base}, $dst1",
+                  "fldm${addr:submode}s${p} ${addr:base}, $wb",
                   []> {
   let Inst{20} = 1;
 }
-}
+} // mayLoad, hasExtraDefRegAllocReq
 
-let mayStore = 1 in {
-def FSTMD : AXDI5<(outs), (ins addrmode5:$addr, pred:$p, reglist:$src1,
+let mayStore = 1, hasExtraSrcRegAllocReq = 1 in {
+def FSTMD : AXDI5<(outs), (ins addrmode5:$addr, pred:$p, reglist:$wb,
                            variable_ops), IIC_fpStorem,
-                 "fstm${addr:submode}d${p} ${addr:base}, $src1",
+                 "fstm${addr:submode}d${p} ${addr:base}, $wb",
                  []> {
   let Inst{20} = 0;
 }
 
-def FSTMS : AXSI5<(outs), (ins addrmode5:$addr, pred:$p, reglist:$src1,
+def FSTMS : AXSI5<(outs), (ins addrmode5:$addr, pred:$p, reglist:$wb,
                            variable_ops), IIC_fpStorem,
-                 "fstm${addr:submode}s${p} ${addr:base}, $src1",
+                 "fstm${addr:submode}s${p} ${addr:base}, $wb",
                  []> {
   let Inst{20} = 0;
 }
-} // mayStore
+} // mayStore, hasExtraSrcRegAllocReq
 
 // FLDMX, FSTMX - mixing S/D registers for pre-armv6 cores
 
@@ -225,16 +225,16 @@ def FSQRTS  : ASuI<0b11101011, 0b0001, 0b1100, (outs SPR:$dst), (ins SPR:$a),
 //
 
 def FMRS   : AVConv2I<0b11100001, 0b1010, (outs GPR:$dst), (ins SPR:$src),
-                 IIC_fpMOVSI, "fmrs", " $dst, $src",
+                 IIC_VMOVSI, "fmrs", " $dst, $src",
                  [(set GPR:$dst, (bitconvert SPR:$src))]>;
 
 def FMSR   : AVConv4I<0b11100000, 0b1010, (outs SPR:$dst), (ins GPR:$src),
-                 IIC_fpMOVIS, "fmsr", " $dst, $src",
+                 IIC_VMOVIS, "fmsr", " $dst, $src",
                  [(set SPR:$dst, (bitconvert GPR:$src))]>;
 
 def FMRRD  : AVConv3I<0b11000101, 0b1011,
-                      (outs GPR:$dst1, GPR:$dst2), (ins DPR:$src),
-                 IIC_fpMOVDI, "fmrrd", " $dst1, $dst2, $src",
+                      (outs GPR:$wb, GPR:$dst2), (ins DPR:$src),
+                 IIC_VMOVDI, "fmrrd", " $wb, $dst2, $src",
                  [/* FIXME: Can't write pattern for multiple result instr*/]>;
 
 // FMDHR: GPR -> SPR
@@ -242,7 +242,7 @@ def FMRRD  : AVConv3I<0b11000101, 0b1011,
 
 def FMDRR : AVConv5I<0b11000100, 0b1011,
                      (outs DPR:$dst), (ins GPR:$src1, GPR:$src2),
-                IIC_fpMOVID, "fmdrr", " $dst, $src1, $src2",
+                IIC_VMOVID, "fmdrr", " $dst, $src1, $src2",
                 [(set DPR:$dst, (arm_fmdrr GPR:$src1, GPR:$src2))]>;
 
 // FMRDH: SPR -> GPR

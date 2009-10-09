@@ -958,43 +958,6 @@ void X86InstrInfo::reMaterialize(MachineBasicBlock &MBB,
   NewMI->getOperand(0).setSubReg(SubIdx);
 }
 
-/// isInvariantLoad - Return true if the specified instruction (which is marked
-/// mayLoad) is loading from a location whose value is invariant across the
-/// function.  For example, loading a value from the constant pool or from
-/// from the argument area of a function if it does not change.  This should
-/// only return true of *all* loads the instruction does are invariant (if it
-/// does multiple loads).
-bool X86InstrInfo::isInvariantLoad(const MachineInstr *MI) const {
-  // This code cares about loads from three cases: constant pool entries,
-  // invariant argument slots, and global stubs.  In order to handle these cases
-  // for all of the myriad of X86 instructions, we just scan for a CP/FI/GV
-  // operand and base our analysis on it.  This is safe because the address of
-  // none of these three cases is ever used as anything other than a load base
-  // and X86 doesn't have any instructions that load from multiple places.
-  
-  for (unsigned i = 0, e = MI->getNumOperands(); i != e; ++i) {
-    const MachineOperand &MO = MI->getOperand(i);
-    // Loads from constant pools are trivially invariant.
-    if (MO.isCPI())
-      return true;
-
-    if (MO.isGlobal())
-      return isGlobalStubReference(MO.getTargetFlags());
-
-    // If this is a load from an invariant stack slot, the load is a constant.
-    if (MO.isFI()) {
-      const MachineFrameInfo &MFI =
-        *MI->getParent()->getParent()->getFrameInfo();
-      int Idx = MO.getIndex();
-      return MFI.isFixedObjectIndex(Idx) && MFI.isImmutableObjectIndex(Idx);
-    }
-  }
-  
-  // All other instances of these instructions are presumed to have other
-  // issues.
-  return false;
-}
-
 /// hasLiveCondCodeDef - True if MI has a condition code def, e.g. EFLAGS, that
 /// is not marked dead.
 static bool hasLiveCondCodeDef(MachineInstr *MI) {
@@ -2296,7 +2259,7 @@ MachineInstr* X86InstrInfo::foldMemoryOperandImpl(MachineFunction &MF,
   // Determine the alignment of the load.
   unsigned Alignment = 0;
   if (LoadMI->hasOneMemOperand())
-    Alignment = LoadMI->memoperands_begin()->getAlignment();
+    Alignment = (*LoadMI->memoperands_begin())->getAlignment();
   else
     switch (LoadMI->getOpcode()) {
     case X86::V_SET0:
@@ -2586,8 +2549,8 @@ X86InstrInfo::unfoldMemoryOperand(SelectionDAG &DAG, SDNode *N,
     EVT VT = *RC->vt_begin();
     bool isAligned = (RI.getStackAlignment() >= 16) ||
       RI.needsStackRealignment(MF);
-    Load = DAG.getTargetNode(getLoadRegOpcode(0, RC, isAligned, TM), dl,
-                             VT, MVT::Other, &AddrOps[0], AddrOps.size());
+    Load = DAG.getMachineNode(getLoadRegOpcode(0, RC, isAligned, TM), dl,
+                              VT, MVT::Other, &AddrOps[0], AddrOps.size());
     NewNodes.push_back(Load);
   }
 
@@ -2606,8 +2569,8 @@ X86InstrInfo::unfoldMemoryOperand(SelectionDAG &DAG, SDNode *N,
   if (Load)
     BeforeOps.push_back(SDValue(Load, 0));
   std::copy(AfterOps.begin(), AfterOps.end(), std::back_inserter(BeforeOps));
-  SDNode *NewNode= DAG.getTargetNode(Opc, dl, VTs, &BeforeOps[0],
-                                     BeforeOps.size());
+  SDNode *NewNode= DAG.getMachineNode(Opc, dl, VTs, &BeforeOps[0],
+                                      BeforeOps.size());
   NewNodes.push_back(NewNode);
 
   // Emit the store instruction.
@@ -2617,10 +2580,10 @@ X86InstrInfo::unfoldMemoryOperand(SelectionDAG &DAG, SDNode *N,
     AddrOps.push_back(Chain);
     bool isAligned = (RI.getStackAlignment() >= 16) ||
       RI.needsStackRealignment(MF);
-    SDNode *Store = DAG.getTargetNode(getStoreRegOpcode(0, DstRC,
-                                                        isAligned, TM),
-                                      dl, MVT::Other,
-                                      &AddrOps[0], AddrOps.size());
+    SDNode *Store = DAG.getMachineNode(getStoreRegOpcode(0, DstRC,
+                                                         isAligned, TM),
+                                       dl, MVT::Other,
+                                       &AddrOps[0], AddrOps.size());
     NewNodes.push_back(Store);
   }
 
@@ -3061,6 +3024,7 @@ static unsigned GetInstSizeWithDesc(const MachineInstr &MI,
     case TargetInstrInfo::EH_LABEL:
       break;
     case TargetInstrInfo::IMPLICIT_DEF:
+    case TargetInstrInfo::KILL:
     case X86::DWARF_LOC:
     case X86::FP_REG_KILL:
       break;

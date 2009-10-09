@@ -381,6 +381,16 @@ else
   AC_SUBST(DEBUG_RUNTIME,[[DEBUG_RUNTIME=1]])
 fi
 
+dnl --enable-debug-symbols : should even optimized compiler libraries
+dnl have debug symbols?
+AC_ARG_ENABLE(debug-symbols,
+   AS_HELP_STRING(--enable-debug-symbols,[Build compiler with debug symbols (default is NO if optimization is on and YES if it's off)]),,enableval=no)
+if test ${enableval} = "no" ; then
+  AC_SUBST(DEBUG_SYMBOLS,[[]])
+else
+  AC_SUBST(DEBUG_SYMBOLS,[[DEBUG_SYMBOLS=1]])
+fi
+
 dnl --enable-jit: check whether they want to enable the jit
 AC_ARG_ENABLE(jit,
   AS_HELP_STRING(--enable-jit,
@@ -449,28 +459,15 @@ AC_DEFINE_UNQUOTED([ENABLE_PIC],$ENABLE_PIC,
 dnl Allow specific targets to be specified for building (or not)
 TARGETS_TO_BUILD=""
 AC_ARG_ENABLE([targets],AS_HELP_STRING([--enable-targets],
-    [Build specific host targets: all,host-only,{target-name} (default=all)]),,
+    [Build specific host targets: all or target1,target2,... Valid targets are:
+     host, x86, x86_64, sparc, powerpc, alpha, arm, mips, spu, pic16,
+     xcore, msp430, systemz, blackfin, cbe, msil, and cpp (default=all)]),,
     enableval=all)
+if test "$enableval" = host-only ; then
+  enableval=host
+fi
 case "$enableval" in
   all) TARGETS_TO_BUILD="X86 Sparc PowerPC Alpha ARM Mips CellSPU PIC16 XCore MSP430 SystemZ Blackfin CBackend MSIL CppBackend" ;;
-  host-only)
-    case "$llvm_cv_target_arch" in
-      x86)         TARGETS_TO_BUILD="X86" ;;
-      x86_64)      TARGETS_TO_BUILD="X86" ;;
-      Sparc)       TARGETS_TO_BUILD="Sparc" ;;
-      PowerPC)     TARGETS_TO_BUILD="PowerPC" ;;
-      Alpha)       TARGETS_TO_BUILD="Alpha" ;;
-      ARM)         TARGETS_TO_BUILD="ARM" ;;
-      Mips)        TARGETS_TO_BUILD="Mips" ;;
-      CellSPU|SPU) TARGETS_TO_BUILD="CellSPU" ;;
-      PIC16)       TARGETS_TO_BUILD="PIC16" ;;
-      XCore)       TARGETS_TO_BUILD="XCore" ;;
-      MSP430)      TARGETS_TO_BUILD="MSP430" ;;
-      SystemZ)     TARGETS_TO_BUILD="SystemZ" ;;
-      Blackfin)    TARGETS_TO_BUILD="Blackfin" ;;
-      *)       AC_MSG_ERROR([Can not set target to build]) ;;
-    esac
-    ;;
   *)for a_target in `echo $enableval|sed -e 's/,/ /g' ` ; do
       case "$a_target" in
         x86)      TARGETS_TO_BUILD="X86 $TARGETS_TO_BUILD" ;;
@@ -489,6 +486,22 @@ case "$enableval" in
         cbe)      TARGETS_TO_BUILD="CBackend $TARGETS_TO_BUILD" ;;
         msil)     TARGETS_TO_BUILD="MSIL $TARGETS_TO_BUILD" ;;
         cpp)      TARGETS_TO_BUILD="CppBackend $TARGETS_TO_BUILD" ;;
+        host) case "$llvm_cv_target_arch" in
+            x86)         TARGETS_TO_BUILD="X86 $TARGETS_TO_BUILD" ;;
+            x86_64)      TARGETS_TO_BUILD="X86 $TARGETS_TO_BUILD" ;;
+            Sparc)       TARGETS_TO_BUILD="Sparc $TARGETS_TO_BUILD" ;;
+            PowerPC)     TARGETS_TO_BUILD="PowerPC $TARGETS_TO_BUILD" ;;
+            Alpha)       TARGETS_TO_BUILD="Alpha $TARGETS_TO_BUILD" ;;
+            ARM)         TARGETS_TO_BUILD="ARM $TARGETS_TO_BUILD" ;;
+            Mips)        TARGETS_TO_BUILD="Mips $TARGETS_TO_BUILD" ;;
+            CellSPU|SPU) TARGETS_TO_BUILD="CellSPU $TARGETS_TO_BUILD" ;;
+            PIC16)       TARGETS_TO_BUILD="PIC16 $TARGETS_TO_BUILD" ;;
+            XCore)       TARGETS_TO_BUILD="XCore $TARGETS_TO_BUILD" ;;
+            MSP430)      TARGETS_TO_BUILD="MSP430 $TARGETS_TO_BUILD" ;;
+            SystemZ)     TARGETS_TO_BUILD="SystemZ $TARGETS_TO_BUILD" ;;
+            Blackfin)    TARGETS_TO_BUILD="Blackfin $TARGETS_TO_BUILD" ;;
+            *)       AC_MSG_ERROR([Can not set target to build]) ;;
+          esac ;;
         *) AC_MSG_ERROR([Unrecognized target $a_target]) ;;
       esac
   done
@@ -986,31 +999,30 @@ AC_ARG_WITH(oprofile,
       AC_SUBST(USE_OPROFILE, [1])
       case "$withval" in
         /usr|yes) llvm_cv_oppath=/usr/lib/oprofile ;;
+        no) llvm_cv_oppath=
+            AC_SUBST(USE_OPROFILE, [0]) ;;
         *) llvm_cv_oppath="${withval}/lib/oprofile"
            CPPFLAGS="-I${withval}/include";;
       esac
-      LIBS="$LIBS -L${llvm_cv_oppath} -Wl,-rpath,${llvm_cv_oppath}"
-      AC_SEARCH_LIBS(op_open_agent, opagent, [], [
-        echo "Error! You need to have libopagent around."
-        exit -1
-      ])
-      AC_CHECK_HEADER([opagent.h], [], [
-        echo "Error! You need to have opagent.h around."
-        exit -1
-      ])
+      if test -n "$llvm_cv_oppath" ; then
+        LIBS="$LIBS -L${llvm_cv_oppath} -Wl,-rpath,${llvm_cv_oppath}"
+        dnl Work around http://bugs.debian.org/cgi-bin/bugreport.cgi?bug=537744:
+        dnl libbfd is not included properly in libopagent in some Debian
+        dnl versions.  If libbfd isn't found at all, we assume opagent works
+        dnl anyway.
+        AC_SEARCH_LIBS(bfd_init, bfd, [], [])
+        AC_SEARCH_LIBS(op_open_agent, opagent, [], [
+          echo "Error! You need to have libopagent around."
+          exit -1
+        ])
+        AC_CHECK_HEADER([opagent.h], [], [
+          echo "Error! You need to have opagent.h around."
+          exit -1
+          ])
+      fi
     ],
     [
-      llvm_cv_old_LIBS="$LIBS"
-      LIBS="$LIBS -L/usr/lib/oprofile -Wl,-rpath,/usr/lib/oprofile"
-      dnl If either the library or header aren't present, omit oprofile support.
-      AC_SEARCH_LIBS(op_open_agent, opagent,
-                     [AC_SUBST(USE_OPROFILE, [1])],
-                     [LIBS="$llvm_cv_old_LIBS"
-                      AC_SUBST(USE_OPROFILE, [0])])
-      AC_CHECK_HEADER([opagent.h], [], [
-        LIBS="$llvm_cv_old_LIBS"
-        AC_SUBST(USE_OPROFILE, [0])
-      ])
+      AC_SUBST(USE_OPROFILE, [0])
     ])
 AC_DEFINE_UNQUOTED([USE_OPROFILE],$USE_OPROFILE,
                    [Define if we have the oprofile JIT-support library])
@@ -1077,7 +1089,7 @@ AC_CHECK_FUNCS([powf fmodf strtof round ])
 AC_CHECK_FUNCS([getpagesize getrusage getrlimit setrlimit gettimeofday ])
 AC_CHECK_FUNCS([isatty mkdtemp mkstemp ])
 AC_CHECK_FUNCS([mktemp realpath sbrk setrlimit strdup ])
-AC_CHECK_FUNCS([strerror strerror_r strerror_s ])
+AC_CHECK_FUNCS([strerror strerror_r strerror_s setenv ])
 AC_CHECK_FUNCS([strtoll strtoq sysconf malloc_zone_statistics ])
 AC_CHECK_FUNCS([setjmp longjmp sigsetjmp siglongjmp])
 AC_C_PRINTF_A
@@ -1136,6 +1148,16 @@ dnl===
 dnl=== SECTION 9: Additional checks, variables, etc.
 dnl===
 dnl===-----------------------------------------------------------------------===
+
+dnl Handle 32-bit linux systems running a 64-bit kernel.
+dnl This has to come after section 4 because it invokes the compiler.
+if test "$llvm_cv_os_type" = "Linux" -a "$llvm_cv_target_arch" = "x86_64" ; then
+  AC_IS_LINUX_MIXED
+  if test "$llvm_cv_linux_mixed" = "yes"; then
+    llvm_cv_target_arch="x86"
+    ARCH="x86"
+  fi
+fi
 
 dnl Check, whether __dso_handle is present
 AC_CHECK_FUNCS([__dso_handle])

@@ -146,7 +146,7 @@ CXXRecordDecl::setBases(ASTContext &C,
 }
 
 bool CXXRecordDecl::hasConstCopyConstructor(ASTContext &Context) const {
-  return getCopyConstructor(Context, QualType::Const) != 0;
+  return getCopyConstructor(Context, Qualifiers::Const) != 0;
 }
 
 CXXConstructorDecl *CXXRecordDecl::getCopyConstructor(ASTContext &Context,
@@ -167,8 +167,8 @@ CXXConstructorDecl *CXXRecordDecl::getCopyConstructor(ASTContext &Context,
 
     if (cast<CXXConstructorDecl>(*Con)->isCopyConstructor(Context,
                                                           FoundTQs)) {
-      if (((TypeQuals & QualType::Const) == (FoundTQs & QualType::Const)) ||
-          (!(TypeQuals & QualType::Const) && (FoundTQs & QualType::Const)))
+      if (((TypeQuals & Qualifiers::Const) == (FoundTQs & Qualifiers::Const)) ||
+          (!(TypeQuals & Qualifiers::Const) && (FoundTQs & Qualifiers::Const)))
         return cast<CXXConstructorDecl>(*Con);
 
     }
@@ -285,39 +285,45 @@ void CXXRecordDecl::addedAssignmentOperator(ASTContext &Context,
   PlainOldData = false;
 }
 
+void
+CXXRecordDecl::collectConversionFunctions(
+                        llvm::SmallPtrSet<QualType, 8>& ConversionsTypeSet) {
+  OverloadedFunctionDecl *TopConversions = getConversionFunctions();
+  for (OverloadedFunctionDecl::function_iterator
+       TFunc = TopConversions->function_begin(),
+       TFuncEnd = TopConversions->function_end();
+       TFunc != TFuncEnd; ++TFunc) {
+    NamedDecl *TopConv = TFunc->get();
+    QualType TConvType;
+    if (FunctionTemplateDecl *TConversionTemplate =
+        dyn_cast<FunctionTemplateDecl>(TopConv))
+      TConvType = 
+        getASTContext().getCanonicalType(
+                    TConversionTemplate->getTemplatedDecl()->getResultType());
+    else 
+      TConvType = 
+        getASTContext().getCanonicalType(
+                      cast<CXXConversionDecl>(TopConv)->getConversionType());
+    ConversionsTypeSet.insert(TConvType);
+  }  
+}
+
 /// getNestedVisibleConversionFunctions - imports unique conversion 
 /// functions from base classes into the visible conversion function
 /// list of the class 'RD'. This is a private helper method.
+/// TopConversionsTypeSet is the set of conversion functions of the class
+/// we are interested in. HiddenConversionTypes is set of conversion functions
+/// of the immediate derived class which  hides the conversion functions found 
+/// in current class.
 void
-CXXRecordDecl::getNestedVisibleConversionFunctions(CXXRecordDecl *RD) {
+CXXRecordDecl::getNestedVisibleConversionFunctions(CXXRecordDecl *RD,
+                const llvm::SmallPtrSet<QualType, 8> &TopConversionsTypeSet,                               
+                const llvm::SmallPtrSet<QualType, 8> &HiddenConversionTypes) {
+  bool inTopClass = (RD == this);
   QualType ClassType = getASTContext().getTypeDeclType(this);
   if (const RecordType *Record = ClassType->getAs<RecordType>()) {
     OverloadedFunctionDecl *Conversions
       = cast<CXXRecordDecl>(Record->getDecl())->getConversionFunctions();
-    llvm::SmallPtrSet<QualType, 8> TopConversionsTypeSet;
-    bool inTopClass = (RD == this);
-    if (!inTopClass && 
-        (Conversions->function_begin() != Conversions->function_end())) {
-      // populate the TypeSet with the type of current class's conversions.
-      OverloadedFunctionDecl *TopConversions = RD->getConversionFunctions();
-      for (OverloadedFunctionDecl::function_iterator
-           TFunc = TopConversions->function_begin(),
-           TFuncEnd = TopConversions->function_end();
-           TFunc != TFuncEnd; ++TFunc) {
-        NamedDecl *TopConv = TFunc->get();
-        QualType TConvType;
-        if (FunctionTemplateDecl *TConversionTemplate =
-            dyn_cast<FunctionTemplateDecl>(TopConv))
-          TConvType = 
-            getASTContext().getCanonicalType(
-                      TConversionTemplate->getTemplatedDecl()->getResultType());
-        else 
-          TConvType = 
-            getASTContext().getCanonicalType(
-                        cast<CXXConversionDecl>(TopConv)->getConversionType());
-        TopConversionsTypeSet.insert(TConvType);
-      }
-    }
     
     for (OverloadedFunctionDecl::function_iterator
          Func = Conversions->function_begin(),
@@ -336,7 +342,12 @@ CXXRecordDecl::getNestedVisibleConversionFunctions(CXXRecordDecl *RD) {
         ConvType = 
           getASTContext().getCanonicalType(
                           cast<CXXConversionDecl>(Conv)->getConversionType());
-      if (inTopClass || !TopConversionsTypeSet.count(ConvType)) {
+      // We only add conversion functions found in the base class if they
+      // are not hidden by those found in HiddenConversionTypes which are
+      // the conversion functions in its derived class.
+      if (inTopClass || 
+          (!TopConversionsTypeSet.count(ConvType) && 
+           !HiddenConversionTypes.count(ConvType)) ) {
         if (FunctionTemplateDecl *ConversionTemplate =
               dyn_cast<FunctionTemplateDecl>(Conv))
           RD->addVisibleConversionFunction(ConversionTemplate);
@@ -350,7 +361,17 @@ CXXRecordDecl::getNestedVisibleConversionFunctions(CXXRecordDecl *RD) {
        E = vbases_end(); VBase != E; ++VBase) {
     CXXRecordDecl *VBaseClassDecl
       = cast<CXXRecordDecl>(VBase->getType()->getAs<RecordType>()->getDecl());
-    VBaseClassDecl->getNestedVisibleConversionFunctions(RD);
+    if (inTopClass)
+      VBaseClassDecl->getNestedVisibleConversionFunctions(RD,
+                                                        TopConversionsTypeSet,
+                                                        TopConversionsTypeSet);
+    else {
+      llvm::SmallPtrSet<QualType, 8> HiddenConversionTypes;
+        collectConversionFunctions(HiddenConversionTypes);
+      VBaseClassDecl->getNestedVisibleConversionFunctions(RD,
+                                                        TopConversionsTypeSet,
+                                                        HiddenConversionTypes);
+    }
   }
   for (CXXRecordDecl::base_class_iterator Base = bases_begin(),
        E = bases_end(); Base != E; ++Base) {
@@ -358,7 +379,17 @@ CXXRecordDecl::getNestedVisibleConversionFunctions(CXXRecordDecl *RD) {
       continue;
     CXXRecordDecl *BaseClassDecl
       = cast<CXXRecordDecl>(Base->getType()->getAs<RecordType>()->getDecl());
-    BaseClassDecl->getNestedVisibleConversionFunctions(RD);
+    if (inTopClass)
+      BaseClassDecl->getNestedVisibleConversionFunctions(RD,
+                                                         TopConversionsTypeSet,
+                                                         TopConversionsTypeSet);
+    else {
+      llvm::SmallPtrSet<QualType, 8> HiddenConversionTypes;
+      collectConversionFunctions(HiddenConversionTypes);
+      BaseClassDecl->getNestedVisibleConversionFunctions(RD,
+                                                         TopConversionsTypeSet,
+                                                         HiddenConversionTypes);
+    }
   }
 }
 
@@ -372,7 +403,10 @@ CXXRecordDecl::getVisibleConversionFunctions() {
   // If visible conversion list is already evaluated, return it.
   if (ComputedVisibleConversions)
     return &VisibleConversions;
-  getNestedVisibleConversionFunctions(this);
+  llvm::SmallPtrSet<QualType, 8> TopConversionsTypeSet;
+  collectConversionFunctions(TopConversionsTypeSet);
+  getNestedVisibleConversionFunctions(this, TopConversionsTypeSet,
+                                      TopConversionsTypeSet);
   ComputedVisibleConversions = true;
   return &VisibleConversions;
 }
@@ -451,6 +485,40 @@ CXXMethodDecl::Create(ASTContext &C, CXXRecordDecl *RD,
                                isStatic, isInline);
 }
 
+bool CXXMethodDecl::isUsualDeallocationFunction() const {
+  if (getOverloadedOperator() != OO_Delete &&
+      getOverloadedOperator() != OO_Array_Delete)
+    return false;
+  
+  // C++ [basic.stc.dynamic.deallocation]p2:
+  //   If a class T has a member deallocation function named operator delete 
+  //   with exactly one parameter, then that function is a usual (non-placement)
+  //   deallocation function. [...]
+  if (getNumParams() == 1)
+    return true;
+  
+  // C++ [basic.stc.dynamic.deallocation]p2:
+  //   [...] If class T does not declare such an operator delete but does 
+  //   declare a member deallocation function named operator delete with 
+  //   exactly two parameters, the second of which has type std::size_t (18.1),
+  //   then this function is a usual deallocation function.
+  ASTContext &Context = getASTContext();
+  if (getNumParams() != 2 ||
+      !Context.hasSameType(getParamDecl(1)->getType(), Context.getSizeType()))
+    return false;
+                 
+  // This function is a usual deallocation function if there are no 
+  // single-parameter deallocation functions of the same kind.
+  for (DeclContext::lookup_const_result R = getDeclContext()->lookup(getDeclName());
+       R.first != R.second; ++R.first) {
+    if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(*R.first))
+      if (FD->getNumParams() == 1)
+        return false;
+  }
+  
+  return true;
+}
+
 typedef llvm::DenseMap<const CXXMethodDecl*,
                        std::vector<const CXXMethodDecl *> *>
                        OverriddenMethodsMapTy;
@@ -508,7 +576,8 @@ QualType CXXMethodDecl::getThisType(ASTContext &C) const {
     ClassTy = TD->getInjectedClassNameType(C);
   else
     ClassTy = C.getTagDeclType(getParent());
-  ClassTy = ClassTy.getWithAdditionalQualifiers(getTypeQualifiers());
+  ClassTy = C.getQualifiedType(ClassTy,
+                               Qualifiers::fromCVRMask(getTypeQualifiers()));
   return C.getPointerType(ClassTy);
 }
 
@@ -599,6 +668,8 @@ CXXConstructorDecl::isCopyConstructor(ASTContext &Context,
     = Context.getCanonicalType(Context.getTagDeclType(getParent()));
   if (PointeeType.getUnqualifiedType() != ClassTy)
     return false;
+
+  // FIXME: other qualifiers?
 
   // We have a copy constructor.
   TypeQuals = PointeeType.getCVRQualifiers();

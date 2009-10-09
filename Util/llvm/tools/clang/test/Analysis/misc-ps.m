@@ -643,3 +643,52 @@ int rdar_7242015() {
             // using RegionStore.
 }
 
+// <rdar://problem/7242006> [RegionStore] compound literal assignment with
+//  floats not honored
+CGFloat rdar7242006(CGFloat x) {
+  NSSize y = (NSSize){x, 10};
+  return y.width; // no-warning
+}
+
+// PR 4988 - This test exhibits a case where a function can be referenced
+//  when not explicitly used in an "lvalue" context (as far as the analyzer is
+//  concerned). This previously triggered a crash due to an invalid assertion.
+void pr_4988(void) {
+  pr_4988; // expected-warning{{expression result unused}}
+}
+
+// <rdar://problem/7152418> - A 'signed char' is used as a flag, which is
+//  implicitly converted to an int.
+void *rdar7152418_bar();
+@interface RDar7152418 {
+  signed char x;
+}
+-(char)foo;
+@end;
+@implementation RDar7152418
+-(char)foo {
+  char *p = 0;
+  void *result = 0;
+  if (x) {
+    result = rdar7152418_bar();
+    p = "hello";
+  }
+  if (!result) {
+    result = rdar7152418_bar();
+    if (result && x)
+      return *p; // no-warning
+  }
+  return 1;
+}
+
+// Test constant-folding of symbolic values, automatically handling type
+// conversions of the symbol as necessary.  Previously this would crash
+// once we started eagerly evaluating symbols whose values were constrained
+// to a single value.
+void test_constant_symbol(signed char x) {
+  while (1) {
+    if (x == ((signed char) 0)) {}
+  }
+}
+
+

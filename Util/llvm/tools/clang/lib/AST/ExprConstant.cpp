@@ -180,6 +180,16 @@ public:
     { return Visit(E->getSubExpr()); }
   APValue VisitChooseExpr(const ChooseExpr *E)
     { return Visit(E->getChosenSubExpr(Info.Ctx)); }
+
+  APValue VisitCastExpr(CastExpr *E) {
+    switch (E->getCastKind()) {
+    default:
+      return APValue();
+
+    case CastExpr::CK_NoOp:
+      return Visit(E->getSubExpr());
+    }
+  }
   // FIXME: Missing: __real__, __imag__
 };
 } // end anonymous namespace
@@ -783,7 +793,7 @@ bool IntExprEvaluator::VisitDeclRefExpr(const DeclRefExpr *E) {
 
   // In C++, const, non-volatile integers initialized with ICEs are ICEs.
   // In C, they can also be folded, although they are not ICEs.
-  if (E->getType().getCVRQualifiers() == QualType::Const) {
+  if (E->getType().getCVRQualifiers() == Qualifiers::Const) {
     if (const VarDecl *D = dyn_cast<VarDecl>(E->getDecl())) {
       if (APValue *V = D->getEvaluatedValue())
         return Success(V->getInt(), E);
@@ -870,6 +880,12 @@ bool IntExprEvaluator::VisitCallExpr(const CallExpr *E) {
     // __builtin_constant_p always has one operand: it returns true if that
     // operand can be folded, false otherwise.
     return Success(E->getArg(0)->isEvaluatable(Info.Ctx), E);
+      
+  case Builtin::BI__builtin_eh_return_data_regno: {
+    int Operand = E->getArg(0)->EvaluateAsInt(Info.Ctx).getZExtValue();
+    Operand = Info.Ctx.Target.getEHDataRegisterNumber(Operand);
+    return Success(Operand, E);
+  }
   }
 }
 

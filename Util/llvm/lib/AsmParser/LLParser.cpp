@@ -125,7 +125,7 @@ bool LLParser::ParseTopLevelEntities() {
     case lltok::GlobalID:   if (ParseUnnamedGlobal()) return true; break;
     case lltok::GlobalVar:  if (ParseNamedGlobal()) return true; break;
     case lltok::Metadata:   if (ParseStandaloneMetadata()) return true; break;
-    case lltok::NamedMD:    if (ParseNamedMetadata()) return true; break;
+    case lltok::NamedOrCustomMD: if (ParseNamedMetadata()) return true; break;
 
     // The Global variable production with no name can have many different
     // optional leading prefixes, the production is:
@@ -461,7 +461,7 @@ bool LLParser::ParseMDNode(MetadataBase *&Node) {
 ///ParseNamedMetadata:
 ///   !foo = !{ !1, !2 }
 bool LLParser::ParseNamedMetadata() {
-  assert(Lex.getKind() == lltok::NamedMD);
+  assert(Lex.getKind() == lltok::NamedOrCustomMD);
   Lex.Lex();
   std::string Name = Lex.getStrVal();
 
@@ -647,7 +647,7 @@ bool LLParser::ParseGlobal(const std::string &Name, LocTy NameLoc,
       return true;
   }
 
-  if (isa<FunctionType>(Ty) || Ty == Type::getLabelTy(Context))
+  if (isa<FunctionType>(Ty) || Ty->isLabelTy())
     return Error(TyLoc, "invalid type for global variable");
 
   GlobalVariable *GV = 0;
@@ -1025,24 +1025,30 @@ bool LLParser::ParseOptionalCallingConv(CallingConv::ID &CC) {
   return false;
 }
 
-/// ParseOptionalDbgInfo
+/// ParseOptionalCustomMetadata
 ///   ::= /* empty */
-///   ::= 'dbg' !42
-bool LLParser::ParseOptionalDbgInfo() {
+///   ::= !dbg !42
+bool LLParser::ParseOptionalCustomMetadata() {
 
-  if (!EatIfPresent(lltok::kw_dbg))
+  std::string Name;
+  if (Lex.getKind() == lltok::NamedOrCustomMD) {
+    Name = Lex.getStrVal();
+    Lex.Lex();
+  } else
     return false;
+
   if (Lex.getKind() != lltok::Metadata)
     return TokError("Expected '!' here");
   Lex.Lex();
+
   MetadataBase *Node;
   if (ParseMDNode(Node)) return true;
 
-  Metadata &TheMetadata = M->getContext().getMetadata();
-  unsigned MDDbgKind = TheMetadata.getMDKind("dbg");
-  if (!MDDbgKind)
-    MDDbgKind = TheMetadata.RegisterMDKind("dbg");
-  MDsOnInst.push_back(std::make_pair(MDDbgKind, cast<MDNode>(Node)));
+  MetadataContext &TheMetadata = M->getContext().getMetadata();
+  unsigned MDK = TheMetadata.getMDKind(Name.c_str());
+  if (!MDK)
+    MDK = TheMetadata.RegisterMDKind(Name.c_str());
+  MDsOnInst.push_back(std::make_pair(MDK, cast<MDNode>(Node)));
 
   return false;
 }
@@ -1067,8 +1073,8 @@ bool LLParser::ParseOptionalInfo(unsigned &Alignment) {
 
   // FIXME: Handle customized metadata info attached with an instruction.
   do {
-    if (Lex.getKind() == lltok::kw_dbg) {
-      if (ParseOptionalDbgInfo()) return true;
+      if (Lex.getKind() == lltok::NamedOrCustomMD) {
+      if (ParseOptionalCustomMetadata()) return true;
     } else if (Lex.getKind() == lltok::kw_align) {
       if (ParseOptionalAlignment(Alignment)) return true;
     } else
@@ -1107,7 +1113,7 @@ bool LLParser::ParseType(PATypeHolder &Result, bool AllowVoid) {
   if (!UpRefs.empty())
     return Error(UpRefs.back().Loc, "invalid unresolved type up reference");
 
-  if (!AllowVoid && Result.get() == Type::getVoidTy(Context))
+  if (!AllowVoid && Result.get()->isVoidTy())
     return Error(TypeLoc, "void type only allowed for function results");
 
   return false;
@@ -1269,9 +1275,9 @@ bool LLParser::ParseTypeRec(PATypeHolder &Result) {
 
     // TypeRec ::= TypeRec '*'
     case lltok::star:
-      if (Result.get() == Type::getLabelTy(Context))
+      if (Result.get()->isLabelTy())
         return TokError("basic block pointers are invalid");
-      if (Result.get() == Type::getVoidTy(Context))
+      if (Result.get()->isVoidTy())
         return TokError("pointers to void are invalid; use i8* instead");
       if (!PointerType::isValidElementType(Result.get()))
         return TokError("pointer to this type is invalid");
@@ -1281,9 +1287,9 @@ bool LLParser::ParseTypeRec(PATypeHolder &Result) {
 
     // TypeRec ::= TypeRec 'addrspace' '(' uint32 ')' '*'
     case lltok::kw_addrspace: {
-      if (Result.get() == Type::getLabelTy(Context))
+      if (Result.get()->isLabelTy())
         return TokError("basic block pointers are invalid");
-      if (Result.get() == Type::getVoidTy(Context))
+      if (Result.get()->isVoidTy())
         return TokError("pointers to void are invalid; use i8* instead");
       if (!PointerType::isValidElementType(Result.get()))
         return TokError("pointer to this type is invalid");
@@ -1374,7 +1380,7 @@ bool LLParser::ParseArgumentList(std::vector<ArgInfo> &ArgList,
     if ((inType ? ParseTypeRec(ArgTy) : ParseType(ArgTy)) ||
         ParseOptionalAttrs(Attrs, 0)) return true;
 
-    if (ArgTy == Type::getVoidTy(Context))
+    if (ArgTy->isVoidTy())
       return Error(TypeLoc, "argument can not have void type");
 
     if (Lex.getKind() == lltok::LocalVar ||
@@ -1400,7 +1406,7 @@ bool LLParser::ParseArgumentList(std::vector<ArgInfo> &ArgList,
       if ((inType ? ParseTypeRec(ArgTy) : ParseType(ArgTy)) ||
           ParseOptionalAttrs(Attrs, 0)) return true;
 
-      if (ArgTy == Type::getVoidTy(Context))
+      if (ArgTy->isVoidTy())
         return Error(TypeLoc, "argument can not have void type");
 
       if (Lex.getKind() == lltok::LocalVar ||
@@ -1478,7 +1484,7 @@ bool LLParser::ParseStructType(PATypeHolder &Result, bool Packed) {
   if (ParseTypeRec(Result)) return true;
   ParamsList.push_back(Result);
 
-  if (Result == Type::getVoidTy(Context))
+  if (Result->isVoidTy())
     return Error(EltTyLoc, "struct element can not have void type");
   if (!StructType::isValidElementType(Result))
     return Error(EltTyLoc, "invalid element type for struct");
@@ -1487,7 +1493,7 @@ bool LLParser::ParseStructType(PATypeHolder &Result, bool Packed) {
     EltTyLoc = Lex.getLoc();
     if (ParseTypeRec(Result)) return true;
 
-    if (Result == Type::getVoidTy(Context))
+    if (Result->isVoidTy())
       return Error(EltTyLoc, "struct element can not have void type");
     if (!StructType::isValidElementType(Result))
       return Error(EltTyLoc, "invalid element type for struct");
@@ -1526,7 +1532,7 @@ bool LLParser::ParseArrayVectorType(PATypeHolder &Result, bool isVector) {
   PATypeHolder EltTy(Type::getVoidTy(Context));
   if (ParseTypeRec(EltTy)) return true;
 
-  if (EltTy == Type::getVoidTy(Context))
+  if (EltTy->isVoidTy())
     return Error(TypeLoc, "array and vector element type cannot be void");
 
   if (ParseToken(isVector ? lltok::greater : lltok::rsquare,
@@ -1617,7 +1623,7 @@ Value *LLParser::PerFunctionState::GetVal(const std::string &Name,
   // If we have the value in the symbol table or fwd-ref table, return it.
   if (Val) {
     if (Val->getType() == Ty) return Val;
-    if (Ty == Type::getLabelTy(F.getContext()))
+    if (Ty->isLabelTy())
       P.Error(Loc, "'%" + Name + "' is not a basic block");
     else
       P.Error(Loc, "'%" + Name + "' defined with type '" +
@@ -1634,7 +1640,7 @@ Value *LLParser::PerFunctionState::GetVal(const std::string &Name,
 
   // Otherwise, create a new forward reference for this value and remember it.
   Value *FwdVal;
-  if (Ty == Type::getLabelTy(F.getContext()))
+  if (Ty->isLabelTy())
     FwdVal = BasicBlock::Create(F.getContext(), Name, &F);
   else
     FwdVal = new Argument(Ty, Name);
@@ -1660,7 +1666,7 @@ Value *LLParser::PerFunctionState::GetVal(unsigned ID, const Type *Ty,
   // If we have the value in the symbol table or fwd-ref table, return it.
   if (Val) {
     if (Val->getType() == Ty) return Val;
-    if (Ty == Type::getLabelTy(F.getContext()))
+    if (Ty->isLabelTy())
       P.Error(Loc, "'%" + utostr(ID) + "' is not a basic block");
     else
       P.Error(Loc, "'%" + utostr(ID) + "' defined with type '" +
@@ -1676,7 +1682,7 @@ Value *LLParser::PerFunctionState::GetVal(unsigned ID, const Type *Ty,
 
   // Otherwise, create a new forward reference for this value and remember it.
   Value *FwdVal;
-  if (Ty == Type::getLabelTy(F.getContext()))
+  if (Ty->isLabelTy())
     FwdVal = BasicBlock::Create(F.getContext(), "", &F);
   else
     FwdVal = new Argument(Ty);
@@ -1691,7 +1697,7 @@ bool LLParser::PerFunctionState::SetInstName(int NameID,
                                              const std::string &NameStr,
                                              LocTy NameLoc, Instruction *Inst) {
   // If this instruction has void type, it cannot have a name or ID specified.
-  if (Inst->getType() == Type::getVoidTy(F.getContext())) {
+  if (Inst->getType()->isVoidTy()) {
     if (NameID != -1 || !NameStr.empty())
       return P.Error(NameLoc, "instructions returning void cannot have a name");
     return false;
@@ -2273,7 +2279,7 @@ bool LLParser::ConvertGlobalValIDToValue(const Type *Ty, ValID &ID,
     // The lexer has no type info, so builds all float and double FP constants
     // as double.  Fix this here.  Long double does not need this.
     if (&ID.APFloatVal.getSemantics() == &APFloat::IEEEdouble &&
-        Ty == Type::getFloatTy(Context)) {
+        Ty->isFloatTy()) {
       bool Ignored;
       ID.APFloatVal.convert(APFloat::IEEEsingle, APFloat::rmNearestTiesToEven,
                             &Ignored);
@@ -2292,7 +2298,7 @@ bool LLParser::ConvertGlobalValIDToValue(const Type *Ty, ValID &ID,
     return false;
   case ValID::t_Undef:
     // FIXME: LabelTy should not be a first-class type.
-    if ((!Ty->isFirstClassType() || Ty == Type::getLabelTy(Context)) &&
+    if ((!Ty->isFirstClassType() || Ty->isLabelTy()) &&
         !isa<OpaqueType>(Ty))
       return Error(ID.Loc, "invalid type for undef constant");
     V = UndefValue::get(Ty);
@@ -2304,7 +2310,7 @@ bool LLParser::ConvertGlobalValIDToValue(const Type *Ty, ValID &ID,
     return false;
   case ValID::t_Zero:
     // FIXME: LabelTy should not be a first-class type.
-    if (!Ty->isFirstClassType() || Ty == Type::getLabelTy(Context))
+    if (!Ty->isFirstClassType() || Ty->isLabelTy())
       return Error(ID.Loc, "invalid type for null constant");
     V = Constant::getNullValue(Ty);
     return false;
@@ -2653,13 +2659,13 @@ bool LLParser::ParseBasicBlock(PerFunctionState &PFS) {
 
     if (ParseInstruction(Inst, BB, PFS)) return true;
     if (EatIfPresent(lltok::comma))
-      ParseOptionalDbgInfo();
+      ParseOptionalCustomMetadata();
 
     // Set metadata attached with this instruction.
-    Metadata &TheMetadata = M->getContext().getMetadata();
-    for (SmallVector<std::pair<MDKindID, MDNode *>, 2>::iterator
+    MetadataContext &TheMetadata = M->getContext().getMetadata();
+    for (SmallVector<std::pair<unsigned, MDNode *>, 2>::iterator
            MDI = MDsOnInst.begin(), MDE = MDsOnInst.end(); MDI != MDE; ++MDI)
-      TheMetadata.setMD(MDI->first, MDI->second, Inst);
+      TheMetadata.addMD(MDI->first, MDI->second, Inst);
     MDsOnInst.clear();
 
     BB->getInstList().push_back(Inst);
@@ -2841,18 +2847,18 @@ bool LLParser::ParseCmpPredicate(unsigned &P, unsigned Opc) {
 //===----------------------------------------------------------------------===//
 
 /// ParseRet - Parse a return instruction.
-///   ::= 'ret' void (',' 'dbg' !1)
-///   ::= 'ret' TypeAndValue (',' 'dbg' !1)
-///   ::= 'ret' TypeAndValue (',' TypeAndValue)+  (',' 'dbg' !1)
+///   ::= 'ret' void (',' !dbg, !1)
+///   ::= 'ret' TypeAndValue (',' !dbg, !1)
+///   ::= 'ret' TypeAndValue (',' TypeAndValue)+  (',' !dbg, !1)
 ///         [[obsolete: LLVM 3.0]]
 bool LLParser::ParseRet(Instruction *&Inst, BasicBlock *BB,
                         PerFunctionState &PFS) {
   PATypeHolder Ty(Type::getVoidTy(Context));
   if (ParseType(Ty, true /*void allowed*/)) return true;
 
-  if (Ty == Type::getVoidTy(Context)) {
+  if (Ty->isVoidTy()) {
     if (EatIfPresent(lltok::comma))
-      if (ParseOptionalDbgInfo()) return true;
+      if (ParseOptionalCustomMetadata()) return true;
     Inst = ReturnInst::Create(Context);
     return false;
   }
@@ -2861,9 +2867,9 @@ bool LLParser::ParseRet(Instruction *&Inst, BasicBlock *BB,
   if (ParseValue(Ty, RV, PFS)) return true;
 
   if (EatIfPresent(lltok::comma)) {
-    // Parse optional 'dbg'
-    if (Lex.getKind() == lltok::kw_dbg) {
-      if (ParseOptionalDbgInfo()) return true;
+    // Parse optional custom metadata, e.g. !dbg
+    if (Lex.getKind() == lltok::NamedOrCustomMD) {
+      if (ParseOptionalCustomMetadata()) return true;
     } else {
       // The normal case is one return value.
       // FIXME: LLVM 3.0 remove MRV support for 'ret i32 1, i32 2', requiring use
@@ -2872,8 +2878,9 @@ bool LLParser::ParseRet(Instruction *&Inst, BasicBlock *BB,
       RVs.push_back(RV);
 
       do {
-        // If optional 'dbg' is seen then this is the end of MRV.
-        if (Lex.getKind() == lltok::kw_dbg)
+        // If optional custom metadata, e.g. !dbg is seen then this is the 
+        // end of MRV.
+        if (Lex.getKind() == lltok::NamedOrCustomMD)
           break;
         if (ParseTypeAndValue(RV, PFS)) return true;
         RVs.push_back(RV);
@@ -2888,7 +2895,7 @@ bool LLParser::ParseRet(Instruction *&Inst, BasicBlock *BB,
     }
   }
   if (EatIfPresent(lltok::comma))
-    if (ParseOptionalDbgInfo()) return true;
+    if (ParseOptionalCustomMetadata()) return true;
 
   Inst = ReturnInst::Create(Context, RV);
   return false;
@@ -3439,7 +3446,8 @@ bool LLParser::ParseAlloc(Instruction *&Inst, PerFunctionState &PFS,
   if (ParseType(Ty)) return true;
 
   if (EatIfPresent(lltok::comma)) {
-    if (Lex.getKind() == lltok::kw_align || Lex.getKind() == lltok::kw_dbg) {
+    if (Lex.getKind() == lltok::kw_align 
+        || Lex.getKind() == lltok::NamedOrCustomMD) {
       if (ParseOptionalInfo(Alignment)) return true;
     } else {
       if (ParseTypeAndValue(Size, SizeLoc, PFS)) return true;

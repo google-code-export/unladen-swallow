@@ -375,6 +375,8 @@ static void ParseCStringVector(std::vector<char *> &OutputVector,
     memcpy(NewStr, WorkStr.data(), Pos);
     NewStr[Pos] = 0;
     OutputVector.push_back(NewStr);
+    
+    WorkStr = WorkStr.substr(Pos);
   }
 }
 
@@ -641,6 +643,7 @@ void cl::ParseCommandLineOptions(int argc, char **argv,
         // Check for another comma.
         Pos = Val.find(',');
       }
+      Value = Val;
     }
 
     // If this is a named positional argument, just remember that it is the

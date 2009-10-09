@@ -90,9 +90,10 @@ namespace {
     /// Add - Add the specified instruction to the worklist if it isn't already
     /// in it.
     void Add(Instruction *I) {
-      DEBUG(errs() << "IC: ADD: " << *I << '\n');
-      if (WorklistMap.insert(std::make_pair(I, Worklist.size())).second)
+      if (WorklistMap.insert(std::make_pair(I, Worklist.size())).second) {
+        DEBUG(errs() << "IC: ADD: " << *I << '\n');
         Worklist.push_back(I);
+      }
     }
     
     void AddValue(Value *V) {
@@ -384,10 +385,15 @@ namespace {
     Value *SimplifyDemandedVectorElts(Value *V, APInt DemandedElts,
                                       APInt& UndefElts, unsigned Depth = 0);
       
-    // FoldOpIntoPhi - Given a binary operator or cast instruction which has a
-    // PHI node as operand #0, see if we can fold the instruction into the PHI
-    // (which is only possible if all operands to the PHI are constants).
-    Instruction *FoldOpIntoPhi(Instruction &I);
+    // FoldOpIntoPhi - Given a binary operator, cast instruction, or select
+    // which has a PHI node as operand #0, see if we can fold the instruction
+    // into the PHI (which is only possible if all operands to the PHI are
+    // constants).
+    //
+    // If AllowAggressive is true, FoldOpIntoPhi will allow certain transforms
+    // that would normally be unprofitable because they strongly encourage jump
+    // threading.
+    Instruction *FoldOpIntoPhi(Instruction &I, bool AllowAggressive = false);
 
     // FoldPHIArgOpIntoPHI - If all operands to a PHI node are the same "unary"
     // operator and they all are only used by the PHI, PHI together their
@@ -769,7 +775,7 @@ bool InstCombiner::SimplifyDemandedBits(Use &U, APInt DemandedMask,
   Value *NewVal = SimplifyDemandedUseBits(U.get(), DemandedMask,
                                           KnownZero, KnownOne, Depth);
   if (NewVal == 0) return false;
-  U.set(NewVal);
+  U = NewVal;
   return true;
 }
 
@@ -1938,20 +1944,34 @@ static Instruction *FoldOpIntoSelect(Instruction &Op, SelectInst *SI,
 }
 
 
-/// FoldOpIntoPhi - Given a binary operator or cast instruction which has a PHI
-/// node as operand #0, see if we can fold the instruction into the PHI (which
-/// is only possible if all operands to the PHI are constants).
-Instruction *InstCombiner::FoldOpIntoPhi(Instruction &I) {
+/// FoldOpIntoPhi - Given a binary operator, cast instruction, or select which
+/// has a PHI node as operand #0, see if we can fold the instruction into the
+/// PHI (which is only possible if all operands to the PHI are constants).
+///
+/// If AllowAggressive is true, FoldOpIntoPhi will allow certain transforms
+/// that would normally be unprofitable because they strongly encourage jump
+/// threading.
+Instruction *InstCombiner::FoldOpIntoPhi(Instruction &I,
+                                         bool AllowAggressive) {
+  AllowAggressive = false;
   PHINode *PN = cast<PHINode>(I.getOperand(0));
   unsigned NumPHIValues = PN->getNumIncomingValues();
-  if (!PN->hasOneUse() || NumPHIValues == 0) return 0;
-
-  // Check to see if all of the operands of the PHI are constants.  If there is
-  // one non-constant value, remember the BB it is.  If there is more than one
-  // or if *it* is a PHI, bail out.
+  if (NumPHIValues == 0 ||
+      // We normally only transform phis with a single use, unless we're trying
+      // hard to make jump threading happen.
+      (!PN->hasOneUse() && !AllowAggressive))
+    return 0;
+  
+  
+  // Check to see if all of the operands of the PHI are simple constants
+  // (constantint/constantfp/undef).  If there is one non-constant value,
+  // remember the BB it is in.  If there is more than one or if *it* is a PHI,
+  // bail out.  We don't do arbitrary constant expressions here because moving
+  // their computation can be expensive without a cost model.
   BasicBlock *NonConstBB = 0;
   for (unsigned i = 0; i != NumPHIValues; ++i)
-    if (!isa<Constant>(PN->getIncomingValue(i))) {
+    if (!isa<Constant>(PN->getIncomingValue(i)) ||
+        isa<ConstantExpr>(PN->getIncomingValue(i))) {
       if (NonConstBB) return 0;  // More than one non-const value.
       if (isa<PHINode>(PN->getIncomingValue(i))) return 0;  // Itself a phi.
       NonConstBB = PN->getIncomingBlock(i);
@@ -1966,7 +1986,7 @@ Instruction *InstCombiner::FoldOpIntoPhi(Instruction &I) {
   // operation in that block.  However, if this is a critical edge, we would be
   // inserting the computation one some other paths (e.g. inside a loop).  Only
   // do this if the pred block is unconditionally branching into the phi block.
-  if (NonConstBB) {
+  if (NonConstBB != 0 && !AllowAggressive) {
     BranchInst *BI = dyn_cast<BranchInst>(NonConstBB->getTerminator());
     if (!BI || !BI->isUnconditional()) return 0;
   }
@@ -1978,7 +1998,29 @@ Instruction *InstCombiner::FoldOpIntoPhi(Instruction &I) {
   NewPN->takeName(PN);
 
   // Next, add all of the operands to the PHI.
-  if (I.getNumOperands() == 2) {
+  if (SelectInst *SI = dyn_cast<SelectInst>(&I)) {
+    // We only currently try to fold the condition of a select when it is a phi,
+    // not the true/false values.
+    Value *TrueV = SI->getTrueValue();
+    Value *FalseV = SI->getFalseValue();
+    BasicBlock *PhiTransBB = PN->getParent();
+    for (unsigned i = 0; i != NumPHIValues; ++i) {
+      BasicBlock *ThisBB = PN->getIncomingBlock(i);
+      Value *TrueVInPred = TrueV->DoPHITranslation(PhiTransBB, ThisBB);
+      Value *FalseVInPred = FalseV->DoPHITranslation(PhiTransBB, ThisBB);
+      Value *InV = 0;
+      if (Constant *InC = dyn_cast<Constant>(PN->getIncomingValue(i))) {
+        InV = InC->isNullValue() ? FalseVInPred : TrueVInPred;
+      } else {
+        assert(PN->getIncomingBlock(i) == NonConstBB);
+        InV = SelectInst::Create(PN->getIncomingValue(i), TrueVInPred,
+                                 FalseVInPred,
+                                 "phitmp", NonConstBB->getTerminator());
+        Worklist.Add(cast<Instruction>(InV));
+      }
+      NewPN->addIncoming(InV, ThisBB);
+    }
+  } else if (I.getNumOperands() == 2) {
     Constant *C = cast<Constant>(I.getOperand(1));
     for (unsigned i = 0; i != NumPHIValues; ++i) {
       Value *InV = 0;
@@ -5840,7 +5882,7 @@ Instruction *InstCombiner::visitFCmpInst(FCmpInst &I) {
         // block.  If in the same block, we're encouraging jump threading.  If
         // not, we are just pessimizing the code by making an i1 phi.
         if (LHSI->getParent() == I.getParent())
-          if (Instruction *NV = FoldOpIntoPhi(I))
+          if (Instruction *NV = FoldOpIntoPhi(I, true))
             return NV;
         break;
       case Instruction::SIToFP:
@@ -5893,9 +5935,9 @@ Instruction *InstCombiner::visitICmpInst(ICmpInst &I) {
   
   // icmp <global/alloca*/null>, <global/alloca*/null> - Global/Stack value
   // addresses never equal each other!  We already know that Op0 != Op1.
-  if ((isa<GlobalValue>(Op0) || isa<AllocaInst>(Op0) || isMalloc(Op0) ||
+  if ((isa<GlobalValue>(Op0) || isa<AllocaInst>(Op0) || 
        isa<ConstantPointerNull>(Op0)) &&
-      (isa<GlobalValue>(Op1) || isa<AllocaInst>(Op1) || isMalloc(Op1) ||
+      (isa<GlobalValue>(Op1) || isa<AllocaInst>(Op1) || 
        isa<ConstantPointerNull>(Op1)))
     return ReplaceInstUsesWith(I, ConstantInt::get(Type::getInt1Ty(*Context), 
                                                    !I.isTrueWhenEqual()));
@@ -6196,11 +6238,11 @@ Instruction *InstCombiner::visitICmpInst(ICmpInst &I) {
         break;
 
       case Instruction::PHI:
-        // Only fold icmp into the PHI if the phi and fcmp are in the same
+        // Only fold icmp into the PHI if the phi and icmp are in the same
         // block.  If in the same block, we're encouraging jump threading.  If
         // not, we are just pessimizing the code by making an i1 phi.
         if (LHSI->getParent() == I.getParent())
-          if (Instruction *NV = FoldOpIntoPhi(I))
+          if (Instruction *NV = FoldOpIntoPhi(I, true))
             return NV;
         break;
       case Instruction::Select: {
@@ -6244,19 +6286,6 @@ Instruction *InstCombiner::visitICmpInst(ICmpInst &I) {
         if (isMalloc(LHSI) && LHSI->hasOneUse() &&
             isa<ConstantPointerNull>(RHSC)) {
           Worklist.Add(LHSI);
-          return ReplaceInstUsesWith(I,
-                                     ConstantInt::get(Type::getInt1Ty(*Context),
-                                                      !I.isTrueWhenEqual()));
-        }
-        break;
-      case Instruction::BitCast:
-        // If we have (malloc != null), and if the malloc has a single use, we
-        // can assume it is successful and remove the malloc.
-        CallInst* CI = extractMallocCallFromBitCast(LHSI);
-        if (CI && CI->hasOneUse() && LHSI->hasOneUse()
-            && isa<ConstantPointerNull>(RHSC)) {
-          Worklist.Add(LHSI);
-          Worklist.Add(CI);
           return ReplaceInstUsesWith(I,
                                      ConstantInt::get(Type::getInt1Ty(*Context),
                                                       !I.isTrueWhenEqual()));
@@ -9211,6 +9240,14 @@ Instruction *InstCombiner::visitSelectInstWithICmp(SelectInst &SI,
   return Changed ? &SI : 0;
 }
 
+/// isDefinedInBB - Return true if the value is an instruction defined in the
+/// specified basicblock.
+static bool isDefinedInBB(const Value *V, const BasicBlock *BB) {
+  const Instruction *I = dyn_cast<Instruction>(V);
+  return I != 0 && I->getParent() == BB;
+}
+
+
 Instruction *InstCombiner::visitSelectInst(SelectInst &SI) {
   Value *CondVal = SI.getCondition();
   Value *TrueVal = SI.getTrueValue();
@@ -9422,6 +9459,17 @@ Instruction *InstCombiner::visitSelectInst(SelectInst &SI) {
       return FoldI;
   }
 
+  // See if we can fold the select into a phi node.  The true/false values have
+  // to be live in the predecessor blocks.  If they are instructions in SI's
+  // block, we can't map to the predecessor.
+  if (isa<PHINode>(SI.getCondition()) &&
+      (!isDefinedInBB(SI.getTrueValue(), SI.getParent()) ||
+       isa<PHINode>(SI.getTrueValue())) &&
+      (!isDefinedInBB(SI.getFalseValue(), SI.getParent()) ||
+       isa<PHINode>(SI.getFalseValue())))
+    if (Instruction *NV = FoldOpIntoPhi(SI))
+      return NV;
+
   if (BinaryOperator::isNot(CondVal)) {
     SI.setOperand(0, BinaryOperator::getNotArgument(CondVal));
     SI.setOperand(1, FalseVal);
@@ -9477,18 +9525,14 @@ static unsigned EnforceKnownAlignment(Value *V,
         Align = PrefAlign;
       }
     }
-  } else if (AllocationInst *AI = dyn_cast<AllocationInst>(V)) {
-    // If there is a requested alignment and if this is an alloca, round up.  We
-    // don't do this for malloc, because some systems can't respect the request.
-    if (isa<AllocaInst>(AI)) {
-      if (AI->getAlignment() >= PrefAlign)
-        Align = AI->getAlignment();
-      else {
-        AI->setAlignment(PrefAlign);
-        Align = PrefAlign;
-      }
+  } else if (AllocaInst *AI = dyn_cast<AllocaInst>(V)) {
+    // If there is a requested alignment and if this is an alloca, round up.
+    if (AI->getAlignment() >= PrefAlign)
+      Align = AI->getAlignment();
+    else {
+      AI->setAlignment(PrefAlign);
+      Align = PrefAlign;
     }
-    // No alignment changes are possible for malloc calls
   }
 
   return Align;
@@ -9904,7 +9948,7 @@ Instruction *InstCombiner::visitCallSite(CallSite CS) {
       // If the call and callee calling conventions don't match, this call must
       // be unreachable, as the call is undefined.
       new StoreInst(ConstantInt::getTrue(*Context),
-                UndefValue::get(PointerType::getUnqual(Type::getInt1Ty(*Context))), 
+                UndefValue::get(Type::getInt1PtrTy(*Context)), 
                                   OldCall);
       if (!OldCall->use_empty())
         OldCall->replaceAllUsesWith(UndefValue::get(OldCall->getType()));
@@ -9918,7 +9962,7 @@ Instruction *InstCombiner::visitCallSite(CallSite CS) {
     // undef so that we know that this code is not reachable, despite the fact
     // that we can't modify the CFG here.
     new StoreInst(ConstantInt::getTrue(*Context),
-               UndefValue::get(PointerType::getUnqual(Type::getInt1Ty(*Context))),
+               UndefValue::get(Type::getInt1PtrTy(*Context)),
                   CS.getInstruction());
 
     if (!CS.getInstruction()->use_empty())
@@ -11192,7 +11236,7 @@ Instruction *InstCombiner::visitFreeInst(FreeInst &FI) {
   if (isa<UndefValue>(Op)) {
     // Insert a new store to null because we cannot modify the CFG here.
     new StoreInst(ConstantInt::getTrue(*Context),
-           UndefValue::get(PointerType::getUnqual(Type::getInt1Ty(*Context))), &FI);
+           UndefValue::get(Type::getInt1PtrTy(*Context)), &FI);
     return EraseInstFromFunction(FI);
   }
   
@@ -11396,8 +11440,7 @@ Instruction *InstCombiner::visitLoadInst(LoadInst &LI) {
         if (GlobalVariable *GV = dyn_cast<GlobalVariable>(CE->getOperand(0)))
           if (GV->isConstant() && GV->hasDefinitiveInitializer())
             if (Constant *V = 
-               ConstantFoldLoadThroughGEPConstantExpr(GV->getInitializer(), CE, 
-                                                      *Context))
+               ConstantFoldLoadThroughGEPConstantExpr(GV->getInitializer(), CE))
               return ReplaceInstUsesWith(LI, V);
         if (CE->getOperand(0)->isNullValue()) {
           // Insert a new store to null instruction before the load to indicate
@@ -12776,7 +12819,7 @@ bool InstCombiner::DoOneIteration(Function &F, unsigned Iteration) {
           if (Constant *NewC = ConstantFoldConstantExpression(CE,   
                                   F.getContext(), TD))
             if (NewC != CE) {
-              i->set(NewC);
+              *i = NewC;
               MadeIRChange = true;
             }
     }
@@ -12811,7 +12854,8 @@ bool InstCombiner::DoOneIteration(Function &F, unsigned Iteration) {
     std::string OrigI;
 #endif
     DEBUG(raw_string_ostream SS(OrigI); I->print(SS); OrigI = SS.str(););
-    
+    DEBUG(errs() << "IC: Visiting: " << OrigI << '\n');
+
     if (Instruction *Result = visit(*I)) {
       ++NumCombined;
       // Should we replace the old instruction with a new one?

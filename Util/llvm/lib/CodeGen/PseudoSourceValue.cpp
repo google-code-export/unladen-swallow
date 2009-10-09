@@ -44,15 +44,11 @@ static const char *const PSVNames[] = {
 // static.  For now, we can safely use the global context for the time being to
 // squeak by.
 PseudoSourceValue::PseudoSourceValue() :
-  Value(PointerType::getUnqual(Type::getInt8Ty(getGlobalContext())),
+  Value(Type::getInt8PtrTy(getGlobalContext()),
         PseudoSourceValueVal) {}
 
-void PseudoSourceValue::dump() const {
-  print(errs()); errs() << '\n';
-}
-
-void PseudoSourceValue::print(raw_ostream &OS) const {
-  OS << PSVNames[this - *PSVs];
+void PseudoSourceValue::printCustom(raw_ostream &O) const {
+  O << PSVNames[this - *PSVs];
 }
 
 namespace {
@@ -67,7 +63,7 @@ namespace {
 
     virtual bool isConstant(const MachineFrameInfo *MFI) const;
 
-    virtual void print(raw_ostream &OS) const {
+    virtual void printCustom(raw_ostream &OS) const {
       OS << "FixedStack" << FI;
     }
   };

@@ -90,8 +90,7 @@ namespace clang {
   class ObjCPropertyDecl;
   class ObjCContainerDecl;
   class FunctionProtoType;
-  class BasePaths;
-  struct MemberLookupCriteria;
+  class CXXBasePaths;
   class CXXTemporary;
 
 /// BlockSemaInfo - When a block is being parsed, this contains information
@@ -403,6 +402,7 @@ public:
       // deduction, and that error is one of the SFINAE errors,
       // suppress the diagnostic.
       ++NumSFINAEErrors;
+      Diags.setLastDiagnosticIgnored();
       return SemaDiagnosticBuilder(*this);
     }
 
@@ -448,7 +448,7 @@ public:
   //
   QualType adjustParameterType(QualType T);
   QualType ConvertDeclSpecToType(const DeclSpec &DS, SourceLocation DeclLoc,
-                                 bool &IsInvalid);
+                                 bool &IsInvalid, QualType &SourceTy);
   void ProcessTypeAttributeList(QualType &Result, const AttributeList *AL);
   QualType BuildPointerType(QualType T, unsigned Quals,
                             SourceLocation Loc, DeclarationName Entity);
@@ -527,7 +527,7 @@ public:
   void DiagnoseFunctionSpecifiers(Declarator& D);
   NamedDecl* ActOnTypedefDeclarator(Scope* S, Declarator& D, DeclContext* DC,
                                     QualType R, DeclaratorInfo *DInfo,
-                                    Decl* PrevDecl, bool &Redeclaration);
+                                    NamedDecl* PrevDecl, bool &Redeclaration);
   NamedDecl* ActOnVariableDeclarator(Scope* S, Declarator& D, DeclContext* DC,
                                      QualType R, DeclaratorInfo *DInfo,
                                      NamedDecl* PrevDecl,
@@ -724,9 +724,7 @@ public:
   /// isDeclInScope - If 'Ctx' is a function/method, isDeclInScope returns true
   /// if 'D' is in Scope 'S', otherwise 'S' is ignored and isDeclInScope returns
   /// true if 'D' belongs to the given declaration context.
-  bool isDeclInScope(Decl *D, DeclContext *Ctx, Scope *S = 0) {
-    return IdResolver.isDeclInScope(D, Ctx, Context, S);
-  }
+  bool isDeclInScope(NamedDecl *&D, DeclContext *Ctx, Scope *S = 0);
 
   /// Finds the scope corresponding to the given decl context, if it
   /// happens to be an enclosing scope.  Otherwise return NULL.
@@ -767,7 +765,8 @@ public:
                         bool SuppressUserConversions,
                         bool AllowExplicit,
                         bool ForceRValue,
-                        bool InOverloadResolution);
+                        bool InOverloadResolution,
+                        bool UserCast = false);
   bool IsStandardConversion(Expr *From, QualType ToType,
                             bool InOverloadResolution,
                             StandardConversionSequence& SCS);
@@ -782,6 +781,7 @@ public:
   bool CheckPointerConversion(Expr *From, QualType ToType, 
                               CastExpr::CastKind &Kind);
   bool IsMemberPointerConversion(Expr *From, QualType FromType, QualType ToType,
+                                 bool InOverloadResolution,
                                  QualType &ConvertedType);
   bool CheckMemberPointerConversion(Expr *From, QualType ToType,
                                     CastExpr::CastKind &Kind);
@@ -790,7 +790,8 @@ public:
                                UserDefinedConversionSequence& User,
                                OverloadCandidateSet& Conversions,
                                bool AllowConversionFunctions,
-                               bool AllowExplicit, bool ForceRValue);
+                               bool AllowExplicit, bool ForceRValue,
+                               bool UserCast = false);
   bool DiagnoseAmbiguousUserDefinedConversion(Expr *From, QualType ToType);
                                               
 
@@ -1064,7 +1065,7 @@ public:
       /// pointers used to reconstruct DeclContext::lookup_iterators.
       OverloadedDeclFromDeclContext,
 
-      /// First is a pointer to a BasePaths structure, which is owned
+      /// First is a pointer to a CXXBasePaths structure, which is owned
       /// by the LookupResult. Last is non-zero to indicate that the
       /// ambiguity is caused by two names found in base class
       /// subobjects of different types.
@@ -1083,7 +1084,7 @@ public:
     /// IdentifierResolver::iterator (if StoredKind ==
     /// OverloadedDeclFromIdResolver), a DeclContext::lookup_iterator
     /// (if StoredKind == OverloadedDeclFromDeclContext), or a
-    /// BasePaths pointer (if StoredKind == AmbiguousLookupStoresBasePaths).
+    /// CXXBasePaths pointer (if StoredKind == AmbiguousLookupStoresBasePaths).
     mutable uintptr_t First;
 
     /// The last lookup result, whose contents depend on the kind of
@@ -1166,7 +1167,8 @@ public:
                                            DeclContext::lookup_iterator F,
                                            DeclContext::lookup_iterator L);
 
-    static LookupResult CreateLookupResult(ASTContext &Context, BasePaths *Paths,
+    static LookupResult CreateLookupResult(ASTContext &Context, 
+                                           CXXBasePaths *Paths,
                                            bool DifferentSubobjectTypes) {
       LookupResult Result;
       Result.StoredKind = AmbiguousLookupStoresBasePaths;
@@ -1207,7 +1209,7 @@ public:
 
     NamedDecl* getAsDecl() const;
 
-    BasePaths *getBasePaths() const;
+    CXXBasePaths *getBasePaths() const;
 
     /// \brief Iterate over the results of name lookup.
     ///
@@ -1268,10 +1270,6 @@ private:
   std::pair<bool, LookupResult> CppLookupName(Scope *S, DeclarationName Name,
                                               LookupNameKind NameKind,
                                               bool RedeclarationOnly);
-  ObjCMethodDecl *FindMethodInNestedImplementations(
-                                                const ObjCInterfaceDecl *IFace,
-                                                const Selector &Sel);
-
 public:
   /// Determines whether D is a suitable lookup result according to the
   /// lookup criteria.
@@ -2151,7 +2149,7 @@ public:
   /// looked up in the declarator-id's scope, until the declarator is parsed and
   /// ActOnCXXExitDeclaratorScope is called.
   /// The 'SS' should be a non-empty valid CXXScopeSpec.
-  virtual void ActOnCXXEnterDeclaratorScope(Scope *S, const CXXScopeSpec &SS);
+  virtual bool ActOnCXXEnterDeclaratorScope(Scope *S, const CXXScopeSpec &SS);
 
   /// ActOnCXXExitDeclaratorScope - Called when a declarator that previously
   /// invoked ActOnCXXEnterDeclaratorScope(), is finished. 'SS' is the same
@@ -2179,6 +2177,8 @@ public:
   Expr *BuildObjCEncodeExpression(SourceLocation AtLoc,
                                   QualType EncodedType,
                                   SourceLocation RParenLoc);
+  CXXMemberCallExpr *BuildCXXMemberCallExpr(Expr *Exp, CXXMethodDecl *Method);
+
   virtual ExprResult ParseObjCEncodeExpression(SourceLocation AtLoc,
                                                SourceLocation EncodeLoc,
                                                SourceLocation LParenLoc,
@@ -2316,9 +2316,8 @@ public:
                                    unsigned NumBases);
 
   bool IsDerivedFrom(QualType Derived, QualType Base);
-  bool IsDerivedFrom(QualType Derived, QualType Base, BasePaths &Paths);
-  bool LookupInBases(CXXRecordDecl *Class, const MemberLookupCriteria& Criteria,
-                     BasePaths &Paths);
+  bool IsDerivedFrom(QualType Derived, QualType Base, CXXBasePaths &Paths);
+  
   bool CheckDerivedToBaseConversion(QualType Derived, QualType Base,
                                     SourceLocation Loc, SourceRange Range);
   bool CheckDerivedToBaseConversion(QualType Derived, QualType Base,
@@ -2327,7 +2326,7 @@ public:
                                     SourceLocation Loc, SourceRange Range,
                                     DeclarationName Name);
 
-  std::string getAmbiguousPathsDisplayString(BasePaths &Paths);
+  std::string getAmbiguousPathsDisplayString(CXXBasePaths &Paths);
 
   /// CheckOverridingFunctionReturnType - Checks whether the return types are
   /// covariant, according to C++ [class.virtual]p5.
@@ -2348,12 +2347,12 @@ public:
                                 AccessSpecifier LexicalAS);
 
   const CXXBaseSpecifier *FindInaccessibleBase(QualType Derived, QualType Base,
-                                               BasePaths &Paths,
+                                               CXXBasePaths &Paths,
                                                bool NoPrivileges = false);
 
   bool CheckBaseClassAccess(QualType Derived, QualType Base,
                             unsigned InaccessibleBaseID,
-                            BasePaths& Paths, SourceLocation AccessLoc,
+                            CXXBasePaths& Paths, SourceLocation AccessLoc,
                             DeclarationName Name);
 
 
@@ -2434,7 +2433,8 @@ public:
   MatchTemplateParametersToScopeSpecifier(SourceLocation DeclStartLoc,
                                           const CXXScopeSpec &SS,
                                           TemplateParameterList **ParamLists,
-                                          unsigned NumParamLists);
+                                          unsigned NumParamLists,
+                                          bool &IsExplicitSpecialization);
 
   DeclResult CheckClassTemplate(Scope *S, unsigned TagSpec, TagUseKind TUK,
                                 SourceLocation KWLoc, const CXXScopeSpec &SS,
@@ -2443,6 +2443,10 @@ public:
                                 TemplateParameterList *TemplateParams,
                                 AccessSpecifier AS);
 
+  void translateTemplateArguments(ASTTemplateArgsPtr &TemplateArgsIn,
+                                  SourceLocation *TemplateArgLocs,
+                        llvm::SmallVector<TemplateArgument, 16> &TemplateArgs);
+    
   QualType CheckTemplateIdType(TemplateName Template,
                                SourceLocation TemplateLoc,
                                SourceLocation LAngleLoc,
@@ -2482,13 +2486,6 @@ public:
                                                 const CXXScopeSpec &SS,
                                                 TypeTy *ObjectType);
 
-  bool CheckClassTemplateSpecializationScope(ClassTemplateDecl *ClassTemplate,
-                                    ClassTemplateSpecializationDecl *PrevDecl,
-                                             SourceLocation TemplateNameLoc,
-                                             SourceRange ScopeSpecifierRange,
-                                             bool PartialSpecialization,
-                                             bool ExplicitInstantiation);
-
   bool CheckClassTemplatePartialSpecializationArgs(
                                         TemplateParameterList *TemplateParams,
                               const TemplateArgumentListBuilder &TemplateArgs,
@@ -2515,6 +2512,16 @@ public:
                                                     MultiTemplateParamsArg TemplateParameterLists,
                                                     Declarator &D);
 
+  bool CheckFunctionTemplateSpecialization(FunctionDecl *FD,
+                                           bool HasExplicitTemplateArgs,
+                                           SourceLocation LAngleLoc,
+                                  const TemplateArgument *ExplicitTemplateArgs,
+                                           unsigned NumExplicitTemplateArgs,
+                                           SourceLocation RAngleLoc,
+                                           NamedDecl *&PrevDecl);
+  bool CheckMemberFunctionSpecialization(CXXMethodDecl *FD, 
+                                         NamedDecl *&PrevDecl);
+    
   virtual DeclResult
   ActOnExplicitInstantiation(Scope *S,
                              SourceLocation ExternLoc,
@@ -2541,6 +2548,11 @@ public:
                              SourceLocation NameLoc,
                              AttributeList *Attr);
 
+  virtual DeclResult ActOnExplicitInstantiation(Scope *S,
+                                                SourceLocation ExternLoc,
+                                                SourceLocation TemplateLoc,
+                                                Declarator &D);
+    
   bool CheckTemplateArgumentList(TemplateDecl *Template,
                                  SourceLocation TemplateLoc,
                                  SourceLocation LAngleLoc,
@@ -2770,6 +2782,15 @@ public:
   FunctionTemplateDecl *getMoreSpecializedTemplate(FunctionTemplateDecl *FT1,
                                                    FunctionTemplateDecl *FT2,
                                            TemplatePartialOrderingContext TPOC);
+  FunctionDecl *getMostSpecialized(FunctionDecl **Specializations,
+                                   unsigned NumSpecializations,
+                                   TemplatePartialOrderingContext TPOC,
+                                   SourceLocation Loc,
+                                   const PartialDiagnostic &NoneDiag,
+                                   const PartialDiagnostic &AmbigDiag,
+                                   const PartialDiagnostic &CandidateDiag,
+                                   unsigned *Index = 0);
+                                   
   ClassTemplatePartialSpecializationDecl *
   getMoreSpecializedPartialSpecialization(
                                   ClassTemplatePartialSpecializationDecl *PS1,
@@ -3469,6 +3490,11 @@ public:
                                  bool AllowExplicit = false,
                                  bool Elidable = false);
   bool PerformImplicitConversion(Expr *&From, QualType ToType,
+                                 const char *Flavor,
+                                 bool AllowExplicit,
+                                 bool Elidable,
+                                 ImplicitConversionSequence& ICS);
+  bool PerformImplicitConversion(Expr *&From, QualType ToType,
                                  const ImplicitConversionSequence& ICS,
                                  const char *Flavor);
   bool PerformImplicitConversion(Expr *&From, QualType ToType,
@@ -3566,6 +3592,7 @@ public:
                                                       bool& DerivedToBase);
 
   bool CheckReferenceInit(Expr *&simpleInit_or_initList, QualType declType,
+                          SourceLocation DeclLoc,
                           bool SuppressUserConversions,
                           bool AllowExplicit,
                           bool ForceRValue,
@@ -3649,8 +3676,10 @@ public:
   QualType adjustFunctionParamType(QualType T) const {
     if (!Context.getLangOptions().CPlusPlus)
       return T;
-
-    return T.getUnqualifiedType();
+    return 
+      T->isDependentType() ? T.getUnqualifiedType()
+                            : T.getDesugaredType().getUnqualifiedType();
+    
   }
 
   /// \name Code completion
@@ -3700,6 +3729,7 @@ private:
   bool SemaBuiltinObjectSize(CallExpr *TheCall);
   bool SemaBuiltinLongjmp(CallExpr *TheCall);
   bool SemaBuiltinAtomicOverloaded(CallExpr *TheCall);
+  bool SemaBuiltinEHReturnDataRegNo(CallExpr *TheCall);
   bool SemaCheckStringLiteral(const Expr *E, const CallExpr *TheCall,
                               bool HasVAListArg, unsigned format_idx,
                               unsigned firstDataArg);

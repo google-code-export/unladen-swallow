@@ -220,7 +220,7 @@ extern const PassInfo *const BreakCriticalEdgesID;
 //
 //   AU.addRequiredID(LoopSimplifyID);
 //
-FunctionPass *createLoopSimplifyPass();
+Pass *createLoopSimplifyPass();
 extern const PassInfo *const LoopSimplifyID;
 
 //===----------------------------------------------------------------------===//
@@ -275,20 +275,6 @@ FunctionPass *createBlockPlacementPass();
 //
 Pass *createLCSSAPass();
 extern const PassInfo *const LCSSAID;
-
-//===----------------------------------------------------------------------===//
-//
-// PredicateSimplifier - This pass collapses duplicate variables into one
-// canonical form, and tries to simplify expressions along the way.
-//
-FunctionPass *createPredicateSimplifierPass();
-
-//===----------------------------------------------------------------------===//
-//
-// GVN-PRE - This pass performs global value numbering and partial redundancy
-// elimination.
-//
-FunctionPass *createGVNPREPass();
 
 //===----------------------------------------------------------------------===//
 //

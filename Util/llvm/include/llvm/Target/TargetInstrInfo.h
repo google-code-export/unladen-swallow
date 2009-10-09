@@ -51,7 +51,10 @@ public:
     DBG_LABEL = 2,
     EH_LABEL = 3,
     GC_LABEL = 4,
-    // FIXME: DECLARE is removed. Readjust enum values ?
+
+    /// KILL - This instruction is a noop that is used only to adjust the liveness
+    /// of registers. This can be useful when dealing with sub-registers.
+    KILL = 5,
 
     /// EXTRACT_SUBREG - This instruction takes two operands: a register
     /// that has subregisters, and a subregister index. It returns the
@@ -154,16 +157,6 @@ public:
                              unsigned DestReg, unsigned SubIdx,
                              const MachineInstr *Orig) const = 0;
 
-  /// isInvariantLoad - Return true if the specified instruction (which is
-  /// marked mayLoad) is loading from a location whose value is invariant across
-  /// the function.  For example, loading a value from the constant pool or from
-  /// from the argument area of a function if it does not change.  This should
-  /// only return true of *all* loads the instruction does are invariant (if it
-  /// does multiple loads).
-  virtual bool isInvariantLoad(const MachineInstr *MI) const {
-    return false;
-  }
-  
   /// convertToThreeAddress - This method must be implemented by targets that
   /// set the M_CONVERTIBLE_TO_3_ADDR flag.  When this flag is set, the target
   /// may be able to convert a two-address instruction into one or more true

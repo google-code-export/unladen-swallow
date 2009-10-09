@@ -481,7 +481,7 @@ void Emitter<CodeEmitter>::emitInstruction(const MachineInstr &MI,
                                            const TargetInstrDesc *Desc) {
   DEBUG(errs() << MI);
 
-  MCE.processDebugLoc(MI.getDebugLoc());
+  MCE.processDebugLoc(MI.getDebugLoc(), true);
 
   unsigned Opcode = Desc->Opcode;
 
@@ -596,6 +596,7 @@ void Emitter<CodeEmitter>::emitInstruction(const MachineInstr &MI,
       MCE.emitLabel(MI.getOperand(0).getImm());
       break;
     case TargetInstrInfo::IMPLICIT_DEF:
+    case TargetInstrInfo::KILL:
     case X86::DWARF_LOC:
     case X86::FP_REG_KILL:
       break;
@@ -858,6 +859,8 @@ void Emitter<CodeEmitter>::emitInstruction(const MachineInstr &MI,
 #endif
     llvm_unreachable(0);
   }
+
+  MCE.processDebugLoc(MI.getDebugLoc(), false);
 }
 
 // Adapt the Emitter / CodeEmitter interfaces to MCCodeEmitter.

@@ -243,7 +243,7 @@ static void *CreateArgv(LLVMContext &C, ExecutionEngine *EE,
   char *Result = new char[(InputArgv.size()+1)*PtrSize];
 
   DEBUG(errs() << "JIT: ARGV = " << (void*)Result << "\n");
-  const Type *SBytePtr = PointerType::getUnqual(Type::getInt8Ty(C));
+  const Type *SBytePtr = Type::getInt8PtrTy(C);
 
   for (unsigned i = 0; i != InputArgv.size(); ++i) {
     unsigned Size = InputArgv[i].size()+1;
@@ -269,7 +269,8 @@ static void *CreateArgv(LLVMContext &C, ExecutionEngine *EE,
 /// runStaticConstructorsDestructors - This method is used to execute all of
 /// the static constructors or destructors for a module, depending on the
 /// value of isDtors.
-void ExecutionEngine::runStaticConstructorsDestructors(Module *module, bool isDtors) {
+void ExecutionEngine::runStaticConstructorsDestructors(Module *module,
+                                                       bool isDtors) {
   const char *Name = isDtors ? "llvm.global_dtors" : "llvm.global_ctors";
   
   // Execute global ctors/dtors for each module in the program.
@@ -425,30 +426,41 @@ ExecutionEngine *EngineBuilder::create() {
   // create, we assume they only want the JIT, and we fail if they only want
   // the interpreter.
   if (JMM) {
-    if (WhichEngine & EngineKind::JIT) {
+    if (WhichEngine & EngineKind::JIT)
       WhichEngine = EngineKind::JIT;
-    } else {
-      *ErrorStr = "Cannot create an interpreter with a memory manager.";
+    else {
+      if (ErrorStr)
+        *ErrorStr = "Cannot create an interpreter with a memory manager.";
+      return 0;
     }
   }
 
-  ExecutionEngine *EE = 0;
-
   // Unless the interpreter was explicitly selected or the JIT is not linked,
   // try making a JIT.
-  if (WhichEngine & EngineKind::JIT && ExecutionEngine::JITCtor) {
-    EE = ExecutionEngine::JITCtor(MP, ErrorStr, JMM, OptLevel,
-                                  AllocateGVsWithCode);
+  if (WhichEngine & EngineKind::JIT) {
+    if (ExecutionEngine::JITCtor) {
+      ExecutionEngine *EE =
+        ExecutionEngine::JITCtor(MP, ErrorStr, JMM, OptLevel,
+                                 AllocateGVsWithCode);
+      if (EE) return EE;
+    }
   }
 
   // If we can't make a JIT and we didn't request one specifically, try making
   // an interpreter instead.
-  if (WhichEngine & EngineKind::Interpreter && EE == 0 &&
-      ExecutionEngine::InterpCtor) {
-    EE = ExecutionEngine::InterpCtor(MP, ErrorStr);
+  if (WhichEngine & EngineKind::Interpreter) {
+    if (ExecutionEngine::InterpCtor)
+      return ExecutionEngine::InterpCtor(MP, ErrorStr);
+    if (ErrorStr)
+      *ErrorStr = "Interpreter has not been linked in.";
+    return 0;
   }
 
-  return EE;
+  if ((WhichEngine & EngineKind::JIT) && ExecutionEngine::JITCtor == 0) {
+    if (ErrorStr)
+      *ErrorStr = "JIT has not been linked in.";
+  }    
+  return 0;
 }
 
 /// getPointerToGlobal - This returns the address of the specified global
@@ -527,11 +539,11 @@ GenericValue ExecutionEngine::getConstantValue(const Constant *C) {
     }
     case Instruction::UIToFP: {
       GenericValue GV = getConstantValue(Op0);
-      if (CE->getType() == Type::getFloatTy(CE->getContext()))
+      if (CE->getType()->isFloatTy())
         GV.FloatVal = float(GV.IntVal.roundToDouble());
-      else if (CE->getType() == Type::getDoubleTy(CE->getContext()))
+      else if (CE->getType()->isDoubleTy())
         GV.DoubleVal = GV.IntVal.roundToDouble();
-      else if (CE->getType() == Type::getX86_FP80Ty(Op0->getContext())) {
+      else if (CE->getType()->isX86_FP80Ty()) {
         const uint64_t zero[] = {0, 0};
         APFloat apf = APFloat(APInt(80, 2, zero));
         (void)apf.convertFromAPInt(GV.IntVal, 
@@ -543,11 +555,11 @@ GenericValue ExecutionEngine::getConstantValue(const Constant *C) {
     }
     case Instruction::SIToFP: {
       GenericValue GV = getConstantValue(Op0);
-      if (CE->getType() == Type::getFloatTy(CE->getContext()))
+      if (CE->getType()->isFloatTy())
         GV.FloatVal = float(GV.IntVal.signedRoundToDouble());
-      else if (CE->getType() == Type::getDoubleTy(CE->getContext()))
+      else if (CE->getType()->isDoubleTy())
         GV.DoubleVal = GV.IntVal.signedRoundToDouble();
-      else if (CE->getType() == Type::getX86_FP80Ty(CE->getContext())) {
+      else if (CE->getType()->isX86_FP80Ty()) {
         const uint64_t zero[] = { 0, 0};
         APFloat apf = APFloat(APInt(80, 2, zero));
         (void)apf.convertFromAPInt(GV.IntVal, 
@@ -561,11 +573,11 @@ GenericValue ExecutionEngine::getConstantValue(const Constant *C) {
     case Instruction::FPToSI: {
       GenericValue GV = getConstantValue(Op0);
       uint32_t BitWidth = cast<IntegerType>(CE->getType())->getBitWidth();
-      if (Op0->getType() == Type::getFloatTy(Op0->getContext()))
+      if (Op0->getType()->isFloatTy())
         GV.IntVal = APIntOps::RoundFloatToAPInt(GV.FloatVal, BitWidth);
-      else if (Op0->getType() == Type::getDoubleTy(Op0->getContext()))
+      else if (Op0->getType()->isDoubleTy())
         GV.IntVal = APIntOps::RoundDoubleToAPInt(GV.DoubleVal, BitWidth);
-      else if (Op0->getType() == Type::getX86_FP80Ty(Op0->getContext())) {
+      else if (Op0->getType()->isX86_FP80Ty()) {
         APFloat apf = APFloat(GV.IntVal);
         uint64_t v;
         bool ignored;
@@ -598,9 +610,9 @@ GenericValue ExecutionEngine::getConstantValue(const Constant *C) {
         default: llvm_unreachable("Invalid bitcast operand");
         case Type::IntegerTyID:
           assert(DestTy->isFloatingPoint() && "invalid bitcast");
-          if (DestTy == Type::getFloatTy(Op0->getContext()))
+          if (DestTy->isFloatTy())
             GV.FloatVal = GV.IntVal.bitsToFloat();
-          else if (DestTy == Type::getDoubleTy(DestTy->getContext()))
+          else if (DestTy->isDoubleTy())
             GV.DoubleVal = GV.IntVal.bitsToDouble();
           break;
         case Type::FloatTyID: 

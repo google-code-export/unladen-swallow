@@ -496,7 +496,7 @@ TemplateInstantiator::TransformPredefinedExpr(PredefinedExpr *E) {
     PredefinedExpr::ComputeName(getSema().Context, IT, currentDecl).length();
 
   llvm::APInt LengthI(32, Length + 1);
-  QualType ResTy = getSema().Context.CharTy.getQualifiedType(QualType::Const);
+  QualType ResTy = getSema().Context.CharTy.withConst();
   ResTy = getSema().Context.getConstantArrayType(ResTy, LengthI, 
                                                  ArrayType::Normal, 0);
   PredefinedExpr *PE =
@@ -977,20 +977,28 @@ Sema::InstantiateClassMembers(SourceLocation PointOfInstantiation,
                                DEnd = Instantiation->decls_end();
        D != DEnd; ++D) {
     if (FunctionDecl *Function = dyn_cast<FunctionDecl>(*D)) {
-      if (!Function->getBody())
+      if (Function->getInstantiatedFromMemberFunction())
+        Function->setTemplateSpecializationKind(TSK);
+      if (!Function->getBody() && TSK != TSK_ExplicitInstantiationDeclaration)
         InstantiateFunctionDefinition(PointOfInstantiation, Function);
     } else if (VarDecl *Var = dyn_cast<VarDecl>(*D)) {
-      if (Var->isStaticDataMember())
+      if (Var->isStaticDataMember() && 
+          TSK != TSK_ExplicitInstantiationDeclaration)
         InstantiateStaticDataMemberDefinition(PointOfInstantiation, Var);
     } else if (CXXRecordDecl *Record = dyn_cast<CXXRecordDecl>(*D)) {
-      if (!Record->isInjectedClassName() && !Record->getDefinition(Context)) {
-        assert(Record->getInstantiatedFromMemberClass() &&
-               "Missing instantiated-from-template information");
+      if (Record->isInjectedClassName())
+        continue;
+      
+      assert(Record->getInstantiatedFromMemberClass() &&
+             "Missing instantiated-from-template information");
+      if (!Record->getDefinition(Context))
         InstantiateClass(PointOfInstantiation, Record,
                          Record->getInstantiatedFromMemberClass(),
                          TemplateArgs,
                          TSK);
-      }
+      else
+        InstantiateClassMembers(PointOfInstantiation, Record, TemplateArgs, 
+                                TSK);
     }
   }
 }

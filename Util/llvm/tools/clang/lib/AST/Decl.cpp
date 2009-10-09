@@ -39,7 +39,7 @@ void Attr::Destroy(ASTContext &C) {
 
 /// \brief Return the TypeLoc wrapper for the type source info.
 TypeLoc DeclaratorInfo::getTypeLoc() const {
-  return TypeLoc::Create(Ty, (void*)(this + 1));
+  return TypeLoc(Ty, (void*)(this + 1));
 }
 
 //===----------------------------------------------------------------------===//
@@ -410,6 +410,16 @@ void FunctionDecl::Destroy(ASTContext& C) {
   for (param_iterator I=param_begin(), E=param_end(); I!=E; ++I)
     (*I)->Destroy(C);
 
+  FunctionTemplateSpecializationInfo *FTSInfo
+    = TemplateOrSpecialization.dyn_cast<FunctionTemplateSpecializationInfo*>();
+  if (FTSInfo)
+    C.Deallocate(FTSInfo);
+  
+  MemberSpecializationInfo *MSInfo
+    = TemplateOrSpecialization.dyn_cast<MemberSpecializationInfo*>();
+  if (MSInfo)
+    C.Deallocate(MSInfo);
+  
   C.Deallocate(ParamInfo);
 
   Decl::Destroy(C);
@@ -653,6 +663,10 @@ FunctionDecl::setPreviousDeclaration(FunctionDecl *PrevDecl) {
   }
 }
 
+const FunctionDecl *FunctionDecl::getCanonicalDecl() const {
+  return getFirstDeclaration();
+}
+
 FunctionDecl *FunctionDecl::getCanonicalDecl() {
   return getFirstDeclaration();
 }
@@ -664,6 +678,24 @@ OverloadedOperatorKind FunctionDecl::getOverloadedOperator() const {
     return getDeclName().getCXXOverloadedOperator();
   else
     return OO_None;
+}
+
+FunctionDecl *FunctionDecl::getInstantiatedFromMemberFunction() const {
+  if (MemberSpecializationInfo *Info 
+        = TemplateOrSpecialization.dyn_cast<MemberSpecializationInfo*>())
+    return cast<FunctionDecl>(Info->getInstantiatedFrom());
+  
+  return 0;
+}
+
+void 
+FunctionDecl::setInstantiationOfMemberFunction(FunctionDecl *FD,
+                                               TemplateSpecializationKind TSK) {
+  assert(TemplateOrSpecialization.isNull() && 
+         "Member function is already a specialization");
+  MemberSpecializationInfo *Info 
+    = new (getASTContext()) MemberSpecializationInfo(FD, TSK);
+  TemplateOrSpecialization = Info;
 }
 
 FunctionTemplateDecl *FunctionDecl::getPrimaryTemplate() const {
@@ -689,7 +721,10 @@ void
 FunctionDecl::setFunctionTemplateSpecialization(ASTContext &Context,
                                                 FunctionTemplateDecl *Template,
                                      const TemplateArgumentList *TemplateArgs,
-                                                void *InsertPos) {
+                                                void *InsertPos,
+                                              TemplateSpecializationKind TSK) {
+  assert(TSK != TSK_Undeclared && 
+         "Must specify the type of function template specialization");
   FunctionTemplateSpecializationInfo *Info
     = TemplateOrSpecialization.dyn_cast<FunctionTemplateSpecializationInfo*>();
   if (!Info)
@@ -697,44 +732,53 @@ FunctionDecl::setFunctionTemplateSpecialization(ASTContext &Context,
 
   Info->Function = this;
   Info->Template.setPointer(Template);
-  Info->Template.setInt(TSK_ImplicitInstantiation - 1);
+  Info->Template.setInt(TSK - 1);
   Info->TemplateArguments = TemplateArgs;
   TemplateOrSpecialization = Info;
 
   // Insert this function template specialization into the set of known
-  // function template specialiations.
-  Template->getSpecializations().InsertNode(Info, InsertPos);
+  // function template specializations.
+  if (InsertPos)
+    Template->getSpecializations().InsertNode(Info, InsertPos);
+  else {
+    // Try to insert the new node. If there is an existing node, remove it 
+    // first.
+    FunctionTemplateSpecializationInfo *Existing
+      = Template->getSpecializations().GetOrInsertNode(Info);
+    if (Existing) {
+      Template->getSpecializations().RemoveNode(Existing);
+      Template->getSpecializations().GetOrInsertNode(Info);
+    }
+  }
 }
 
 TemplateSpecializationKind FunctionDecl::getTemplateSpecializationKind() const {
   // For a function template specialization, query the specialization
   // information object.
-  FunctionTemplateSpecializationInfo *Info
+  FunctionTemplateSpecializationInfo *FTSInfo
     = TemplateOrSpecialization.dyn_cast<FunctionTemplateSpecializationInfo*>();
-  if (Info)
-    return Info->getTemplateSpecializationKind();
+  if (FTSInfo)
+    return FTSInfo->getTemplateSpecializationKind();
 
-  if (!getInstantiatedFromMemberFunction())
-    return TSK_Undeclared;
-
-  // Find the class template specialization corresponding to this instantiation
-  // of a member function.
-  const DeclContext *Parent = getDeclContext();
-  while (Parent && !isa<ClassTemplateSpecializationDecl>(Parent))
-    Parent = Parent->getParent();
-
-  if (!Parent)
-    return TSK_Undeclared;
-
-  return cast<ClassTemplateSpecializationDecl>(Parent)->getSpecializationKind();
+  MemberSpecializationInfo *MSInfo
+    = TemplateOrSpecialization.dyn_cast<MemberSpecializationInfo*>();
+  if (MSInfo)
+    return MSInfo->getTemplateSpecializationKind();
+  
+  return TSK_Undeclared;
 }
 
 void
 FunctionDecl::setTemplateSpecializationKind(TemplateSpecializationKind TSK) {
-  FunctionTemplateSpecializationInfo *Info
-    = TemplateOrSpecialization.dyn_cast<FunctionTemplateSpecializationInfo*>();
-  assert(Info && "Not a function template specialization");
-  Info->setTemplateSpecializationKind(TSK);
+  if (FunctionTemplateSpecializationInfo *FTSInfo
+        = TemplateOrSpecialization.dyn_cast<
+                                        FunctionTemplateSpecializationInfo*>())
+    FTSInfo->setTemplateSpecializationKind(TSK);
+  else if (MemberSpecializationInfo *MSInfo
+             = TemplateOrSpecialization.dyn_cast<MemberSpecializationInfo*>())
+    MSInfo->setTemplateSpecializationKind(TSK);
+  else
+    assert(false && "Function cannot have a template specialization kind");
 }
 
 bool FunctionDecl::isOutOfLine() const {

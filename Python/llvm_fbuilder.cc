@@ -22,9 +22,16 @@
 #include "llvm/Instructions.h"
 #include "llvm/Intrinsics.h"
 #include "llvm/Module.h"
+#include "llvm/Support/ManagedStatic.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/Type.h"
 
 #include <vector>
+
+#ifndef DW_LANG_Python
+// Python has an official ID number in the draft Dwarf4 spec.
+#define DW_LANG_Python 0x0014
+#endif
 
 struct PyExcInfo;
 
@@ -46,13 +53,60 @@ using llvm::array_endof;
 #define GET_GLOBAL_VARIABLE(TYPE, VARIABLE) \
     GetGlobalVariable<TYPE>(&VARIABLE, #VARIABLE)
 
+#ifdef Py_WITH_INSTRUMENTATION
+class CallFunctionStats {
+public:
+    ~CallFunctionStats() {
+        llvm::errs() << "\nCALL_FUNCTION optimization:\n";
+        llvm::errs() << "Total opcodes: " << this->total << "\n";
+        llvm::errs() << "Optimized opcodes: " << this->optimized << "\n";
+        llvm::errs() << "No opt: callsite kwargs: "
+                     << this->no_opt_kwargs << "\n";
+        llvm::errs() << "No opt: function params: "
+                     << this->no_opt_params << "\n";
+        llvm::errs() << "No opt: no data: "
+                     << this->no_opt_no_data << "\n";
+        llvm::errs() << "No opt: polymorphic: "
+                     << this->no_opt_polymorphic << "\n";
+    }
+
+    // How many CALL_FUNCTION opcodes were compiled.
+    unsigned total;
+    // How many CALL_FUNCTION opcodes were successfully optimized;
+    unsigned optimized;
+    // We only optimize call sites without keyword, *args or **kwargs arguments.
+    unsigned no_opt_kwargs;
+    // We only optimize METH_O and METH_NOARGS functions so far.
+    unsigned no_opt_params;
+    // We only optimize callsites where we've collected data. Note that since
+    // we record only PyCFunctions, any call to a Python function will show up
+    // as having no data.
+    unsigned no_opt_no_data;
+    // We only optimize monomorphic callsites so far.
+    unsigned no_opt_polymorphic;
+};
+
+static llvm::ManagedStatic<CallFunctionStats> call_function_stats;
+
+#define CF_INC_STATS(field) call_function_stats->field++
+#else
+#define CF_INC_STATS(field)
+#endif  /* Py_WITH_INSTRUMENTATION */
+
 namespace py {
 
 static std::string
 pystring_to_std_string(PyObject *str)
 {
-    assert(PyString_Check(str) && "code->co_name must be PyString");
+    assert(PyString_Check(str));
     return std::string(PyString_AS_STRING(str), PyString_GET_SIZE(str));
+}
+
+static llvm::StringRef
+pystring_to_stringref(const PyObject* str)
+{
+    assert(PyString_CheckExact(str));
+    return llvm::StringRef(PyString_AS_STRING(str), PyString_GET_SIZE(str));
 }
 
 static const FunctionType *
@@ -73,7 +127,8 @@ get_function_type(Module *module)
 
 LlvmFunctionBuilder::LlvmFunctionBuilder(
     PyGlobalLlvmData *llvm_data, PyCodeObject *code_object)
-    : llvm_data_(llvm_data),
+    : uses_delete_fast(false),
+      llvm_data_(llvm_data),
       code_object_(code_object),
       context_(this->llvm_data_->context()),
       module_(this->llvm_data_->module()),
@@ -89,8 +144,7 @@ LlvmFunctionBuilder::LlvmFunctionBuilder(
       debug_info_(llvm_data->DebugInfo()),
       debug_compile_unit_(this->debug_info_ == NULL ? llvm::DICompileUnit() :
                           this->debug_info_->CreateCompileUnit(
-                              // 'py' in hex is 0x7079.
-                              llvm::dwarf::DW_LANG_lo_user + 0x7079,
+                              DW_LANG_Python,
                               pystring_to_std_string(code_object->co_filename),
                               "",  // Directory
                               "Unladen Swallow 2.6.1",
@@ -150,6 +204,14 @@ LlvmFunctionBuilder::LlvmFunctionBuilder(
         "blockstack_addr");
     this->num_blocks_addr_ = this->builder_.CreateAlloca(
         PyTypeBuilder<char>::get(this->context_), NULL, "num_blocks_addr");
+    for (int i = 0; i < code_object->co_nlocals; ++i) {
+        PyObject *local_name = PyTuple_GET_ITEM(code_object->co_varnames, i);
+        this->locals_.push_back(
+            this->builder_.CreateAlloca(
+                PyTypeBuilder<PyObject*>::get(this->context_),
+                NULL,
+                "local_" + pystring_to_stringref(local_name)));
+    }
 
     if (this->debug_info_ != NULL)
         this->debug_info_->InsertSubprogramStart(
@@ -163,7 +225,7 @@ LlvmFunctionBuilder::LlvmFunctionBuilder(
         "stack_bottom");
     if (this->is_generator_) {
         // When we're re-entering a generator, we have to copy the stack
-        // pointer and block stack from the frame.
+        // pointer, block stack and locals from the frame.
         this->CopyFromFrameObject();
     } else {
         // If this isn't a generator, the stack pointer always starts at
@@ -179,6 +241,9 @@ LlvmFunctionBuilder::LlvmFunctionBuilder(
         this->builder_.CreateStore(
             ConstantInt::get(PyTypeBuilder<char>::get(this->context_), 0),
             this->num_blocks_addr_);
+
+        // If this isn't a generator, we only need to copy the locals.
+        this->CopyLocalsFromFrameObject();
     }
 
     Value *use_tracing = this->builder_.CreateLoad(
@@ -226,8 +291,8 @@ LlvmFunctionBuilder::LlvmFunctionBuilder(
     // Get the address of the names_tuple's first item as well.
     this->names_ = this->GetTupleItemSlot(names_tuple, 0);
 
-    // The next GEP-magic assigns this->fastlocals_ to
-    // &frame_[0].f_localsplus[0].
+    // The next GEP-magic assigns &frame_[0].f_localsplus[0] to
+    // this->fastlocals_.
     Value *localsplus = FrameTy::f_localsplus(this->builder_, this->frame_);
     this->fastlocals_ = this->builder_.CreateStructGEP(
         localsplus, 0, "fastlocals");
@@ -790,6 +855,7 @@ void
 LlvmFunctionBuilder::CopyToFrameObject()
 {
     // Save the current stack pointer into the frame.
+    // Note that locals are mirrored to the frame as they're modified.
     Value *stack_pointer = this->builder_.CreateLoad(this->stack_pointer_addr_);
     Value *f_stacktop = FrameTy::f_stacktop(this->builder_, this->frame_);
     this->builder_.CreateStore(stack_pointer, f_stacktop);
@@ -821,6 +887,57 @@ LlvmFunctionBuilder::CopyFromFrameObject()
                  this->builder_.CreateStructGEP(
                      FrameTy::f_blockstack(this->builder_, this->frame_), 0),
                  num_blocks);
+
+    this->CopyLocalsFromFrameObject();
+}
+
+int
+LlvmFunctionBuilder::GetParamCount() const
+{
+    int co_flags = this->code_object_->co_flags;
+    return this->code_object_->co_argcount +
+        bool(co_flags & CO_VARARGS) + bool(co_flags & CO_VARKEYWORDS);
+}
+
+
+// Rules for copying locals from the frame:
+// - If this is a generator, copy everything from the frame.
+// - If this is a regular function, only copy the function's parameters; these
+//   can never be NULL. Set all other locals to NULL explicitly. This gives
+//   LLVM's optimizers more information.
+//
+// TODO(collinwinter): when LLVM's metadata supports it, mark all parameters
+// as "not-NULL" so that constant propagation can have more information to work
+// with.
+void
+LlvmFunctionBuilder::CopyLocalsFromFrameObject()
+{
+    const Type *int_type = Type::getInt32Ty(this->context_);
+    Value *locals =
+        this->builder_.CreateStructGEP(
+                 FrameTy::f_localsplus(this->builder_, this->frame_), 0);
+    Value *null =
+        Constant::getNullValue(PyTypeBuilder<PyObject*>::get(this->context_));
+
+    // Figure out how many total parameters we have.
+    int param_count = this->GetParamCount();
+
+    for (int i = 0; i < this->code_object_->co_nlocals; ++i) {
+        PyObject *pyname =
+            PyTuple_GET_ITEM(this->code_object_->co_varnames, i);
+
+        if (this->is_generator_ || i < param_count) {
+            Value *local_slot = this->builder_.CreateLoad(
+                this->builder_.CreateGEP(
+                    locals, ConstantInt::get(int_type, i)),
+                "local_" + std::string(PyString_AsString(pyname)));
+
+            this->builder_.CreateStore(local_slot, this->locals_[i]);
+        }
+        else {
+            this->builder_.CreateStore(null, this->locals_[i]);
+        }
+    }
 }
 
 void
@@ -835,7 +952,7 @@ LlvmFunctionBuilder::SetLineNumber(int line)
     BasicBlock *this_line = this->CreateBasicBlock("line_start");
 
     this->builder_.CreateStore(
-        ConstantInt::getSigned(PyTypeBuilder<int>::get(this->context_), line),
+        this->GetSigned<int>(line),
         this->f_lineno_addr_);
     this->SetDebugStopPoint(line);
 
@@ -898,6 +1015,31 @@ LlvmFunctionBuilder::MaybeCallLineTrace(BasicBlock *fallthrough_block,
         this->f_lasti_addr_);
     this->builder_.CreateStore(
         ConstantInt::get(PyTypeBuilder<char>::get(this->context_), direction),
+        FrameTy::f_bailed_from_llvm(this->builder_, this->frame_));
+    this->builder_.CreateBr(this->bail_to_interpreter_block_);
+}
+
+void
+LlvmFunctionBuilder::BailIfProfiling(llvm::BasicBlock *fallthrough_block)
+{
+    BasicBlock *profiling = this->CreateBasicBlock("profiling");
+
+    Value *profiling_possible = this->builder_.CreateLoad(
+        this->GET_GLOBAL_VARIABLE(int, _Py_ProfilingPossible));
+    this->builder_.CreateCondBr(this->IsNonZero(profiling_possible),
+                                profiling, fallthrough_block);
+
+    this->builder_.SetInsertPoint(profiling);
+    this->builder_.CreateStore(
+        // -1 so that next_instr gets set right in EvalFrame.
+        ConstantInt::getSigned(
+            PyTypeBuilder<int>::get(this->context_),
+            this->f_lasti_ - 1),
+        this->f_lasti_addr_);
+    this->builder_.CreateStore(
+        ConstantInt::get(
+            PyTypeBuilder<char>::get(this->context_),
+            _PYFRAME_CALL_PROFILE),
         FrameTy::f_bailed_from_llvm(this->builder_, this->frame_));
     this->builder_.CreateBr(this->bail_to_interpreter_block_);
 }
@@ -1207,33 +1349,67 @@ LlvmFunctionBuilder::DELETE_ATTR(int index)
 }
 
 void
-LlvmFunctionBuilder::LOAD_FAST(int index)
+LlvmFunctionBuilder::LOAD_FAST_fast(int index)
+{
+    Value *local = this->builder_.CreateLoad(
+        this->locals_[index], "FAST_loaded");
+#ifndef NDEBUG
+    Value *frame_local_slot = this->builder_.CreateGEP(
+        this->fastlocals_, ConstantInt::get(Type::getInt32Ty(this->context_),
+                                            index));
+    Value *frame_local = this->builder_.CreateLoad(frame_local_slot);
+    Value *sane_locals = this->builder_.CreateICmpEQ(frame_local, local);
+    this->Assert(sane_locals, "alloca locals do not match frame locals!");
+#endif  /* NDEBUG */
+    this->IncRef(local);
+    this->Push(local);
+}
+
+void
+LlvmFunctionBuilder::LOAD_FAST_safe(int index)
 {
     BasicBlock *unbound_local =
         this->CreateBasicBlock("LOAD_FAST_unbound");
     BasicBlock *success =
         this->CreateBasicBlock("LOAD_FAST_success");
 
-    const Type *int_type = Type::getInt32Ty(this->context_);
     Value *local = this->builder_.CreateLoad(
-        this->builder_.CreateGEP(this->fastlocals_,
-                                 ConstantInt::get(int_type, index)),
-        "FAST_loaded");
+        this->locals_[index], "FAST_loaded");
+#ifndef NDEBUG
+    Value *frame_local_slot = this->builder_.CreateGEP(
+        this->fastlocals_, ConstantInt::get(Type::getInt32Ty(this->context_),
+                                            index));
+    Value *frame_local = this->builder_.CreateLoad(frame_local_slot);
+    Value *sane_locals = this->builder_.CreateICmpEQ(frame_local, local);
+    this->Assert(sane_locals, "alloca locals do not match frame locals!");
+#endif  /* NDEBUG */
     this->builder_.CreateCondBr(this->IsNull(local), unbound_local, success);
 
     this->builder_.SetInsertPoint(unbound_local);
     Function *do_raise =
         this->GetGlobalFunction<void(PyFrameObject*, int)>(
             "_PyEval_RaiseForUnboundLocal");
-    this->CreateCall(
-        do_raise, this->frame_,
-        ConstantInt::getSigned(PyTypeBuilder<int>::get(this->context_),
-                               index));
+    this->CreateCall(do_raise, this->frame_, this->GetSigned<int>(index));
     this->PropagateException();
 
     this->builder_.SetInsertPoint(success);
     this->IncRef(local);
     this->Push(local);
+}
+
+// TODO(collinwinter): we'd like to implement this by simply marking the load
+// as "cannot be NULL" and let LLVM's constant propgation optimizers remove the
+// conditional branch for us. That is currently not supported, so we do this
+// manually.
+void
+LlvmFunctionBuilder::LOAD_FAST(int index)
+{
+    // Simple check: if DELETE_FAST is never used, function parameters cannot
+    // be NULL.
+    if (!this->uses_delete_fast && index < this->GetParamCount())
+        this->LOAD_FAST_fast(index);
+    else
+        this->LOAD_FAST_safe(index);
 }
 
 void
@@ -1498,8 +1674,186 @@ LlvmFunctionBuilder::LogTscEvent(_PyTscEventId event_id) {
 }
 #endif
 
+const PyRuntimeFeedback *
+LlvmFunctionBuilder::GetFeedback(unsigned arg_index) const
+{
+    PyFeedbackMap *map = this->code_object_->co_runtime_feedback;
+    if (map == NULL)
+        return NULL;
+    return map->GetFeedbackEntry(this->f_lasti_, arg_index);
+}
+
 void
-LlvmFunctionBuilder::CALL_FUNCTION(int oparg)
+LlvmFunctionBuilder::CALL_FUNCTION_fast(int oparg,
+                                        const PyRuntimeFeedback *feedback)
+{
+    CF_INC_STATS(total);
+
+    // Check for keyword arguments; we only optimize callsites with positional
+    // arguments.
+    if ((oparg >> 8) & 0xff) {
+        CF_INC_STATS(no_opt_kwargs);
+        this->CALL_FUNCTION_safe(oparg);
+        return;
+    }
+
+    // Only optimize monomorphic callsites.
+    llvm::SmallVector<FunctionRecord*, 3> fdo_data;
+    feedback->GetSeenFuncsInto(fdo_data);
+    if (fdo_data.size() != 1) {
+#ifdef Py_WITH_INSTRUMENTATION
+        if (fdo_data.size() == 0)
+            CF_INC_STATS(no_opt_no_data);
+        else
+            CF_INC_STATS(no_opt_polymorphic);
+#endif
+        this->CALL_FUNCTION_safe(oparg);
+        return;
+    }
+
+    FunctionRecord *func_record = fdo_data[0];
+
+    // Only optimize calls to C functions with a fixed number of parameters,
+    // where the number of arguments we have matches exactly.
+    int flags = func_record->flags;
+    int num_args = oparg & 0xff;
+    if (!((flags & METH_NOARGS && num_args == 0) ||
+          (flags & METH_O && num_args == 1))) {
+        CF_INC_STATS(no_opt_params);
+        this->CALL_FUNCTION_safe(oparg);
+        return;
+    }
+
+    PyCFunction cfunc_ptr = func_record->func;
+
+    // Expose the C function pointer to LLVM. This is what will actually get
+    // called.
+    Constant *llvm_func =
+        this->llvm_data_->constant_mirror().GetGlobalForCFunction(
+            cfunc_ptr,
+            func_record->name);
+
+    BasicBlock *not_profiling =
+        this->CreateBasicBlock("CALL_FUNCTION_not_profiling");
+    BasicBlock *check_is_same_func =
+        this->CreateBasicBlock("CALL_FUNCTION_check_is_same_func");
+    BasicBlock *invalid_assumptions =
+        this->CreateBasicBlock("CALL_FUNCTION_invalid_assumptions");
+    BasicBlock *all_assumptions_valid =
+        this->CreateBasicBlock("CALL_FUNCTION_all_assumptions_valid");
+
+    this->BailIfProfiling(not_profiling);
+
+    // Handle bailing back to the interpreter if the assumptions below don't
+    // hold.
+    this->builder_.SetInsertPoint(invalid_assumptions);
+    this->builder_.CreateStore(
+        // -1 so that next_instr gets set right in EvalFrame.
+        ConstantInt::getSigned(
+            PyTypeBuilder<int>::get(this->context_),
+            this->f_lasti_ - 1),
+        this->f_lasti_addr_);
+    this->builder_.CreateStore(
+        ConstantInt::get(
+            PyTypeBuilder<char>::get(this->context_),
+            _PYFRAME_GUARD_FAIL),
+        FrameTy::f_bailed_from_llvm(this->builder_, this->frame_));
+    this->builder_.CreateBr(this->bail_to_interpreter_block_);
+
+    this->builder_.SetInsertPoint(not_profiling);
+#ifdef WITH_TSC
+    this->LogTscEvent(CALL_START_LLVM);
+#endif
+    // Retrieve the function to call from the Python stack.
+    Value *stack_pointer = this->builder_.CreateLoad(this->stack_pointer_addr_);
+    Value *actual_func = this->builder_.CreateLoad(
+        this->builder_.CreateGEP(
+            stack_pointer,
+            ConstantInt::getSigned(
+                Type::getInt64Ty(this->context_),
+                -num_args - 1)));
+
+    // Make sure it's a PyCFunction; if not, bail.
+    Value *is_cfunction = this->CreateCall(
+        this->GetGlobalFunction<int(PyObject *)>("_PyLlvm_WrapCFunctionCheck"),
+        actual_func,
+        "is_cfunction");
+    Value *is_cfunction_guard = this->builder_.CreateICmpEQ(
+        is_cfunction, ConstantInt::get(is_cfunction->getType(), 1),
+        "is_cfunction_guard");
+    this->builder_.CreateCondBr(is_cfunction_guard, check_is_same_func,
+                                invalid_assumptions);
+
+    // Make sure we got the same underlying function pointer; if not, bail.
+    this->builder_.SetInsertPoint(check_is_same_func);
+    Value *actual_as_pycfunc = this->builder_.CreateBitCast(
+        actual_func, PyTypeBuilder<PyCFunctionObject *>::get(this->context_));
+    Value *actual_method_def = this->builder_.CreateLoad(
+        CFunctionTy::m_ml(this->builder_, actual_as_pycfunc),
+        "CALL_FUNCTION_actual_method_def");
+    Value *actual_func_ptr = this->builder_.CreateLoad(
+        MethodDefTy::ml_meth(this->builder_, actual_method_def),
+        "CALL_FUNCTION_actual_func_ptr");
+    Value *is_same = this->builder_.CreateICmpEQ(
+        // TODO(jyasskin): change this to "llvm_func" when
+        // http://llvm.org/PR5126 is fixed.
+        this->builder_.CreateIntToPtr(
+            ConstantInt::get(Type::getInt64Ty(this->context_),
+                             reinterpret_cast<intptr_t>(cfunc_ptr)),
+            actual_func_ptr->getType()),
+        actual_func_ptr);
+    this->builder_.CreateCondBr(is_same,
+        all_assumptions_valid, invalid_assumptions);
+
+    // If all the assumptions are valid, we know we have a C function pointer
+    // that takes two arguments: first the invocant, second an optional
+    // PyObject *. If the function was tagged with METH_NOARGS, we use NULL for
+    // the second argument. Because "the invocant" differs between built-in
+    // functions like len() and C-level methods like list.append(), we pull
+    // the invocant (called m_self) from the PyCFunction object we popped off
+    // the stack. Once the function returns, we patch up the stack pointer.
+    this->builder_.SetInsertPoint(all_assumptions_valid);
+    Value *arg;
+    if (num_args == 0) {
+        arg = Constant::getNullValue(
+            PyTypeBuilder<PyObject *>::get(this->context_));
+    }
+    else {
+        assert(num_args == 1);
+        arg = this->builder_.CreateLoad(
+            this->builder_.CreateGEP(
+                stack_pointer,
+                ConstantInt::getSigned(Type::getInt64Ty(this->context_), -1)));
+    }
+    Value *self = this->builder_.CreateLoad(
+        CFunctionTy::m_self(this->builder_, actual_as_pycfunc),
+        "CALL_FUNCTION_actual_self");
+
+#ifdef WITH_TSC
+    this->LogTscEvent(CALL_ENTER_C);
+#endif
+    Value *result = this->CreateCall(llvm_func, self, arg);
+
+    this->DecRef(actual_func);
+    if (num_args == 1) {
+        this->DecRef(arg);
+    }
+    Value *new_stack_pointer = this->builder_.CreateGEP(
+        stack_pointer,
+        ConstantInt::getSigned(
+            Type::getInt64Ty(this->context_),
+            -num_args - 1));
+    this->builder_.CreateStore(new_stack_pointer, this->stack_pointer_addr_);
+    this->PropagateExceptionOnNull(result);
+    this->Push(result);
+
+    // Check signals and maybe switch threads after each function call.
+    this->CheckPyTicker();
+    CF_INC_STATS(optimized);
+}
+
+void
+LlvmFunctionBuilder::CALL_FUNCTION_safe(int oparg)
 {
 #ifdef WITH_TSC
     this->LogTscEvent(CALL_START_LLVM);
@@ -1526,6 +1880,17 @@ LlvmFunctionBuilder::CALL_FUNCTION(int oparg)
     // Check signals and maybe switch threads after each function call.
     this->CheckPyTicker();
 }
+
+void
+LlvmFunctionBuilder::CALL_FUNCTION(int oparg)
+{
+    const PyRuntimeFeedback *feedback = this->GetFeedback();
+    if (feedback == NULL || feedback->FuncsOverflowed())
+        this->CALL_FUNCTION_safe(oparg);
+    else
+        this->CALL_FUNCTION_fast(oparg, feedback);
+}
+
 
 // Keep this in sync with eval.cc
 #define CALL_FLAG_VAR 1
@@ -1736,9 +2101,7 @@ LlvmFunctionBuilder::DELETE_FAST(int index)
         this->CreateBasicBlock("DELETE_FAST_failure");
     BasicBlock *success =
         this->CreateBasicBlock("DELETE_FAST_success");
-    Value *local_slot = this->builder_.CreateGEP(
-        this->fastlocals_, ConstantInt::get(Type::getInt32Ty(this->context_),
-                                            index));
+    Value *local_slot = this->locals_[index];
     Value *orig_value = this->builder_.CreateLoad(
         local_slot, "DELETE_FAST_old_reference");
     this->builder_.CreateCondBr(this->IsNull(orig_value), failure, success);
@@ -1751,7 +2114,15 @@ LlvmFunctionBuilder::DELETE_FAST(int index)
         ConstantInt::getSigned(PyTypeBuilder<int>::get(this->context_), index));
     this->PropagateException();
 
+    /* We clear both the LLVM-visible locals and the PyFrameObject's locals to
+       make vars(), dir() and locals() happy. */
     this->builder_.SetInsertPoint(success);
+    Value *frame_local_slot = this->builder_.CreateGEP(
+        this->fastlocals_, ConstantInt::get(Type::getInt32Ty(this->context_),
+                                            index));
+    this->builder_.CreateStore(
+        Constant::getNullValue(PyTypeBuilder<PyObject *>::get(this->context_)),
+        frame_local_slot);
     this->builder_.CreateStore(
         Constant::getNullValue(PyTypeBuilder<PyObject *>::get(this->context_)),
         local_slot);
@@ -2892,12 +3263,17 @@ LlvmFunctionBuilder::GetStackLevel()
 void
 LlvmFunctionBuilder::SetLocal(int locals_index, llvm::Value *new_value)
 {
-    Value *local_slot = this->builder_.CreateGEP(
+    // We write changes twice: once to our LLVM-visible locals, and again to the
+    // PyFrameObject. This makes vars(), locals() and dir() happy.
+    Value *frame_local_slot = this->builder_.CreateGEP(
         this->fastlocals_, ConstantInt::get(Type::getInt32Ty(this->context_),
                                             locals_index));
+    this->builder_.CreateStore(new_value, frame_local_slot);
+
+    Value *llvm_local_slot = this->locals_[locals_index];
     Value *orig_value =
-        this->builder_.CreateLoad(local_slot, "local_overwritten");
-    this->builder_.CreateStore(new_value, local_slot);
+        this->builder_.CreateLoad(llvm_local_slot, "llvm_local_overwritten");
+    this->builder_.CreateStore(new_value, llvm_local_slot);
     this->XDecRef(orig_value);
 }
 
@@ -3013,7 +3389,8 @@ LlvmFunctionBuilder::GetGlobalVariableFor(PyObject *obj)
 // callsite; for non-Functions, leave the default calling convention and
 // attributes in place (ie, do nothing). We require this for function pointers.
 static llvm::CallInst *
-TransferAttributes(llvm::CallInst *callsite, const llvm::Value* callee) {
+TransferAttributes(llvm::CallInst *callsite, const llvm::Value* callee)
+{
     if (const llvm::GlobalAlias *alias =
             llvm::dyn_cast<llvm::GlobalAlias>(callee))
         callee = alias->getAliasedGlobal();

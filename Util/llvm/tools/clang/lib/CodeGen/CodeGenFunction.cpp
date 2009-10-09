@@ -66,11 +66,8 @@ const llvm::Type *CodeGenFunction::ConvertType(QualType T) {
 }
 
 bool CodeGenFunction::hasAggregateLLVMType(QualType T) {
-  // FIXME: Use positive checks instead of negative ones to be more robust in
-  // the face of extension.
-  return !T->hasPointerRepresentation() && !T->isRealType() &&
-    !T->isVoidType() && !T->isVectorType() && !T->isFunctionType() &&
-    !T->isBlockPointerType() && !T->isMemberPointerType();
+  return T->isRecordType() || T->isArrayType() || T->isAnyComplexType() ||
+    T->isMemberFunctionPointerType();
 }
 
 void CodeGenFunction::EmitReturnBlock() {
@@ -159,7 +156,8 @@ void CodeGenFunction::StartFunction(GlobalDecl GD, QualType RetTy,
   // later.  Don't create this with the builder, because we don't want it
   // folded.
   llvm::Value *Undef = llvm::UndefValue::get(llvm::Type::getInt32Ty(VMContext));
-  AllocaInsertPt = new llvm::BitCastInst(Undef, llvm::Type::getInt32Ty(VMContext), "",
+  AllocaInsertPt = new llvm::BitCastInst(Undef,
+                                         llvm::Type::getInt32Ty(VMContext), "",
                                          EntryBB);
   if (Builder.isNamePreserving())
     AllocaInsertPt->setName("allocapt");
@@ -235,34 +233,62 @@ void CodeGenFunction::GenerateCode(GlobalDecl GD,
   // FIXME: Support CXXTryStmt here, too.
   if (const CompoundStmt *S = FD->getCompoundBody()) {
     StartFunction(GD, FD->getResultType(), Fn, Args, S->getLBracLoc());
+    const CXXDestructorDecl *DD = dyn_cast<CXXDestructorDecl>(FD);
+    llvm::BasicBlock *DtorEpilogue = 0;
+    if (DD) {
+      DtorEpilogue = createBasicBlock("dtor.epilogue");
+    
+      PushCleanupBlock(DtorEpilogue);
+    }
+    
     if (const CXXConstructorDecl *CD = dyn_cast<CXXConstructorDecl>(FD))
       EmitCtorPrologue(CD, GD.getCtorType());
     EmitStmt(S);
-    if (const CXXDestructorDecl *DD = dyn_cast<CXXDestructorDecl>(FD))
+      
+    if (DD) {
+      CleanupBlockInfo Info = PopCleanupBlock();
+
+      assert(Info.CleanupBlock == DtorEpilogue && "Block mismatch!");
+      EmitBlock(DtorEpilogue);
       EmitDtorEpilogue(DD, GD.getDtorType());
+      
+      if (Info.SwitchBlock)
+        EmitBlock(Info.SwitchBlock);
+      if (Info.EndBlock)
+        EmitBlock(Info.EndBlock);
+    }
     FinishFunction(S->getRBracLoc());
-  }
-  else
+  } else if (FD->isImplicit()) {
+    const CXXRecordDecl *ClassDecl =
+      cast<CXXRecordDecl>(FD->getDeclContext());
+    (void) ClassDecl;
     if (const CXXConstructorDecl *CD = dyn_cast<CXXConstructorDecl>(FD)) {
-      const CXXRecordDecl *ClassDecl =
-        cast<CXXRecordDecl>(CD->getDeclContext());
-      (void) ClassDecl;
+      // FIXME: For C++0x, we want to look for implicit *definitions* of
+      // these special member functions, rather than implicit *declarations*.
       if (CD->isCopyConstructor(getContext())) {
         assert(!ClassDecl->hasUserDeclaredCopyConstructor() &&
-               "bogus constructor is being synthesize");
+               "Cannot synthesize a non-implicit copy constructor");
         SynthesizeCXXCopyConstructor(CD, GD.getCtorType(), Fn, Args);
-      }
-      else {
+      } else if (CD->isDefaultConstructor()) {
         assert(!ClassDecl->hasUserDeclaredConstructor() &&
-               "bogus constructor is being synthesize");
+               "Cannot synthesize a non-implicit default constructor.");
         SynthesizeDefaultConstructor(CD, GD.getCtorType(), Fn, Args);
+      } else {
+        assert(false && "Implicit constructor cannot be synthesized");
       }
-    }
-  else if (const CXXDestructorDecl *CD = dyn_cast<CXXDestructorDecl>(FD))
-    SynthesizeDefaultDestructor(CD, GD.getDtorType(), Fn, Args);
-  else if (const CXXMethodDecl *MD = dyn_cast<CXXMethodDecl>(FD)) {
-    if (MD->isCopyAssignment())
+    } else if (const CXXDestructorDecl *CD = dyn_cast<CXXDestructorDecl>(FD)) {
+      assert(!ClassDecl->hasUserDeclaredDestructor() &&
+             "Cannot synthesize a non-implicit destructor");
+      SynthesizeDefaultDestructor(CD, GD.getDtorType(), Fn, Args);
+    } else if (const CXXMethodDecl *MD = dyn_cast<CXXMethodDecl>(FD)) {
+      assert(MD->isCopyAssignment() && 
+             !ClassDecl->hasUserDeclaredCopyAssignment() &&
+             "Cannot synthesize a method that is not an implicit-defined "
+             "copy constructor");
       SynthesizeCXXCopyAssignment(MD, Fn, Args);
+    } else {
+      assert(false && "Cannot synthesize unknown implicit function");
+    }
   }
 
   // Destroy the 'this' declaration.

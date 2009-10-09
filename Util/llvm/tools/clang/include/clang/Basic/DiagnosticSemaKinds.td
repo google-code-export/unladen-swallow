@@ -148,6 +148,7 @@ def warn_redecl_library_builtin : Warning<
 def err_builtin_definition : Error<"definition of builtin function %0">;
 def err_types_compatible_p_in_cplusplus : Error<
   "__builtin_types_compatible_p is not valid in C++">;
+def warn_builtin_unknown : Warning<"use of unknown builtin %0">, DefaultError;
 
 /// main()
 // static/inline main() are not errors in C, just in C++.
@@ -308,17 +309,16 @@ def err_static_assert_expression_is_not_constant : Error<
   "static_assert expression is not an integral constant expression">;
 def err_static_assert_failed : Error<"static_assert failed \"%0\"">;
 
-def err_friend_decl_defines_class : Error<
-  "cannot define a type in a friend declaration">;
 def err_unexpected_friend : Error<
   "friends can only be classes or functions">;
+def err_enum_friend : Error<
+  "enum types cannot be friends">;
 def err_friend_is_member : Error<
   "friends cannot be members of the declaring class">;
 def ext_friend_inner_class : Extension<
   "C++ 98 does not allow inner classes as friends">;
 def err_unelaborated_friend_type : Error<
-  "must specify '%select{class|union}0' in a friend "
-  "%select{class|union}0 declaration">;
+  "must specify '%select{struct|union|class|enum}0' to befriend %1">;
 def err_qualified_friend_not_found : Error<
   "no function named %0 with type %1 was found in the specified scope">;
 def err_introducing_special_friend : Error<
@@ -476,6 +476,10 @@ def err_destructor_name : Error<
 
 // C++ initialization
 def err_lvalue_to_rvalue_ref : Error<"rvalue reference cannot bind to lvalue">;
+def err_invalid_initialization : Error<
+"invalid initialization of reference of type %0 from expression of type %1">;
+def err_lvalue_to_rvalue_ambig_ref : Error<"rvalue reference cannot bind to lvalue "
+                                           "due to multiple conversion functions">;
 // FIXME: passing in an English string as %1!
 def err_not_reference_to_const_init : Error<
   "non-const lvalue reference to type %0 cannot be initialized "
@@ -571,6 +575,8 @@ def err_implicit_pointer_address_space_cast : Error<
   "illegal implicit cast between two pointers with different address spaces">;
 def err_as_qualified_auto_decl : Error<
   "automatic variable qualified with an address space">;
+def err_arg_with_address_space : Error<
+  "parameter may not be qualified with an address space">;
 def err_attribute_not_string : Error<
   "argument to %0 attribute was not a string literal">;
 def err_attribute_section_invalid_for_target : Error<
@@ -763,6 +769,8 @@ def err_ovl_ambiguous_member_call : Error<
 def err_ovl_deleted_member_call : Error<
   "call to %select{unavailable|deleted}0 member function %1">;
 def err_ovl_candidate : Note<"candidate function">;
+def err_ovl_candidate_not_viable : Note<"function not viable because"
+                                        " of ambiguity in conversion of argument %0">;
 def err_ovl_template_candidate : Note<
   "candidate function template specialization %0">;
 def err_ovl_candidate_deleted : Note<
@@ -910,6 +918,41 @@ def err_template_arg_not_pointer_to_member_form : Error<
 def err_template_arg_extra_parens : Error<
   "non-type template argument cannot be surrounded by parentheses">;
 
+// C++ template specialization
+def err_template_spec_unknown_kind : Error<
+  "can only provide an explicit %select{<error>|<error>|specialization|"
+  "instantiation|instantiation}0 for a class template, function template, or "
+  "a member function, static data member, or member class of a class template">;
+def note_specialized_entity : Note<
+  "explicitly %select{<error>|<error>|specialized|instantiated|instantiated}0 "
+  "declaration is here">;
+def err_template_spec_decl_function_scope : Error<
+  "explicit %select{<error>|<error>|specialization|instantiation|"
+  "instantiation}0 of %1 in function scope">;
+def err_template_spec_decl_class_scope : Error<
+  "explicit %select{<error>|<error>|specialization|instantiation|"
+  "instantiation}0 of %1 in class scope">;
+def err_template_spec_decl_out_of_scope_global : Error<
+  "%select{class template|class template partial|function template|member "
+  "function|static data member|member class}0 specialization of %1 must "
+  "originally be declared in the global scope">;
+def err_template_spec_decl_out_of_scope : Error<
+  "%select{class template|class template partial|function template|member "
+  "function|static data member|member class}0 specialization of %1 must "
+  "originally be declared in namespace %2">;
+def err_template_spec_redecl_out_of_scope : Error<
+  "%select{class template|class template partial|function template|member "
+  "function|static data member|member class}0 specialization of %1 not in a "
+  "namespace enclosing %2">;
+def err_template_spec_redecl_global_scope : Error<
+  "%select{class template|class template partial|function template|member "
+  "function|static data member|member class}0 specialization of %1 must occur "
+  "at global scope">;
+def err_function_spec_not_instantiated : Error<
+  "specialization of member function %q0 does not specialize an instantiated "
+  "member function">;
+def note_specialized_decl : Note<"attempt to specialize declaration here">;
+
 // C++ class template specializations and out-of-line definitions
 def err_template_spec_needs_header : Error<
   "template specialization requires 'template<>'">;
@@ -925,20 +968,6 @@ def err_template_spec_extra_headers : Error<
 def err_template_qualified_declarator_no_match : Error<
   "nested name specifier %0 for declaration does not refer into a class, "
   "class template or class template partial specialization">;
-def err_template_spec_decl_out_of_scope_global : Error<
-  "class template %select{|partial }0specialization of %1 must occur in the "
-  "global scope">;
-def err_template_spec_decl_out_of_scope : Error<
-  "class template %select{|partial }0specialization of %1 not in namespace %2">;
-def err_template_spec_decl_function_scope : Error<
-  "%select{class template specialization|class template partial specialization|"
-  "explicit instantiation}0 of %1 in function scope">;
-def err_template_spec_redecl_out_of_scope : Error<
-  "%select{class template specialization|class template partial specialization|"
-  "explicit instantiation}0 of %1 not in a namespace enclosing %2">;
-def err_template_spec_redecl_global_scope : Error<
-  "%select{class template specialization|class template partial specialization|"
-  "explicit instantiation}0 of %1 must occur at global scope">;
 
 // C++ Class Template Partial Specialization
 def err_default_arg_in_partial_spec : Error<
@@ -962,6 +991,16 @@ def note_partial_spec_unused_parameter : Note<
 def err_partial_spec_ordering_ambiguous : Error<
     "ambiguous partial specializations of %0">;
 def note_partial_spec_match : Note<"partial specialization matches %0">;
+
+// C++ Function template specializations
+def err_function_template_spec_no_match : Error<
+    "no function template matches function template specialization %0">;
+def err_function_template_spec_ambiguous : Error<
+    "function template specialization %0 ambiguously refers to more than one "
+    "function template; explicitly specify%select{|additional }1 template "
+    "arguments to identify a particular function template">;
+def note_function_template_spec_matched : Note<
+    "function template matches specialization %0">;
 
 // C++ Template Instantiation
 def err_template_recursion_depth_exceeded : Error<
@@ -1022,7 +1061,26 @@ def note_nontemplate_decl_here : Note<
     "non-templated declaration is here">;
 def err_explicit_instantiation_out_of_scope : Error<
   "explicit instantiation of %0 not in a namespace enclosing %1">;
-
+def err_explicit_instantiation_requires_name : Error<
+  "explicit instantiation declaration requires a name">;
+def err_explicit_instantiation_of_typedef : Error<
+  "explicit instantiation of typedef %0">;
+def err_explicit_instantiation_not_known : Error<
+  "explicit instantiation of %0 does not refer to a function template, member "
+  "function, member class, or static data member">;
+def note_explicit_instantiation_here : Note<
+  "explicit instantiation refers here">;
+def err_explicit_instantiation_data_member_not_instantiated : Error<
+  "explicit instantiation refers to static data member %q0 that is not an "
+  "instantiation">;
+def err_explicit_instantiation_member_function_not_instantiated : Error<
+  "explicit instantiation refers to member function %q0 that is not an "
+  "instantiation">;
+def err_explicit_instantiation_ambiguous : Error<
+  "partial ordering for explicit instantiation of %0 is ambiguous">;
+def note_explicit_instantiation_candidate : Note<
+  "explicit instantiation candidate function template here %0">;
+  
 // C++ typename-specifiers
 def err_typename_nested_not_found : Error<"no type named %0 in %1">;
 def err_typename_nested_not_found_global : Error<
@@ -1615,6 +1673,8 @@ def err_return_in_constructor_handler : Error<
 
 def err_ident_in_pseudo_dtor_not_a_type : Error<
   "identifier %0 in pseudo-destructor expression does not name a type">;
+def err_operator_arrow_circular : Error<
+  "circular pointer delegation detected">;
 def err_pseudo_dtor_base_not_scalar : Error<
   "object expression of non-scalar type %0 cannot be used in a "
   "pseudo-destructor expression">;

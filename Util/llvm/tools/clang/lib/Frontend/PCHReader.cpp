@@ -26,6 +26,7 @@
 #include "clang/Basic/SourceManagerInternals.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/TargetInfo.h"
+#include "clang/Basic/Version.h"
 #include "llvm/Bitcode/BitstreamReader.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -1340,9 +1341,7 @@ PCHReader::ReadPCHBlock() {
     case pch::SOURCE_LOCATION_OFFSETS:
       SLocOffsets = (const uint32_t *)BlobStart;
       TotalNumSLocEntries = Record[0];
-      SourceMgr.PreallocateSLocEntries(this,
-                                                   TotalNumSLocEntries,
-                                                   Record[1]);
+      SourceMgr.PreallocateSLocEntries(this, TotalNumSLocEntries, Record[1]);
       break;
 
     case pch::SOURCE_LOCATION_PRELOADS:
@@ -1377,6 +1376,23 @@ PCHReader::ReadPCHBlock() {
       Comments = (SourceRange *)BlobStart;
       NumComments = BlobLen / sizeof(SourceRange);
       break;
+        
+    case pch::SVN_BRANCH_REVISION: {
+      unsigned CurRevision = getClangSubversionRevision();
+      if (Record[0] && CurRevision && Record[0] != CurRevision) {
+        Diag(Record[0] < CurRevision? diag::warn_pch_version_too_old
+                                    : diag::warn_pch_version_too_new);
+        return IgnorePCH;
+      }
+      
+      const char *CurBranch = getClangSubversionPath();
+      if (strncmp(CurBranch, BlobStart, BlobLen)) {
+        std::string PCHBranch(BlobStart, BlobLen);
+        Diag(diag::warn_pch_different_branch) << PCHBranch << CurBranch;
+        return IgnorePCH;
+      }
+      break;
+    }
     }
   }
   Error("premature end of bitstream in PCH file");
@@ -1764,18 +1780,11 @@ QualType PCHReader::ReadTypeRecord(uint64_t Offset) {
   unsigned Code = Stream.ReadCode();
   switch ((pch::TypeCode)Stream.ReadRecord(Code, Record)) {
   case pch::TYPE_EXT_QUAL: {
-    assert(Record.size() == 3 &&
+    assert(Record.size() == 2 &&
            "Incorrect encoding of extended qualifier type");
     QualType Base = GetType(Record[0]);
-    QualType::GCAttrTypes GCAttr = (QualType::GCAttrTypes)Record[1];
-    unsigned AddressSpace = Record[2];
-
-    QualType T = Base;
-    if (GCAttr != QualType::GCNone)
-      T = Context->getObjCGCQualType(T, GCAttr);
-    if (AddressSpace)
-      T = Context->getAddrSpaceQualType(T, AddressSpace);
-    return T;
+    Qualifiers Quals = Qualifiers::fromOpaqueValue(Record[1]);
+    return Context->getQualifiedType(Base, Quals);
   }
 
   case pch::TYPE_FIXED_WIDTH_INT: {
@@ -1977,6 +1986,16 @@ QualType PCHReader::ReadTypeRecord(uint64_t Offset) {
       Protos.push_back(cast<ObjCProtocolDecl>(GetDecl(Record[Idx++])));
     return Context->getObjCObjectPointerType(OIT, Protos.data(), NumProtos);
   }
+
+  case pch::TYPE_OBJC_PROTOCOL_LIST: {
+    unsigned Idx = 0;
+    QualType OIT = GetType(Record[Idx++]);
+    unsigned NumProtos = Record[Idx++];
+    llvm::SmallVector<ObjCProtocolDecl*, 4> Protos;
+    for (unsigned I = 0; I != NumProtos; ++I)
+      Protos.push_back(cast<ObjCProtocolDecl>(GetDecl(Record[Idx++])));
+    return Context->getObjCProtocolListType(OIT, Protos.data(), NumProtos);
+  }
   }
   // Suppress a GCC warning
   return QualType();
@@ -1984,8 +2003,8 @@ QualType PCHReader::ReadTypeRecord(uint64_t Offset) {
 
 
 QualType PCHReader::GetType(pch::TypeID ID) {
-  unsigned Quals = ID & 0x07;
-  unsigned Index = ID >> 3;
+  unsigned FastQuals = ID & Qualifiers::FastMask;
+  unsigned Index = ID >> Qualifiers::FastWidth;
 
   if (Index < pch::NUM_PREDEF_TYPE_IDS) {
     QualType T;
@@ -2026,15 +2045,15 @@ QualType PCHReader::GetType(pch::TypeID ID) {
     }
 
     assert(!T.isNull() && "Unknown predefined type");
-    return T.getQualifiedType(Quals);
+    return T.withFastQualifiers(FastQuals);
   }
 
   Index -= pch::NUM_PREDEF_TYPE_IDS;
   //assert(Index < TypesLoaded.size() && "Type index out-of-range");
-  if (!TypesLoaded[Index])
-    TypesLoaded[Index] = ReadTypeRecord(TypeOffsets[Index]).getTypePtr();
+  if (TypesLoaded[Index].isNull())
+    TypesLoaded[Index] = ReadTypeRecord(TypeOffsets[Index]);
 
-  return QualType(TypesLoaded[Index], Quals);
+  return TypesLoaded[Index].withFastQualifiers(FastQuals);
 }
 
 Decl *PCHReader::GetDecl(pch::DeclID ID) {
@@ -2155,7 +2174,7 @@ void PCHReader::PrintStats() {
 
   unsigned NumTypesLoaded
     = TypesLoaded.size() - std::count(TypesLoaded.begin(), TypesLoaded.end(),
-                                      (Type *)0);
+                                      QualType());
   unsigned NumDeclsLoaded
     = DeclsLoaded.size() - std::count(DeclsLoaded.begin(), DeclsLoaded.end(),
                                       (Decl *)0);

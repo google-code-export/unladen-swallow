@@ -562,15 +562,15 @@ static void WriteMetadataAttachment(const Function &F,
 
   // Write metadata attachments
   // METADATA_ATTACHMENT - [m x [value, [n x [id, mdnode]]]
-  Metadata &TheMetadata = F.getContext().getMetadata();
+  MetadataContext &TheMetadata = F.getContext().getMetadata();
   for (Function::const_iterator BB = F.begin(), E = F.end(); BB != E; ++BB)
     for (BasicBlock::const_iterator I = BB->begin(), E = BB->end();
          I != E; ++I) {
-      const Metadata::MDMapTy *P = TheMetadata.getMDs(I);
+      const MetadataContext::MDMapTy *P = TheMetadata.getMDs(I);
       if (!P) continue;
       bool RecordedInstruction = false;
-      for (Metadata::MDMapTy::const_iterator PI = P->begin(), PE = P->end();
-           PI != PE; ++PI) {
+      for (MetadataContext::MDMapTy::const_iterator PI = P->begin(), 
+             PE = P->end(); PI != PE; ++PI) {
         if (MDNode *ND = dyn_cast_or_null<MDNode>(PI->second)) {
           if (RecordedInstruction == false) {
             Record.push_back(VE.getInstructionID(I));
@@ -601,7 +601,7 @@ static void WriteModuleMetadataStore(const Module *M,
 
   // Write metadata kinds
   // METADATA_KIND - [n x [id, name]]
-  Metadata &TheMetadata = M->getContext().getMetadata();
+  MetadataContext &TheMetadata = M->getContext().getMetadata();
   const StringMap<unsigned> *Kinds = TheMetadata.getHandlerNames();
   for (StringMap<unsigned>::const_iterator
          I = Kinds->begin(), E = Kinds->end(); I != E; ++I) {
@@ -729,18 +729,16 @@ static void WriteConstants(unsigned FirstVal, unsigned LastVal,
     } else if (const ConstantFP *CFP = dyn_cast<ConstantFP>(C)) {
       Code = bitc::CST_CODE_FLOAT;
       const Type *Ty = CFP->getType();
-      if (Ty == Type::getFloatTy(Ty->getContext()) ||
-          Ty == Type::getDoubleTy(Ty->getContext())) {
+      if (Ty->isFloatTy() || Ty->isDoubleTy()) {
         Record.push_back(CFP->getValueAPF().bitcastToAPInt().getZExtValue());
-      } else if (Ty == Type::getX86_FP80Ty(Ty->getContext())) {
+      } else if (Ty->isX86_FP80Ty()) {
         // api needed to prevent premature destruction
         // bits are not in the same order as a normal i80 APInt, compensate.
         APInt api = CFP->getValueAPF().bitcastToAPInt();
         const uint64_t *p = api.getRawData();
         Record.push_back((p[1] << 48) | (p[0] >> 16));
         Record.push_back(p[0] & 0xffffLL);
-      } else if (Ty == Type::getFP128Ty(Ty->getContext()) ||
-                 Ty == Type::getPPC_FP128Ty(Ty->getContext())) {
+      } else if (Ty->isFP128Ty() || Ty->isPPC_FP128Ty()) {
         APInt api = CFP->getValueAPF().bitcastToAPInt();
         const uint64_t *p = api.getRawData();
         Record.push_back(p[0]);

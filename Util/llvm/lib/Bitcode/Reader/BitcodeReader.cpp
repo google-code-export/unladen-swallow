@@ -342,7 +342,7 @@ Value *BitcodeReaderMDValueList::getValueFwdRef(unsigned Idx) {
     resize(Idx + 1);
 
   if (Value *V = MDValuePtrs[Idx]) {
-    assert(V->getType() == Type::getMetadataTy(Context) && "Type mismatch in value table!");
+    assert(V->getType()->isMetadataTy() && "Type mismatch in value table!");
     return V;
   }
 
@@ -808,7 +808,7 @@ bool BitcodeReader::ParseMetadata() {
       SmallVector<Value*, 8> Elts;
       for (unsigned i = 0; i != Size; i += 2) {
         const Type *Ty = getTypeByID(Record[i], false);
-        if (Ty == Type::getMetadataTy(Context))
+        if (Ty->isMetadataTy())
           Elts.push_back(MDValueList.getValueFwdRef(Record[i+1]));
         else if (Ty != Type::getVoidTy(Context))
           Elts.push_back(ValueList.getValueFwdRef(Record[i+1], Ty));
@@ -836,10 +836,10 @@ bool BitcodeReader::ParseMetadata() {
         return Error("Invalid METADATA_KIND record");
       SmallString<8> Name;
       Name.resize(RecordLength-1);
-      MDKindID Kind = Record[0];
+      unsigned Kind = Record[0];
       for (unsigned i = 1; i != RecordLength; ++i)
         Name[i-1] = Record[i];
-      Metadata &TheMetadata = Context.getMetadata();
+      MetadataContext &TheMetadata = Context.getMetadata();
       assert(TheMetadata.MDHandlerNames.find(Name.str())
              == TheMetadata.MDHandlerNames.end() &&
              "Already registered MDKind!");
@@ -967,19 +967,19 @@ bool BitcodeReader::ParseConstants() {
     case bitc::CST_CODE_FLOAT: {    // FLOAT: [fpval]
       if (Record.empty())
         return Error("Invalid FLOAT record");
-      if (CurTy == Type::getFloatTy(Context))
+      if (CurTy->isFloatTy())
         V = ConstantFP::get(Context, APFloat(APInt(32, (uint32_t)Record[0])));
-      else if (CurTy == Type::getDoubleTy(Context))
+      else if (CurTy->isDoubleTy())
         V = ConstantFP::get(Context, APFloat(APInt(64, Record[0])));
-      else if (CurTy == Type::getX86_FP80Ty(Context)) {
+      else if (CurTy->isX86_FP80Ty()) {
         // Bits are not stored the same way as a normal i80 APInt, compensate.
         uint64_t Rearrange[2];
         Rearrange[0] = (Record[1] & 0xffffLL) | (Record[0] << 16);
         Rearrange[1] = Record[0] >> 48;
         V = ConstantFP::get(Context, APFloat(APInt(80, 2, Rearrange)));
-      } else if (CurTy == Type::getFP128Ty(Context))
+      } else if (CurTy->isFP128Ty())
         V = ConstantFP::get(Context, APFloat(APInt(128, 2, &Record[0]), true));
-      else if (CurTy == Type::getPPC_FP128Ty(Context))
+      else if (CurTy->isPPC_FP128Ty())
         V = ConstantFP::get(Context, APFloat(APInt(128, 2, &Record[0])));
       else
         V = UndefValue::get(CurTy);
@@ -1556,7 +1556,7 @@ bool BitcodeReader::ParseMetadataAttachment() {
   if (Stream.EnterSubBlock(bitc::METADATA_ATTACHMENT_ID))
     return Error("Malformed block record");
 
-  Metadata &TheMetadata = Context.getMetadata();
+  MetadataContext &TheMetadata = Context.getMetadata();
   SmallVector<uint64_t, 64> Record;
   while(1) {
     unsigned Code = Stream.ReadCode();
@@ -1580,9 +1580,9 @@ bool BitcodeReader::ParseMetadataAttachment() {
         return Error ("Invalid METADATA_ATTACHMENT reader!");
       Instruction *Inst = InstructionList[Record[0]];
       for (unsigned i = 1; i != RecordLength; i = i+2) {
-        MDKindID Kind = Record[i];
+        unsigned Kind = Record[i];
         Value *Node = MDValueList.getValueFwdRef(Record[i+1]);
-        TheMetadata.setMD(Kind, cast<MDNode>(Node), Inst);
+        TheMetadata.addMD(Kind, cast<MDNode>(Node), Inst);
       }
       break;
     }

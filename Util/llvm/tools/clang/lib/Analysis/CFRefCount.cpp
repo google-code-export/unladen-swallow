@@ -2054,8 +2054,8 @@ namespace {
     BadRelease(CFRefCount* tf) : CFRefBug(tf, "Bad release") {}
 
     const char* getDescription() const {
-      return "Incorrect decrement of the reference count of an "
-      "object is not owned at this point by the caller";
+      return "Incorrect decrement of the reference count of an object that is "
+             "not owned at this point by the caller";
     }
   };
 
@@ -2906,7 +2906,7 @@ void CFRefCount::EvalSummary(ExplodedNodeSet& Dst,
       if (Loc::IsLocType(T) || (T->isIntegerType() && T->isScalarType())) {
         unsigned Count = Builder.getCurrentBlockCount();
         ValueManager &ValMgr = Eng.getValueManager();
-        SVal X = ValMgr.getConjuredSymbolVal(Ex, T, Count);
+        SVal X = ValMgr.getConjuredSymbolVal(NULL, Ex, T, Count);
         state = state->BindExpr(Ex, X, false);
       }
 

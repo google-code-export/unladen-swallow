@@ -327,16 +327,16 @@ ConstantInt* ConstantInt::get(const IntegerType* Ty, const StringRef& Str,
 //===----------------------------------------------------------------------===//
 
 static const fltSemantics *TypeToFloatSemantics(const Type *Ty) {
-  if (Ty == Type::getFloatTy(Ty->getContext()))
+  if (Ty->isFloatTy())
     return &APFloat::IEEEsingle;
-  if (Ty == Type::getDoubleTy(Ty->getContext()))
+  if (Ty->isDoubleTy())
     return &APFloat::IEEEdouble;
-  if (Ty == Type::getX86_FP80Ty(Ty->getContext()))
+  if (Ty->isX86_FP80Ty())
     return &APFloat::x87DoubleExtended;
-  else if (Ty == Type::getFP128Ty(Ty->getContext()))
+  else if (Ty->isFP128Ty())
     return &APFloat::IEEEquad;
   
-  assert(Ty == Type::getPPC_FP128Ty(Ty->getContext()) && "Unknown FP format");
+  assert(Ty->isPPC_FP128Ty() && "Unknown FP format");
   return &APFloat::PPCDoubleDouble;
 }
 
@@ -436,6 +436,12 @@ ConstantFP* ConstantFP::get(LLVMContext &Context, const APFloat& V) {
   return Slot;
 }
 
+ConstantFP *ConstantFP::getInfinity(const Type *Ty, bool Negative) {
+  const fltSemantics &Semantics = *TypeToFloatSemantics(Ty);
+  return ConstantFP::get(Ty->getContext(),
+                         APFloat::getInf(Semantics, Negative));
+}
+
 ConstantFP::ConstantFP(const Type *Ty, const APFloat& V)
   : Constant(Ty, ConstantFPVal, 0, 0), Val(V) {
   assert(&V.getSemantics() == TypeToFloatSemantics(Ty) &&
@@ -466,9 +472,7 @@ ConstantArray::ConstantArray(const ArrayType *T,
   for (std::vector<Constant*>::const_iterator I = V.begin(), E = V.end();
        I != E; ++I, ++OL) {
     Constant *C = *I;
-    assert((C->getType() == T->getElementType() ||
-            (T->isAbstract() &&
-             C->getType()->getTypeID() == T->getElementType()->getTypeID())) &&
+    assert(C->getType() == T->getElementType() &&
            "Initializer for array element doesn't match array element type!");
     *OL = C;
   }
@@ -476,6 +480,10 @@ ConstantArray::ConstantArray(const ArrayType *T,
 
 Constant *ConstantArray::get(const ArrayType *Ty, 
                              const std::vector<Constant*> &V) {
+  for (unsigned i = 0, e = V.size(); i != e; ++i) {
+    assert(V[i]->getType() == Ty->getElementType() &&
+           "Wrong type in array element initializer");
+  }
   LLVMContextImpl *pImpl = Ty->getContext().pImpl;
   // If this is an all-zero array, return a ConstantAggregateZero object
   if (!V.empty()) {
@@ -535,11 +543,7 @@ ConstantStruct::ConstantStruct(const StructType *T,
   for (std::vector<Constant*>::const_iterator I = V.begin(), E = V.end();
        I != E; ++I, ++OL) {
     Constant *C = *I;
-    assert((C->getType() == T->getElementType(I-V.begin()) ||
-            ((T->getElementType(I-V.begin())->isAbstract() ||
-              C->getType()->isAbstract()) &&
-             T->getElementType(I-V.begin())->getTypeID() == 
-                   C->getType()->getTypeID())) &&
+    assert(C->getType() == T->getElementType(I-V.begin()) &&
            "Initializer for struct element doesn't match struct element type!");
     *OL = C;
   }
@@ -584,9 +588,7 @@ ConstantVector::ConstantVector(const VectorType *T,
     for (std::vector<Constant*>::const_iterator I = V.begin(), E = V.end();
          I != E; ++I, ++OL) {
       Constant *C = *I;
-      assert((C->getType() == T->getElementType() ||
-            (T->isAbstract() &&
-             C->getType()->getTypeID() == T->getElementType()->getTypeID())) &&
+      assert(C->getType() == T->getElementType() &&
            "Initializer for vector element doesn't match vector element type!");
     *OL = C;
   }
@@ -634,6 +636,11 @@ Constant* ConstantVector::get(Constant* const* Vals, unsigned NumVals) {
 
 Constant* ConstantExpr::getNSWAdd(Constant* C1, Constant* C2) {
   return getTy(C1->getType(), Instruction::Add, C1, C2,
+               OverflowingBinaryOperator::NoSignedWrap);
+}
+
+Constant* ConstantExpr::getNSWSub(Constant* C1, Constant* C2) {
+  return getTy(C1->getType(), Instruction::Sub, C1, C2,
                OverflowingBinaryOperator::NoSignedWrap);
 }
 
@@ -2129,4 +2136,3 @@ void ConstantExpr::replaceUsesOfWithOnConstant(Value *From, Value *ToV,
   // Delete the old constant!
   destroyConstant();
 }
-

@@ -892,7 +892,8 @@ Sema::ActOnReturnStmt(SourceLocation ReturnLoc, ExprArg rex) {
     return StmtError();
 
   if (FnRetType->isVoidType()) {
-    if (RetValExp) {// C99 6.8.6.4p1 (ext_ since GCC warns)
+    if (RetValExp && !RetValExp->isTypeDependent()) {
+      // C99 6.8.6.4p1 (ext_ since GCC warns)
       unsigned D = diag::ext_return_has_expr;
       if (RetValExp->getType()->isVoidType())
         D = diag::ext_return_has_void_expr;
@@ -1295,22 +1296,19 @@ public:
   TypeWithHandler(const QualType &type, CXXCatchStmt *statement)
   : t(type), stmt(statement) {}
 
+  // An arbitrary order is fine as long as it places identical
+  // types next to each other.
   bool operator<(const TypeWithHandler &y) const {
-    if (t.getTypePtr() < y.t.getTypePtr())
+    if (t.getAsOpaquePtr() < y.t.getAsOpaquePtr())
       return true;
-    else if (t.getTypePtr() > y.t.getTypePtr())
-      return false;
-    else if (t.getCVRQualifiers() < y.t.getCVRQualifiers())
-      return true;
-    else if (t.getCVRQualifiers() < y.t.getCVRQualifiers())
+    if (t.getAsOpaquePtr() > y.t.getAsOpaquePtr())
       return false;
     else
       return getTypeSpecStartLoc() < y.getTypeSpecStartLoc();
   }
 
   bool operator==(const TypeWithHandler& other) const {
-    return t.getTypePtr() == other.t.getTypePtr()
-        && t.getCVRQualifiers() == other.t.getCVRQualifiers();
+    return t == other.t;
   }
 
   QualType getQualType() const { return t; }
