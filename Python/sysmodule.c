@@ -19,6 +19,7 @@ Data members:
 #include "code.h"
 #include "frameobject.h"
 #include "eval.h"
+#include "Util/EventTimer.h"
 
 #include "osdefs.h"
 
@@ -491,18 +492,13 @@ PyDoc_STRVAR(getcheckinterval_doc,
 static PyObject *
 sys_settscdump(PyObject *self, PyObject *args)
 {
-	int bool;
-	PyThreadState *tstate = PyThreadState_Get();
+	int tscdump;
 
-	if (!PyArg_ParseTuple(args, "i:settscdump", &bool))
+	if (!PyArg_ParseTuple(args, "i:settscdump", &tscdump))
 		return NULL;
-	if (bool)
-		tstate->interp->tscdump = 1;
-	else
-		tstate->interp->tscdump = 0;
+        _PyLog_SetTscDump(tscdump);
 	Py_INCREF(Py_None);
 	return Py_None;
-
 }
 
 PyDoc_STRVAR(settscdump_doc,

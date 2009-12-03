@@ -5,6 +5,7 @@
 
 #include "Python.h"
 #include "intrcheck.h"
+#include "llvm_thread.h"
 
 #ifdef MS_WINDOWS
 #include <process.h>
@@ -918,14 +919,35 @@ PyOS_InterruptOccurred(void)
 	return 0;
 }
 
+/* TODO: Move these other PyOS functions to a better place.  */
+
 void
-PyOS_AfterFork(void)
+PyOS_BeforeFork(void)
 {
 #ifdef WITH_THREAD
-	PyEval_ReInitThreads();
-	main_thread = PyThread_get_thread_ident();
-	main_pid = getpid();
-	_PyImport_ReInitLock();
-	PyThread_ReInitTLS();
+#ifdef WITH_LLVM
+	PyLlvm_PauseCompilation();
+#endif
+#endif
+}
+
+void
+PyOS_AfterFork(int is_child)
+{
+#ifdef WITH_THREAD
+	if (is_child) {
+#ifdef WITH_LLVM
+		PyLlvm_ResetAfterFork();
+#endif
+		PyEval_ReInitThreads();
+		main_thread = PyThread_get_thread_ident();
+		main_pid = getpid();
+		_PyImport_ReInitLock();
+		PyThread_ReInitTLS();
+	} else {
+#ifdef WITH_LLVM
+		PyLlvm_UnpauseCompilation();
+#endif
+        }
 #endif
 }

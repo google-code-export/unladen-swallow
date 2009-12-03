@@ -604,25 +604,25 @@
 /* Define to 1 if you have the <stropts.h> header file. */
 #undef HAVE_STROPTS_H
 
-/* Define to 1 if `st_birthtime' is member of `struct stat'. */
+/* Define to 1 if `struct stat' is a member of `st_birthtime'. */
 #undef HAVE_STRUCT_STAT_ST_BIRTHTIME
 
-/* Define to 1 if `st_blksize' is member of `struct stat'. */
+/* Define to 1 if `struct stat' is a member of `st_blksize'. */
 #undef HAVE_STRUCT_STAT_ST_BLKSIZE
 
-/* Define to 1 if `st_blocks' is member of `struct stat'. */
+/* Define to 1 if `struct stat' is a member of `st_blocks'. */
 #undef HAVE_STRUCT_STAT_ST_BLOCKS
 
-/* Define to 1 if `st_flags' is member of `struct stat'. */
+/* Define to 1 if `struct stat' is a member of `st_flags'. */
 #undef HAVE_STRUCT_STAT_ST_FLAGS
 
-/* Define to 1 if `st_gen' is member of `struct stat'. */
+/* Define to 1 if `struct stat' is a member of `st_gen'. */
 #undef HAVE_STRUCT_STAT_ST_GEN
 
-/* Define to 1 if `st_rdev' is member of `struct stat'. */
+/* Define to 1 if `struct stat' is a member of `st_rdev'. */
 #undef HAVE_STRUCT_STAT_ST_RDEV
 
-/* Define to 1 if `tm_zone' is member of `struct tm'. */
+/* Define to 1 if `struct tm' is a member of `tm_zone'. */
 #undef HAVE_STRUCT_TM_TM_ZONE
 
 /* Define to 1 if your `struct stat' has `st_blocks'. Deprecated, use
@@ -839,6 +839,9 @@
 /* Define to the one symbol short name of this package. */
 #undef PACKAGE_TARNAME
 
+/* Define to the home page for this package. */
+#undef PACKAGE_URL
+
 /* Define to the version of this package. */
 #undef PACKAGE_VERSION
 
@@ -987,6 +990,9 @@
 
 /* Define if WINDOW in curses.h offers a field _flags. */
 #undef WINDOW_HAS_FLAGS
+
+/* Have LLVM JIT compile code in a background thread. */
+#undef WITH_BACKGROUND_COMPILATION
 
 /* Define if you want documentation strings in extension modules */
 #undef WITH_DOC_STRINGS

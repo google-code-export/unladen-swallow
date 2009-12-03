@@ -7,13 +7,34 @@
 #include "opcode.h"
 
 #include "Util/PyBytecodeIterator.h"
+#include "Util/PyGilGuard.h"
 
 #include "llvm/ADT/OwningPtr.h"
 #include "llvm/Analysis/Verifier.h"
 #include "llvm/BasicBlock.h"
 
+// The code in this source file is run from a background thread, so it needs to
+// be extremely careful to avoid races.  Every CPython function used in this
+// source file needs to be careful to be operating on either read-only
+// structures or structures that the background thread owns.  In particular,
+// this means that we can't raise exceptions in the normal way because it
+// accesses tstate.  More subtly, it also means we can't call things like
+// PyString_FromString or PyObject_Malloc, because they assume they hold the
+// GIL.
 
 using llvm::BasicBlock;
+
+void
+PyLlvmError::RaiseUnraisableIfErrorImpl(PyThreadState *tstate)
+{
+    // This requires holding the GIL, because we adjust refcounts and call
+    // CPython functions.
+    PyGilGuard locked(tstate);
+    Py_XINCREF(this->exc_type);
+    PyObject *from = PyString_FromString("compilation thread");
+    PyObject *msg = PyString_FromString(this->exc_value);
+    PyErr_WriteUnraisableWithVals(from, this->exc_type, msg, NULL);
+}
 
 struct InstrInfo {
     InstrInfo() : line_number_(0), block_(NULL), backedge_block_(NULL) {}
@@ -32,7 +53,8 @@ struct InstrInfo {
 // instr_info[*].line_number was initialized to 0.  Returns -1 on
 // error, or 0 on success.
 static int
-set_line_numbers(PyCodeObject *code, std::vector<InstrInfo>& instr_info)
+set_line_numbers(PyCodeObject *code, std::vector<InstrInfo>& instr_info,
+                 PyLlvmError *err)
 {
     assert(PyString_Check(code->co_code));
     assert(instr_info.size() == (size_t)PyString_GET_SIZE(code->co_code) &&
@@ -46,10 +68,8 @@ set_line_numbers(PyCodeObject *code, std::vector<InstrInfo>& instr_info)
     for (int i = 0; i + 1 < lnotab_size; i += 2) {
         addr += lnotab_str[i];
         if (addr >= instr_info.size()) {
-            PyErr_Format(PyExc_SystemError,
-                         "lnotab referred to addr %zu, which is outside of"
-                         " bytecode string of length %zu.",
-                         addr, instr_info.size());
+            err->SetError(PyExc_SystemError, "lnotab referred to addr which is"
+                          " outside of bytecode string");
             return -1;
         }
         // Use += instead of = to handle line number jumps of more than 255.
@@ -72,12 +92,12 @@ set_line_numbers(PyCodeObject *code, std::vector<InstrInfo>& instr_info)
 // on success.
 static int
 find_basic_blocks(PyObject *bytecode, py::LlvmFunctionBuilder &fbuilder,
-                  std::vector<InstrInfo>& instr_info)
+                  std::vector<InstrInfo>& instr_info, PyLlvmError *err)
 {
     assert(PyString_Check(bytecode) && "Expected bytecode string");
     assert(instr_info.size() == (size_t)PyString_GET_SIZE(bytecode) &&
            "instr_info indices must match bytecode indices.");
-    PyBytecodeIterator iter(bytecode);
+    PyBytecodeIterator iter(bytecode, err);
     for (; !iter.Done() && !iter.Error(); iter.Advance()) {
         size_t target_index;
         const char *target_name;
@@ -134,7 +154,7 @@ find_basic_blocks(PyObject *bytecode, py::LlvmFunctionBuilder &fbuilder,
         // the instruction right after the jump. In either case, if a block
         // for that instruction already exists, use the existing block.
         if (iter.NextIndex() >= instr_info.size()) {
-            PyErr_SetString(PyExc_SystemError, "Fell through out of bytecode.");
+            err->SetError(PyExc_SystemError, "Fell through out of bytecode.");
             return -1;
         }
         if (instr_info[iter.NextIndex()].block_ == NULL) {
@@ -142,10 +162,8 @@ find_basic_blocks(PyObject *bytecode, py::LlvmFunctionBuilder &fbuilder,
                 fbuilder.CreateBasicBlock(fallthrough_name);
         }
         if (target_index >= instr_info.size()) {
-            PyErr_Format(PyExc_SystemError,
-                         "Jumped to index %zu, which is outside of the"
-                         " bytecode string of length %zu.",
-                         target_index, instr_info.size());
+            err->SetError(PyExc_SystemError, "Jumped to index which is"
+                          " outside of the bytecode string");
             return -1;
         }
         if (instr_info[target_index].block_ == NULL) {
@@ -165,29 +183,29 @@ find_basic_blocks(PyObject *bytecode, py::LlvmFunctionBuilder &fbuilder,
 }
 
 extern "C" _LlvmFunction *
-_PyCode_ToLlvmIr(PyCodeObject *code)
+_PyCode_ToLlvmIr(PyCodeObject *code, PyLlvmError *err,
+                 PyGlobalLlvmData *llvm_data)
 {
     if (!PyCode_Check(code)) {
-        PyErr_Format(PyExc_TypeError, "Expected code object, not '%.500s'",
-                     code->ob_type->tp_name);
+        err->SetError(PyExc_TypeError, "Expected code object");
         return NULL;
     }
     if (!PyString_Check(code->co_code)) {
-        PyErr_SetString(PyExc_SystemError,
-                        "non-string codestring in code object");
+        err->SetError(PyExc_SystemError,
+                      "non-string codestring in code object");
         return NULL;
     }
 
-    py::LlvmFunctionBuilder fbuilder(PyGlobalLlvmData::Get(), code);
+    py::LlvmFunctionBuilder fbuilder(llvm_data, code);
     std::vector<InstrInfo> instr_info(PyString_GET_SIZE(code->co_code));
-    if (-1 == set_line_numbers(code, instr_info)) {
+    if (-1 == set_line_numbers(code, instr_info, err)) {
         return NULL;
     }
-    if (-1 == find_basic_blocks(code->co_code, fbuilder, instr_info)) {
+    if (-1 == find_basic_blocks(code->co_code, fbuilder, instr_info, err)) {
         return NULL;
     }
 
-    PyBytecodeIterator iter(code->co_code);
+    PyBytecodeIterator iter(code->co_code, err);
     for (; !iter.Done() && !iter.Error(); iter.Advance()) {
         fbuilder.SetLasti(iter.CurIndex());
         if (instr_info[iter.CurIndex()].block_ != NULL) {
@@ -354,9 +372,8 @@ _PyCode_ToLlvmIr(PyCodeObject *code)
         case EXTENDED_ARG:
             // Already handled by the iterator.
         default:
-            PyErr_Format(PyExc_SystemError,
-                         "Invalid opcode %d in LLVM IR generation",
-                         iter.Opcode());
+            err->SetError(PyExc_SystemError,
+                          "Invalid opcode in LLVM IR generation");
             return NULL;
         }
     }
@@ -383,18 +400,20 @@ _PyCode_ToLlvmIr(PyCodeObject *code)
     }
 
     if (llvm::verifyFunction(*fbuilder.function(), llvm::PrintMessageAction)) {
-        PyErr_SetString(PyExc_SystemError, "invalid LLVM IR produced");
+        err->SetError(PyExc_SystemError, "invalid LLVM IR produced");
         return NULL;
     }
 
-    /* If the code object doesn't need the LOAD_GLOBAL optimization, it should
-       not care whether the globals/builtins change. */
-    if (!fbuilder.UsesLoadGlobalOpt() && code->co_assumed_globals) {
-        code->co_flags &= ~CO_FDO_GLOBALS;
-        _PyDict_DropWatcher(code->co_assumed_globals, code);
-        _PyDict_DropWatcher(code->co_assumed_builtins, code);
-        code->co_assumed_globals = NULL;
-        code->co_assumed_builtins = NULL;
+    // Hold the GIL while checking and mutating this state.
+    {
+        PyThreadState *tstate =
+            llvm_data->getCompileThread()->getThreadState();
+        PyGilGuard locked(tstate);
+        /* If the code object doesn't need the LOAD_GLOBAL optimization, it
+         * should not care whether the globals/builtins change. */
+        if (!fbuilder.UsesLoadGlobalOpt()) {
+            _PyCode_UnwatchGlobals(code);
+        }
     }
 
     // Make sure the function survives global optimizations.

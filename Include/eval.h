@@ -139,6 +139,15 @@ PyAPI_FUNC(void) PyEval_ReleaseLock(void);
 PyAPI_FUNC(void) PyEval_AcquireThread(PyThreadState *tstate);
 PyAPI_FUNC(void) PyEval_ReleaseThread(PyThreadState *tstate);
 PyAPI_FUNC(void) PyEval_ReInitThreads(void);
+PyAPI_FUNC(void) _PyEval_AssertLockHeld(void);
+
+// Hide this assertion function behind a macro to avoid extra calls in release
+// builds.
+#ifndef NDEBUG
+#define PyEval_AssertLockHeld() _PyEval_AssertLockHeld()
+#else
+#define PyEval_AssertLockHeld()
+#endif /* NDEBUG */
 
 #define Py_BEGIN_ALLOW_THREADS { \
 			PyThreadState *_save; \

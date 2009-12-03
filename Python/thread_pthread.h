@@ -477,12 +477,12 @@ PyThread_release_lock(PyThread_type_lock lock)
 
 	thelock->locked = 0;
 
-	status = pthread_mutex_unlock( &thelock->mut );
-	CHECK_STATUS("pthread_mutex_unlock[3]");
-
 	/* wake up someone (anyone, if any) waiting on the lock */
 	status = pthread_cond_signal( &thelock->lock_released );
 	CHECK_STATUS("pthread_cond_signal");
+
+	status = pthread_mutex_unlock( &thelock->mut );
+	CHECK_STATUS("pthread_mutex_unlock[3]");
 }
 
 #endif /* USE_SEMAPHORES */

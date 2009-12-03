@@ -6,12 +6,13 @@
 #error This header expects to be included only in C++ source
 #endif
 
+#include "llvm_compile.h"
 
 class PyBytecodeIterator {
 public:
     // Initializes the iterator to point to the first opcode in the
     // bytecode string.
-    PyBytecodeIterator(PyObject *bytecode_string);
+    PyBytecodeIterator(PyObject *bytecode_string, PyLlvmError *err);
     // Allow the default copy operations.
 
     int Opcode() const { return this->opcode_; }
@@ -19,7 +20,7 @@ public:
     size_t CurIndex() const { return this->cur_index_; }
     size_t NextIndex() const { return this->next_index_; }
     bool Done() const { return this->cur_index_ == this->bytecode_size_; }
-    bool Error() const { return this->error_; }
+    bool Error() const { return this->err_->ErrorOccurred(); }
 
     // Advances the iterator by one opcode, including the effect of
     // any EXTENDED_ARG opcode in the way.  If there is an
@@ -30,11 +31,16 @@ public:
     void Advance();
 
 private:
+    // Delegate setting an error.
+    void SetError(PyObject *exc_type, const char *message) {
+        this->err_->SetError(exc_type, message);
+    }
+
     int opcode_;
     int oparg_;
     size_t cur_index_;
     size_t next_index_;
-    bool error_;
+    PyLlvmError *err_;
     const unsigned char *const bytecode_str_;
     const size_t bytecode_size_;
 };

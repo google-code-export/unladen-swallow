@@ -11,6 +11,7 @@
 
 #ifdef WITH_LLVM
 #include "Python/global_llvm_data_fwd.h"
+#include "llvm_thread.h"
 
 #include "Util/ConstantMirror.h"
 
@@ -68,6 +69,9 @@ public:
     // value, only one global constant will be created in the Module.
     llvm::Value *GetGlobalStringPtr(const std::string &value);
 
+    // Accessor for the compilation thread state.
+    PyLlvmCompileThread *getCompileThread() { return &this->compile_thread_; }
+
 private:
     // We use Clang to compile a number of C functions to LLVM IR. Install
     // those functions and set up any special calling conventions or attributes
@@ -92,6 +96,8 @@ private:
     llvm::StringMap<llvm::GlobalVariable *> constant_strings_;
 
     llvm::OwningPtr<PyConstantMirror> constant_mirror_;
+
+    PyLlvmCompileThread compile_thread_;
 };
 #endif  /* WITH_LLVM */
 

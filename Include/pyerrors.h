@@ -226,6 +226,8 @@ PyAPI_FUNC(void) _PyErr_BadInternalCall(const char *filename, int lineno);
 PyAPI_FUNC(PyObject *) PyErr_NewException(char *name, PyObject *base,
                                          PyObject *dict);
 PyAPI_FUNC(void) PyErr_WriteUnraisable(PyObject *);
+PyAPI_FUNC(void) PyErr_WriteUnraisableWithVals(PyObject *from, PyObject *t,
+                                               PyObject *v, PyObject *tb);
 
 /* In sigcheck.c or signalmodule.c */
 PyAPI_FUNC(int) PyErr_CheckSignals(void);

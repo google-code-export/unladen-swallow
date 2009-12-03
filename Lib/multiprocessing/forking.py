@@ -96,6 +96,16 @@ if sys.platform != 'win32':
                 if 'random' in sys.modules:
                     import random
                     random.seed()
+
+                # Forking stops LLVM compilation, so we have to restart it if we
+                # plan to continue doing work in Python.
+                try:
+                    import _llvm
+                except ImportError:
+                    pass
+                else:
+                    _llvm.restart_after_fork()
+
                 code = process_obj._bootstrap()
                 sys.stdout.flush()
                 sys.stderr.flush()

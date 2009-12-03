@@ -599,8 +599,19 @@ PyErr_NewException(char *name, PyObject *base, PyObject *dict)
 void
 PyErr_WriteUnraisable(PyObject *obj)
 {
-	PyObject *f, *t, *v, *tb;
+	PyObject *t, *v, *tb;
 	PyErr_Fetch(&t, &v, &tb);
+	PyErr_WriteUnraisableWithVals(obj, t, v, tb);
+}
+
+/* Call to report an unraisable exception in a background thread which has no
+   thread state.  The caller must hold the GIL by calling PyEval_AcquireLock().
+   This happens in the background compilation thread. */
+void
+PyErr_WriteUnraisableWithVals(PyObject *obj, PyObject *t, PyObject *v,
+			      PyObject *tb)
+{
+	PyObject *f;
 	f = PySys_GetObject("stderr");
 	if (f != NULL) {
 		PyFile_WriteString("Exception ", f);
@@ -758,4 +769,3 @@ PyErr_ProgramText(const char *filename, int lineno)
 #ifdef __cplusplus
 }
 #endif
-

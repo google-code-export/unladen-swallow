@@ -1,6 +1,6 @@
 #include "Python.h"
 #include "code.h"
-#include "llvm_compile.h"
+#include "llvm_thread.h"
 #include "structmember.h"
 #include "Python/global_llvm_data_fwd.h"
 #include "Util/RuntimeFeedback_fwd.h"
@@ -110,6 +110,7 @@ PyCode_New(int argcount, int nlocals, int stacksize, int flags,
 		co->co_llvm_function = NULL;
 		co->co_native_function = NULL;
 		co->co_runtime_feedback = PyFeedbackMap_New();
+		co->co_being_compiled = 0;
 		/* Py_JitControl defaults to PY_JIT_WHENHOT. In the case of
 		   PY_JIT_ALWAYS, this code object will be compiled to LLVM IR
 		   and then to machine code when it is first invoked. */
@@ -145,7 +146,7 @@ static PyMemberDef code_memberlist[] = {
 #ifdef WITH_LLVM
 	{"co_hotness", T_INT,		OFF(co_hotness),	READONLY},
 	{"co_fatalbailcount", T_INT,	OFF(co_fatalbailcount),	READONLY},
-	{"__use_llvm__", T_BOOL,	OFF(co_use_llvm)},
+        {"__use_llvm__", T_BOOL,	OFF(co_use_llvm)},
 #endif
 	{NULL}	/* Sentinel */
 };
@@ -160,14 +161,23 @@ code_get_optimization(PyCodeObject *code)
 static int
 code_set_optimization(PyCodeObject *code, PyObject *new_opt_level_obj)
 {
-	int retcode;
+	Py_CompileResult retcode;
 	long new_opt_level = PyInt_AsLong(new_opt_level_obj);
 	if (new_opt_level == -1 && PyErr_Occurred())
 		return -1;
-	retcode = _PyCode_ToOptimizedLlvmIr(code, new_opt_level);
-	if (retcode == 1)
-		retcode = 0;
-	return retcode;
+	retcode = PyLlvm_JitInBackground(code, new_opt_level, PY_BLOCK);
+	switch (retcode) {
+        default: assert(0 && "invalid enum value");
+        case PY_COMPILE_OK:
+                return 0;
+        case PY_COMPILE_REFUSED:
+                PyErr_SetString(PyExc_ValueError, "Compilation refused,"
+                                " is the code string too big?");
+                return -1;
+        case PY_COMPILE_ERROR:
+        case PY_COMPILE_SHUTDOWN:
+                return -1;
+	}
 }
 
 static PyObject *
@@ -221,6 +231,20 @@ _PyCode_WatchGlobals(PyCodeObject *code, PyObject *globals, PyObject *builtins)
 }
 
 void
+_PyCode_UnwatchGlobals(PyCodeObject *code)
+{
+	code->co_flags &= ~CO_FDO_GLOBALS;
+	if (code->co_assumed_globals != NULL) {
+		_PyDict_DropWatcher(code->co_assumed_globals, code);
+		code->co_assumed_globals = NULL;
+	}
+	if (code->co_assumed_builtins != NULL) {
+		_PyDict_DropWatcher(code->co_assumed_builtins, code);
+		code->co_assumed_builtins = NULL;
+	}
+}
+
+void
 _PyCode_InvalidateMachineCode(PyCodeObject *code)
 {
 	/* This will cause the LLVM-generated code to bail back to the
@@ -230,49 +254,6 @@ _PyCode_InvalidateMachineCode(PyCodeObject *code)
 	code->co_fatalbailcount++;
 	/* This is a no-op if not configured with --with-instrumentation. */
 	_PyEval_RecordFatalBail(code);
-}
-
-int
-_PyCode_ToOptimizedLlvmIr(PyCodeObject *code, int new_opt_level)
-{
-	struct PyGlobalLlvmData *global_llvm_data;
-	if (new_opt_level < code->co_optimization) {
-		PyErr_Format(PyExc_ValueError,
-			     "Cannot reduce optimization level of code object"
-			     " from %d to %d",
-			     code->co_optimization,
-			     new_opt_level);
-		return -1;
-	}
-	/* Large functions take a very long time to translate to LLVM
-	   IR, optimize, and JIT, so we just keep them in the
-	   interpreter. */
-	if (PyString_GET_SIZE(code->co_code) > 5000) {
-		return 1;
-	}
-	// The exec statement wants to mess with the frame object in
-	// ways that can inhibit optimizations (or make them harder to
-	// implement), so we refuse to optimize code objects that use
-	// exec.
-	if (code->co_flags & CO_USES_EXEC)
-		return 1;
-	if (code->co_llvm_function == NULL) {
-		code->co_llvm_function = _PyCode_ToLlvmIr(code);
-		if (code->co_llvm_function == NULL)
-			return -1;
-	}
-	global_llvm_data = PyThreadState_GET()->interp->global_llvm_data;
-	if (code->co_optimization < new_opt_level &&
-	    PyGlobalLlvmData_Optimize(global_llvm_data,
-				      code->co_llvm_function,
-				      new_opt_level) < 0) {
-		PyErr_Format(PyExc_SystemError,
-			     "Failed to optimize to level %d",
-			     new_opt_level);
-		return -1;
-	}
-	code->co_optimization = new_opt_level;
-	return 0;
 }
 #else
 static PyGetSetDef code_getsetlist[] = {

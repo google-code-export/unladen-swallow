@@ -64,6 +64,9 @@ corresponding Unix manual entries for more information on calls.");
 #include "osdefs.h"
 #endif
 
+/* XXX This probably needs an appropriate #ifdef guard. */
+#include "sched.h"
+
 #ifdef HAVE_SYS_TYPES_H
 #include <sys/types.h>
 #endif /* HAVE_SYS_TYPES_H */
@@ -2911,6 +2914,7 @@ free_string_array(char **array, Py_ssize_t count)
 
 
 #ifdef HAVE_EXECV
+
 PyDoc_STRVAR(posix_execv__doc__,
 "execv(path, args)\n\n\
 Execute an executable path with arguments, replacing current process.\n\
@@ -3118,6 +3122,7 @@ posix_execve(PyObject *self, PyObject *args)
 	PyMem_Free(path);
 	return NULL;
 }
+
 #endif /* HAVE_EXECV */
 
 
@@ -3599,11 +3604,11 @@ Return 0 to child process and PID of child to parent process.");
 static PyObject *
 posix_fork1(PyObject *self, PyObject *noargs)
 {
+	PyOS_BeforeFork();
 	pid_t pid = fork1();
 	if (pid == -1)
 		return posix_error();
-	if (pid == 0)
-		PyOS_AfterFork();
+	PyOS_AfterFork(pid == 0);
 	return PyInt_FromLong(pid);
 }
 #endif
@@ -3618,11 +3623,11 @@ Return 0 to child process and PID of child to parent process.");
 static PyObject *
 posix_fork(PyObject *self, PyObject *noargs)
 {
+	PyOS_BeforeFork();
 	pid_t pid = fork();
 	if (pid == -1)
 		return posix_error();
-	if (pid == 0)
-		PyOS_AfterFork();
+	PyOS_AfterFork(pid == 0);
 	return PyInt_FromLong(pid);
 }
 #endif
@@ -3728,11 +3733,11 @@ posix_forkpty(PyObject *self, PyObject *noargs)
 	int master_fd = -1;
 	pid_t pid;
 
+	PyOS_BeforeFork();
 	pid = forkpty(&master_fd, NULL, NULL, NULL);
 	if (pid == -1)
 		return posix_error();
-	if (pid == 0)
-		PyOS_AfterFork();
+	PyOS_AfterFork(pid == 0);
 	return Py_BuildValue("(li)", pid, master_fd);
 }
 #endif
@@ -9003,5 +9008,3 @@ INITFUNC(void)
 #ifdef __cplusplus
 }
 #endif
-
-

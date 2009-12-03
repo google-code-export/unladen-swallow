@@ -2,6 +2,7 @@
 #include "Python.h"
 
 #include "Python/global_llvm_data.h"
+#include "Include/llvm_thread.h"
 #include "Util/PyAliasAnalysis.h"
 #include "Util/SingleFunctionInliner.h"
 #include "_llvmfunctionobject.h"
@@ -28,28 +29,21 @@ llvm::Module* FillInitialGlobalModule(llvm::Module*);
 using llvm::FunctionPassManager;
 using llvm::Module;
 
-PyGlobalLlvmData *
-PyGlobalLlvmData_New()
-{
-    return new PyGlobalLlvmData;
-}
-
-void
-PyGlobalLlvmData_Clear(PyGlobalLlvmData *)
-{
-    // So far, do nothing.
-}
-
-void
-PyGlobalLlvmData_Free(PyGlobalLlvmData * global_data)
-{
-    delete global_data;
-}
+// We have to keep this global here instead of in PyInterpreterState because the
+// JIT background thread needs it, and it is allowed to run when there is no
+// current thread.  If there is no current thread, then the normal interpreter
+// state lookup of PyThreadState_GET()->interp doesn't work.
+// TODO(rnk): Make this a thread local variable for the background compilation
+// thread.  It needs to be global because it gets used from the
+// PyTypeBuilder<T>::get() static methods, which can't be rewired to take an
+// extra parameter.
+static PyGlobalLlvmData *global_llvm_data = NULL;
 
 PyGlobalLlvmData *
 PyGlobalLlvmData::Get()
 {
-    return PyThreadState_GET()->interp->global_llvm_data;
+    assert(global_llvm_data != NULL && "global_llvm_data uninitialized!");
+    return global_llvm_data;
 }
 
 PyGlobalLlvmData::PyGlobalLlvmData()
@@ -57,7 +51,8 @@ PyGlobalLlvmData::PyGlobalLlvmData()
       module_provider_(new llvm::ExistingModuleProvider(module_)),
       debug_info_(Py_GenerateDebugInfoFlag ? new llvm::DIFactory(*module_)
                   : NULL),
-      optimizations_(4, (FunctionPassManager*)NULL)
+      optimizations_(4, (FunctionPassManager*)NULL),
+      compile_thread_(this)
 {
     std::string error;
     llvm::InitializeNativeTarget();
@@ -82,8 +77,7 @@ PyGlobalLlvmData::PyGlobalLlvmData()
     // When we ask to JIT a function, we should also JIT other
     // functions that function depends on.  This lets us JIT in a
     // background thread to avoid blocking the main thread during
-    // codegen, and (once the GIL is gone) JITting lazily is
-    // thread-unsafe anyway.
+    // codegen, and JITting lazily is thread-unsafe anyway.
     engine_->DisableLazyCompilation();
 
     this->constant_mirror_.reset(new PyConstantMirror(this));
@@ -285,10 +279,12 @@ PyGlobalLlvmData::GetGlobalStringPtr(const std::string &value)
 int
 _PyLlvm_Init()
 {
+    llvm::cl::ParseEnvironmentOptions("python", "PYTHONLLVMFLAGS", "", true);
+
+    global_llvm_data = new PyGlobalLlvmData();
+
     if (PyType_Ready(&PyLlvmFunction_Type) < 0)
         return 0;
-
-    llvm::cl::ParseEnvironmentOptions("python", "PYTHONLLVMFLAGS", "", true);
 
     return 1;
 }
@@ -296,5 +292,7 @@ _PyLlvm_Init()
 void
 _PyLlvm_Fini()
 {
+    delete global_llvm_data;
+    global_llvm_data = NULL;
     llvm::llvm_shutdown();
 }

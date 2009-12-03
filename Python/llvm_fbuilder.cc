@@ -4,10 +4,12 @@
 #include "code.h"
 #include "opcode.h"
 #include "frameobject.h"
+#include "llvm_compile.h"
 
 #include "Python/global_llvm_data.h"
 
 #include "Util/EventTimer.h"
+#include "Util/PyGilGuard.h"
 #include "Util/PyTypeBuilder.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -129,6 +131,7 @@ LlvmFunctionBuilder::LlvmFunctionBuilder(
     PyGlobalLlvmData *llvm_data, PyCodeObject *code_object)
     : uses_delete_fast(false),
       llvm_data_(llvm_data),
+      compile_thread_(this->llvm_data_->getCompileThread()),
       code_object_(code_object),
       context_(this->llvm_data_->context()),
       module_(this->llvm_data_->module()),
@@ -1160,21 +1163,48 @@ LlvmFunctionBuilder::LOAD_GLOBAL_safe(int name_index)
 #endif
 }
 
-void
-LlvmFunctionBuilder::LOAD_GLOBAL_fast(int name_index)
+PyObject *
+LlvmFunctionBuilder::LookupGlobal(int name_index)
 {
     PyCodeObject *code = this->code_object_;
     PyObject *name = PyTuple_GET_ITEM(code->co_names, name_index);
-    PyObject *obj = PyDict_GetItem(code->co_assumed_globals, name);
+    PyObject *obj;
+
+    // Hold the GIL while we access the code object and do the dict lookup.
+    PyGilGuard locked(this->compile_thread_->getThreadState());
+
+    // We have to do the NULL-check on these dicts since they could have been
+    // deleted while we were on the queue.
+    if (code->co_assumed_globals == NULL) {
+        return NULL;
+    }
+    obj = PyDict_GetItem(code->co_assumed_globals, name);
+    if (obj != NULL) {
+        return obj;
+    }
+
+    if (code->co_assumed_builtins == NULL) {
+        return NULL;
+    }
+    obj = PyDict_GetItem(code->co_assumed_builtins, name);
+    if (obj != NULL) {
+        return obj;
+    }
+
+    // This isn't necessarily an error: it's legal Python code to refer to
+    // globals that aren't yet defined at compilation time. Is it a bad idea?
+    // Almost certainly. Is it legal? Unfortunatley.
+    return NULL;
+}
+
+void
+LlvmFunctionBuilder::LOAD_GLOBAL_fast(int name_index)
+{
+    // If for some reason we can't look up the name, use the slow path.
+    PyObject *obj = this->LookupGlobal(name_index);
     if (obj == NULL) {
-        obj = PyDict_GetItem(code->co_assumed_builtins, name);
-        if (obj == NULL) {
-            /* This isn't necessarily an error: it's legal Python code to refer
-               to globals that aren't yet defined at compilation time. Is it a
-               bad idea? Almost certainly. Is it legal? Unfortunatley. */
-            this->LOAD_GLOBAL_safe(name_index);
-            return;
-        }
+        this->LOAD_GLOBAL_safe(name_index);
+        return;
     }
     this->uses_load_global_opt_ = true;
 
@@ -1884,6 +1914,9 @@ LlvmFunctionBuilder::CALL_FUNCTION_safe(int oparg)
 void
 LlvmFunctionBuilder::CALL_FUNCTION(int oparg)
 {
+    // Guard uses of the feedback, which can be modified from the foreground,
+    // with the GIL.
+    PyGilGuard locked(this->compile_thread_->getThreadState());
     const PyRuntimeFeedback *feedback = this->GetFeedback();
     if (feedback == NULL || feedback->FuncsOverflowed())
         this->CALL_FUNCTION_safe(oparg);

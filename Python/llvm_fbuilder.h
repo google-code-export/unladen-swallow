@@ -18,6 +18,7 @@
 
 struct PyCodeObject;
 struct PyGlobalLlvmData;
+class PyLlvmCompileThread;
 
 namespace py {
 
@@ -282,6 +283,10 @@ private:
     // PyStringObject for the name_index.
     llvm::Value *LookupName(int name_index);
 
+    // Look up a name in either the code's assumed globals or builtins dict.
+    // Return NULL if the name cannot be found for whatever reason.
+    PyObject *LookupGlobal(int name_index);
+
     /// Inserts a call that will print opcode_name and abort the
     /// program when it's reached.
     void DieForUndefinedOpcode(const char *opcode_name);
@@ -510,6 +515,7 @@ private:
     void BailIfProfiling(llvm::BasicBlock *fallthrough_block);
 
     PyGlobalLlvmData *const llvm_data_;
+    PyLlvmCompileThread *const compile_thread_;
     // The code object is used for looking up peripheral information
     // about the function.  It's not used to examine the bytecode
     // string.

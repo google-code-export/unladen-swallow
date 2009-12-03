@@ -13,6 +13,8 @@ import __builtin__
 import functools
 import sys
 import unittest
+import types
+import subprocess
 
 
 # Calculate default LLVM optimization level.
@@ -68,7 +70,7 @@ class ExtraAssertsTestCase(unittest.TestCase):
         except expected_exception_type, real_exception:
             pass
         else:
-            self.fail("%r not raised" % expected_exception)
+            self.fail("%r not raised" % expected_exception_type)
         self.assertEquals(real_exception.args, expected_args)
 
 
@@ -100,6 +102,33 @@ class GeneralCompilationTests(ExtraAssertsTestCase, LlvmTestCase):
             return 5
         foo.__code__.__use_llvm__ = True
         foo()
+
+    def copy_code_with_str(self, code, str):
+        """Create a copy of a code object with a different code string."""
+        return types.CodeType(code.co_argcount, code.co_nlocals,
+                              code.co_stacksize, code.co_flags, str,
+                              code.co_consts, code.co_names, code.co_varnames,
+                              code.co_filename, code.co_name,
+                              code.co_firstlineno, code.co_lnotab,
+                              code.co_freevars, code.co_cellvars)
+
+    def test_empty_string_in_code(self):
+        def f():
+            pass
+        code = self.copy_code_with_str(f.func_code, "")
+        self.assertRaisesWithArgs(SystemError,
+                                  ("lnotab referred to addr which is outside"
+                                   " of bytecode string",),
+                                  _llvm.compile, code, 1)
+
+    def test_long_null_string_in_code(self):
+        def f():
+            pass
+        code = self.copy_code_with_str(f.func_code, "\0" * 20)
+        self.assertRaisesWithArgs(SystemError,
+                                  ("Invalid opcode in LLVM IR generation",),
+                                  _llvm.compile, code, 1)
+
 
     @at_each_optimization_level
     def test_llvm_compile(self, level):
@@ -2374,6 +2403,7 @@ class OptimizationTests(LlvmTestCase):
                                optimization_level=None)
         iterations = JIT_SPIN_COUNT
         l = [foo() for _ in xrange(iterations)]
+        _llvm.wait_for_jit()
         self.assertEqual(foo.__code__.co_hotness, iterations * 10)
         self.assertEqual(foo.__code__.__use_llvm__, True)
         self.assertEqual(foo.__code__.co_optimization, JIT_OPT_LEVEL)
@@ -2401,6 +2431,7 @@ def foo():
 """, optimization_level=None)
         iterations = JIT_SPIN_COUNT
         l = [foo() for _ in xrange(iterations)]
+        _llvm.wait_for_jit()
         self.assertEqual(foo.__code__.co_hotness, iterations * 10)
 
         l = map(list, l)
@@ -2422,6 +2453,7 @@ def foo(x, callback):
 
             for _ in xrange(iterations):
                 foo([], lambda: None)
+            _llvm.wait_for_jit()
             self.assertEqual(foo.__code__.__use_llvm__, True)
 
             def change_builtins():
@@ -2453,6 +2485,7 @@ def foo(x, callback):
             for _ in xrange(1000 * 200):
                 v = gauss(0, 0.7) ** 7
         foo()
+        _llvm.wait_for_jit()
         self.assertEquals(gauss.__code__.__use_llvm__, True)
 
     def test_global_name_unknown_at_compilation_time(self):
@@ -2468,6 +2501,7 @@ def foo(trigger):
 """, optimization_level=None)
         for _ in xrange(JIT_SPIN_COUNT):  # Spin foo() until it becomes hot.
             foo(False)
+        _llvm.wait_for_jit()
         self.assertEquals(foo.__code__.__use_llvm__, True)
         self.assertEquals(foo(False), 5)
 
@@ -2497,6 +2531,7 @@ def foo(trigger):
         # since lambdas are created anew each time through the loop.
         for _ in xrange(JIT_SPIN_COUNT):
             outer(lambda: None)
+        _llvm.wait_for_jit()
         self.assertTrue(outer.__code__.__use_llvm__)
         sys.setbailerror(False)
         outer(profiling_leaf)
@@ -2514,6 +2549,7 @@ def foo(trigger):
 
         for _ in xrange(JIT_SPIN_COUNT):
             foo(len)
+        _llvm.wait_for_jit()
         self.assertTrue(foo.__code__.__use_llvm__)
         self.assertRaises(RuntimeError, foo, lambda x: 7)
 
@@ -2533,6 +2569,7 @@ def foo(trigger):
                                optimization_level=None)
         for _ in xrange(JIT_SPIN_COUNT):
             foo()
+        _llvm.wait_for_jit()
         self.assertEqual(foo.__code__.__use_llvm__, True)
         self.assertEqual(foo.__code__.co_fatalbailcount, 0)
         self.assertEqual(foo(), 0)
@@ -2556,6 +2593,7 @@ def foo(trigger):
                                optimization_level=None)
         for _ in xrange(JIT_SPIN_COUNT):
             foo(d.popitem)
+        _llvm.wait_for_jit()
         self.assertTrue(foo.__code__.__use_llvm__)
 
         k, v = foo(d.popitem)
@@ -2571,6 +2609,7 @@ def foo(trigger):
         for _ in xrange(JIT_SPIN_COUNT):
             foo("a")
             foo("c")
+        _llvm.wait_for_jit()
         self.assertTrue(foo.__code__.__use_llvm__)
         self.assertEqual(foo("a"), "cad")
 
@@ -2675,6 +2714,7 @@ class LlvmRebindBuiltinsTests(test_dynamic.RebindBuiltinsTests):
         # doesn't trigger the full range of optimizations.
         for _ in xrange(JIT_SPIN_COUNT):
             func(*args)
+        _llvm.wait_for_jit()
 
     def test_changing_globals_invalidates_function(self):
         foo = compile_for_llvm("foo", "def foo(): return len(range(3))",
@@ -2708,9 +2748,41 @@ class LlvmRebindBuiltinsTests(test_dynamic.RebindBuiltinsTests):
         foo()
 
 
+class BackgroundThreadTests(LlvmTestCase):
+
+    def test_restart_after_fork(self):
+        script = """if True:
+            import os, _llvm
+
+            def foo(): pass
+
+            pid = os.fork()
+            if pid == 0:
+                # Child
+                # Restart the background thread and try to compile it again.
+                _llvm.restart_after_fork()
+                _llvm.compile(foo.__code__, 2)
+                print 'thread successfully restarted'
+            else:
+                # Parent
+                (cpid, status) = os.waitpid(pid, 0)
+                assert pid == cpid
+                assert status == 0
+                print 'end parent'
+            """
+        proc = subprocess.Popen([sys.executable, "-c", script],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        (outs, errs) = proc.communicate()
+        self.assertEqual(proc.returncode, 0, errs)
+        self.assertEqual("", errs, errs)
+        self.assertEqual(("thread successfully restarted\n"
+                          "end parent\n"), outs)
+
+
+
 def test_main():
     tests = [LoopExceptionInteractionTests, GeneralCompilationTests,
-             OperatorTests, LiteralsTests, BailoutTests]
+             OperatorTests, LiteralsTests, BailoutTests, BackgroundThreadTests]
     if sys.flags.optimize >= 1:
         print >>sys.stderr, "test_llvm -- skipping some tests due to -O flag."
         sys.stderr.flush()

@@ -3770,6 +3770,26 @@ AC_SUBST(BUILD_LLVM)
 AC_SUBST(LLVM_PATH)
 AC_SUBST(LLVM_INC_DIR)
 
+# Check for --with-background-jit or --without-background-jit.
+AC_MSG_CHECKING(for --with(out)-background-jit)
+AC_ARG_WITH(background-jit, 
+            AC_HELP_STRING(--with(out)-background-jit,
+                           enable or disable the background JIT compilation
+			   thread.  Requires LLVM.  Enabled by default.))
+
+if test "$withval" == "no"
+then
+    AC_MSG_RESULT(disabled)
+else
+    if test "$BUILD_LLVM" == "disabled"
+    then
+	    AC_MSG_ERROR([--with-background-jit requires --with-llvm])
+    fi
+    AC_MSG_RESULT(enabled)
+    AC_DEFINE(WITH_BACKGROUND_COMPILATION, 1,
+	[Have LLVM JIT compile code in a background thread.])
+fi
+
 # Check for --with-instrumentation
 AC_MSG_CHECKING(for --with-instrumentation)
 AC_ARG_WITH(instrumentation,

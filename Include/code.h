@@ -36,6 +36,9 @@ typedef struct PyCodeObject {
     _LlvmFunction *co_llvm_function;
     PyEvalFrameFunction co_native_function;
     struct PyFeedbackMap *co_runtime_feedback;
+    /* True if this code object is being compiled or waiting on the compilation
+       queue.  */
+    char co_being_compiled;
     /* True if interpretation will be done through the LLVM JIT. This exists
        only for ease of testing; the flag that matters is f_use_llvm on the
        frame object, which is influenced by co_use_llvm. */
@@ -158,18 +161,6 @@ PyAPI_FUNC(PyObject*) PyCode_Optimize(PyObject *code, PyObject* consts,
                                       PyObject *names, PyObject *lineno_obj);
 
 #ifdef WITH_LLVM
-/* Compile a given function to LLVM IR, and apply a set of optimization passes.
-   Returns -1 on error, 0 on succcess, 1 if codegen was refused. If a non-zero
-   status code is returned, callers may need to back out any changes they've
-   made, such as setting co_use_llvm.
-
-   You can use _PyCode_WatchGlobals() before calling this to advise the code
-   object that it should make assumptions about globals/builtins.
-
-   This should eventually be able to *re*compile bytecode to LLVM IR. See
-   http://code.google.com/p/unladen-swallow/issues/detail?id=41. */
-PyAPI_FUNC(int) _PyCode_ToOptimizedLlvmIr(PyCodeObject *code, int opt_level);
-
 /* Register a code object to receive updates if its globals or builtins change.
    If the globals or builtins change, co_use_llvm will be set to 0; this causes
    the machine code to bail back to the interpreter to continue execution.
@@ -185,6 +176,9 @@ PyAPI_FUNC(int) _PyCode_ToOptimizedLlvmIr(PyCodeObject *code, int opt_level);
 PyAPI_FUNC(int) _PyCode_WatchGlobals(PyCodeObject *code,
                                      PyObject *globals, PyObject *builtins);
 
+/* Stop watching globals dictionaries.  This unsets the CO_FDO_GLOBALS flag and
+   drops the references between the code object and its globals dictionaries. */
+void _PyCode_UnwatchGlobals(PyCodeObject *code);
 
 /* Perform any steps needed to mark a function's machine code as invalid.
    Individual fatal guard failures may need to do extra work on their own to

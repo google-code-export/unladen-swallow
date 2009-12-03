@@ -14,7 +14,7 @@
 #include "code.h"
 #include "frameobject.h"
 #include "eval.h"
-#include "llvm_compile.h"
+#include "llvm_thread.h"
 #include "opcode.h"
 #include "structmember.h"
 
@@ -323,6 +323,18 @@ PyEval_ReleaseLock(void)
 {
 	PyThread_release_lock(interpreter_lock);
 }
+
+#ifndef NDEBUG
+// Assert that the calling thread holds the GIL.  To do this we ask Python what
+// thread it thinks is currently running and compare its identity with our own.
+void
+_PyEval_AssertLockHeld()
+{
+	PyThreadState *tstate = PyThreadState_GET();
+	assert(tstate && tstate->thread_id == PyThread_get_thread_ident() &&
+	       "Caller must hold the GIL!");
+}
+#endif // NDEBUG
 
 void
 PyEval_AcquireThread(PyThreadState *tstate)
@@ -917,11 +929,8 @@ PyEval_EvalFrame(PyFrameObject *f)
 	tstate->frame = f;
 
 #ifdef WITH_LLVM
-	if (f->f_use_llvm) {
+	if (f->f_use_llvm && co->co_native_function != NULL) {
 		assert(bail_reason == _PYFRAME_NO_BAIL);
-		assert(co->co_native_function != NULL &&
-		       "mark_called_and_maybe_compile was supposed to ensure"
-		       " that co_native_function exists");
 		if (!co->co_use_llvm) {
 			// A frame cannot use_llvm if the underlying code object
 			// can't use_llvm. This comes up when a generator is
@@ -3544,6 +3553,10 @@ _PyEval_HandlePyTickerExpired(PyThreadState *tstate)
 			_Py_Ticker = 0;
 		}
 	}
+	/* Pull finished JIT compilations off the queue.  If this cannot acquire
+           the lock on the queue, it will do nothing and we will try again
+           later.  */
+	PyLlvm_ApplyFinishedJobs(PY_NO_BLOCK);
 #ifdef WITH_THREAD
 	if (interpreter_lock) {
 		/* Give another thread a chance */
@@ -4021,51 +4034,53 @@ mark_called_and_maybe_compile(PyCodeObject *co, PyFrameObject *f)
 		return 0;
 	}
 
+ 	bool is_hot = false;
 	if (co->co_hotness > PY_HOTNESS_THRESHOLD) {
 #ifdef Py_WITH_INSTRUMENTATION
 		hot_code->AddHotCode(co);
 #endif
 		if (Py_JitControl == PY_JIT_WHENHOT)
-			co->co_use_llvm = f->f_use_llvm = 1;
+			is_hot = true;
 	}
-	if (co->co_use_llvm) {
-		if (co->co_llvm_function == NULL) {
-			int target_optimization =
-				std::max(Py_DEFAULT_JIT_OPT_LEVEL,
-					 Py_OptimizeFlag);
-			if (co->co_optimization < target_optimization) {
-				PY_LOG_TSC_EVENT(EVAL_COMPILE_START);
-				// If the LLVM version of the function wasn't
-				// created yet, setting the optimization level
-				// will create it.
-				int r;
-				PY_LOG_TSC_EVENT(LLVM_COMPILE_START);
-				if (_PyCode_WatchGlobals(co, f->f_globals,
-				                         f->f_builtins)) {
-					return -1;
-				}
-				r = _PyCode_ToOptimizedLlvmIr(
-					co, target_optimization);
-				PY_LOG_TSC_EVENT(LLVM_COMPILE_END);
-				if (r < 0)  // Error
-					return -1;
-				if (r == 1) {  // Codegen refused
-					co->co_use_llvm = f->f_use_llvm = 0;
-					return 0;
-				}
-			}
+ 	// If we decided the function was hot or something else told us to use
+ 	// LLVM and there is no native function already, start the JIT
+ 	// compilation in the background thread.
+ 	if ((is_hot || co->co_use_llvm) && co->co_native_function == NULL &&
+ 	    !co->co_being_compiled) {
+ 		PY_LOG_TSC_EVENT(EVAL_COMPILE_START);
+ 		co->co_being_compiled = 1;
+ 		int new_opt_level = co->co_optimization;
+ 		if (new_opt_level == -1) {
+ 			// Use the default optimization level if the user hasn't
+ 			// explicitly set co_optimization.
+ 			new_opt_level = std::max(Py_DEFAULT_JIT_OPT_LEVEL,
+ 						 Py_OptimizeFlag);
+ 		}
+		if (_PyCode_WatchGlobals(co, f->f_globals, f->f_builtins)) {
+			return -1;
 		}
-		if (co->co_native_function == NULL) {
-			// Now try to JIT the IR function to machine code.
-			PY_LOG_TSC_EVENT(JIT_START);
-			co->co_native_function =
-				_LlvmFunction_Jit(co->co_llvm_function);
-			PY_LOG_TSC_EVENT(JIT_END);
-			if (co->co_native_function == NULL) {
-				return -1;
-			}
-		}
-		PY_LOG_TSC_EVENT(EVAL_COMPILE_END);
+ 		// This call should block when using -j always.
+ 		Py_ShouldBlock block = (Py_JitControl == PY_JIT_ALWAYS
+ 					? PY_BLOCK : PY_NO_BLOCK);
+ 		Py_CompileResult r = PyLlvm_JitInBackground(co, new_opt_level,
+ 							    block);
+ 		PY_LOG_TSC_EVENT(EVAL_COMPILE_END);
+ 		switch (r) {
+ 		default: assert(0 && "invalid enum value");
+ 		case PY_COMPILE_ERROR:
+                         _PyCode_UnwatchGlobals(co);
+ 			return -1;
+ 		case PY_COMPILE_SHUTDOWN:
+			// Compilation may fail during shutdown.  Ignore these
+			// errors.
+ 			PyErr_Clear();
+ 			// FALLTHROUGH
+ 		case PY_COMPILE_REFUSED:
+ 			_PyCode_UnwatchGlobals(co);
+ 			break;
+ 		case PY_COMPILE_OK:
+ 			break;
+ 		}
 	}
 	return 0;
 }

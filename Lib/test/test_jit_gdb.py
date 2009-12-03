@@ -45,12 +45,13 @@ class DebuggerTests(unittest.TestCase):
                                   "--eval-command=backtrace",
                                   "--eval-command=continue",
                                   "--args",
-                                  sys.executable, "-S", "-c", """
+                                  sys.executable, "-c", """
+import _llvm
 def foo(): bar()
 def bar(): baz()
 def baz(): print 'Hello, World!'
 for function in (foo, bar, baz):
-    function.__code__.__use_llvm__ = True
+    _llvm.compile(function.__code__, 2)
 foo()""")
         # Get the indices of each function in the stack trace.
         foo, bar, baz, output = map(

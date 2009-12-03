@@ -44,9 +44,14 @@ typedef struct {
 
 /// Log an event and the TSC when it occurred.
 #ifdef __cplusplus
-extern "C" PyAPI_FUNC(void) _PyLog_TscEvent(_PyTscEventId event);
-#else
-extern PyAPI_FUNC(void) _PyLog_TscEvent(_PyTscEventId event);
+extern "C" {
+#endif
+
+PyAPI_FUNC(void) _PyLog_TscEvent(_PyTscEventId event);
+PyAPI_FUNC(void) _PyLog_SetTscDump(int tsc_dump);
+
+#ifdef __cplusplus
+}
 #endif
 
 /// Simple macro that wraps up the ifdef WITH_TSC check so that callers don't

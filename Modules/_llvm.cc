@@ -8,7 +8,7 @@ LLVM-py.
 
 #include "Python.h"
 #include "_llvmfunctionobject.h"
-#include "llvm_compile.h"
+#include "llvm_thread.h"
 #include "Python/global_llvm_data_fwd.h"
 #include "Util/RuntimeFeedback_fwd.h"
 
@@ -49,10 +49,8 @@ llvm_compile(PyObject *self, PyObject *args)
     PyObject *obj;
     PyCodeObject *code;
     long opt_level;
-    struct PyGlobalLlvmData *global_llvm_data;
 
-    if (!PyArg_ParseTuple(args, "O!l:compile",
-                          &PyCode_Type, &obj, &opt_level))
+    if (!PyArg_ParseTuple(args, "O!l:compile", &PyCode_Type, &obj, &opt_level))
         return NULL;
 
     if (opt_level < -1 || opt_level > Py_MAX_LLVM_OPT_LEVEL) {
@@ -61,22 +59,24 @@ llvm_compile(PyObject *self, PyObject *args)
     }
 
     code = (PyCodeObject *)obj;
+
     if (code->co_llvm_function)
         _LlvmFunction_Dealloc(code->co_llvm_function);
-    code->co_llvm_function = _PyCode_ToLlvmIr(code);
-    if (code->co_llvm_function == NULL)
-        return NULL;
-    global_llvm_data = PyThreadState_GET()->interp->global_llvm_data;
-    if (code->co_optimization < opt_level &&
-        PyGlobalLlvmData_Optimize(global_llvm_data,
-                                  code->co_llvm_function, opt_level) < 0) {
-        PyErr_Format(PyExc_ValueError,
-                     "Failed to optimize to level %ld", opt_level);
-        _LlvmFunction_Dealloc(code->co_llvm_function);
-        return NULL;
-    }
+    code->co_llvm_function = NULL;
 
-    return _PyLlvmFunction_FromCodeObject((PyObject *)code);
+    // JIT the code in the background, blocking until it finishes.
+    switch (PyLlvm_JitInBackground(code, opt_level, PY_BLOCK)) {
+    default: assert(0 && "invalid enum value");
+    case PY_COMPILE_SHUTDOWN:
+    case PY_COMPILE_ERROR:
+        if (code->co_llvm_function) {
+            _LlvmFunction_Dealloc(code->co_llvm_function);
+            code->co_llvm_function = NULL;
+        }
+        return NULL;
+    case PY_COMPILE_OK:
+        return _PyLlvmFunction_FromCodeObject((PyObject *)code);
+    }
 }
 
 PyDoc_STRVAR(llvm_clear_feedback_doc,
@@ -176,6 +176,34 @@ llvm_get_hotness_threshold(PyObject *self)
     return PyLong_FromLong(PY_HOTNESS_THRESHOLD);
 }
 
+PyDoc_STRVAR(llvm_wait_for_jit_doc,
+"wait_for_jit()\n\
+\n\
+Blocks execution until all JIT jobs that are currently on the queue are\n\
+done.");
+
+static PyObject *
+llvm_wait_for_jit(PyObject *self, PyObject *noargs)
+{
+    PyLlvm_WaitForJit();
+    Py_RETURN_NONE;
+}
+
+PyDoc_STRVAR(llvm_restart_after_fork_doc,
+"restart_after_fork()\n\
+\n\
+Restarts the background compilation thread after a fork.  Compilation is not\n\
+restarted automatically because it is usually not necessary and certain\n\
+platforms (OS X) do not support calling exec if there are currently threads\n\
+running.");
+
+static PyObject *
+llvm_restart_after_fork(PyObject *self, PyObject *noargs)
+{
+    PyLlvm_StartCompilation();
+    Py_RETURN_NONE;
+}
+
 static struct PyMethodDef llvm_methods[] = {
     {"set_debug", (PyCFunction)llvm_setdebug, METH_O, setdebug_doc},
     {"compile", llvm_compile, METH_VARARGS, llvm_compile_doc},
@@ -187,6 +215,9 @@ static struct PyMethodDef llvm_methods[] = {
      llvm_set_jit_control_doc},
     {"get_hotness_threshold", (PyCFunction)llvm_get_hotness_threshold,
      METH_NOARGS, llvm_get_hotness_threshold_doc},
+    {"wait_for_jit", llvm_wait_for_jit, METH_NOARGS, llvm_wait_for_jit_doc},
+    {"restart_after_fork", llvm_restart_after_fork, METH_NOARGS,
+      llvm_restart_after_fork_doc},
     { NULL, NULL }
 };
 

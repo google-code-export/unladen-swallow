@@ -44,12 +44,17 @@ public:
 
     void PrintData();
 
+    void SetTscDump(bool tsc_dump);
+
 private:
     // Map a system thread id (a long that takes 11 chars to print, usually)
     // to a much shorter thread id (ideally 1 char). This is used to cut the
     // output size by 30%, which dramatically speeds up analysis.
     // This is not thread-safe.
     long GetDenseThreadId(long thread_id);
+
+    // Whether or not to dump TSC events.
+    bool tsc_dump_;
 
     // Serialize mutations of this->data_.
     llvm::sys::Mutex lock_;
@@ -110,10 +115,21 @@ loop:
 
 _PyEventTimer::_PyEventTimer() {
     this->data_.reserve(PY_EVENT_BUFFER_SIZE);
+    this->tsc_dump_ = false;
 }
 
 _PyEventTimer::~_PyEventTimer() {
     this->PrintData();
+}
+
+void
+_PyEventTimer::SetTscDump(bool tsc_dump) {
+    this->tsc_dump_ = tsc_dump;
+}
+
+void
+_PyLog_SetTscDump(int tsc_dump) {
+    event_timer->SetTscDump(tsc_dump);
 }
 
 void
@@ -155,7 +171,7 @@ _PyEventTimer::EventToString(_PyTscEventId event_id) {
 
 long
 _PyEventTimer::GetDenseThreadId(long sys_thread_id) {
-    for (long idx = 0; idx < this->thread_id_.size(); idx++) {
+    for (size_t idx = 0; idx < this->thread_id_.size(); idx++) {
         if (this->thread_id_[idx] == sys_thread_id)
             return idx;
     }
@@ -169,8 +185,7 @@ _PyEventTimer::LogEvent(_PyTscEventId event_id) {
     // This needs to try to be really low overhead.  The lock acquire down
     // there doesn't really help.
     tsc_t tsc_time = read_tsc();
-    PyThreadState *tstate = PyThreadState_GET();
-    if (tstate->interp->tscdump) {
+    if (this->tsc_dump_) {
         _PyTscEvent event;
         long thread_id = PyThread_get_thread_ident();
         event.event_id = event_id;

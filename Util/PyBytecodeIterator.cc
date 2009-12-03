@@ -1,11 +1,13 @@
 #include "Python.h"
 #include "opcode.h"
+#include "llvm_thread.h"
 
 #include "Util/PyBytecodeIterator.h"
 
 
-PyBytecodeIterator::PyBytecodeIterator(PyObject *bytecode_string)
-    : error_(false),
+PyBytecodeIterator::PyBytecodeIterator(PyObject *bytecode_string,
+                                       PyLlvmError *err)
+    : err_(err),
       bytecode_str_((unsigned char *)PyString_AS_STRING(bytecode_string)),
       bytecode_size_(PyString_GET_SIZE(bytecode_string))
 {
@@ -28,9 +30,8 @@ PyBytecodeIterator::Advance()
     this->next_index_++;
     if (HAS_ARG(this->opcode_)) {
         if (this->next_index_ + 1 >= this->bytecode_size_) {
-            PyErr_SetString(PyExc_SystemError,
-                            "Argument fell off the end of the bytecode");
-            this->error_ = true;
+            this->SetError(PyExc_SystemError,
+                           "Argument fell off the end of the bytecode");
             return;
         }
         this->oparg_ = (this->bytecode_str_[this->next_index_] |
@@ -38,17 +39,14 @@ PyBytecodeIterator::Advance()
         this->next_index_ += 2;
         if (this->opcode_ == EXTENDED_ARG) {
             if (this->next_index_ + 2 >= this->bytecode_size_) {
-                PyErr_SetString(
-                    PyExc_SystemError,
-                    "EXTENDED_ARG fell off the end of the bytecode");
-                this->error_ = true;
+                this->SetError(PyExc_SystemError,
+                               "EXTENDED_ARG fell off the end of the bytecode");
                 return;
             }
             this->opcode_ = this->bytecode_str_[this->next_index_];
             if (!HAS_ARG(this->opcode_)) {
-                PyErr_SetString(PyExc_SystemError,
-                                "Opcode after EXTENDED_ARG must take argument");
-                this->error_ = true;
+                this->SetError(PyExc_SystemError,
+                               "Opcode after EXTENDED_ARG must take argument");
                 return;
             }
             this->oparg_ <<= 16;

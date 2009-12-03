@@ -18,6 +18,7 @@
 #include "eval.h"
 #include "marshal.h"
 #include "Python/global_llvm_data_fwd.h"
+#include "llvm_thread.h"
 
 #ifdef HAVE_SIGNAL_H
 #include <signal.h>
@@ -182,11 +183,6 @@ Py_InitializeEx(int install_sigs)
 			Py_JitControl = PY_JIT_ALWAYS;
 	}
 
-#ifdef WITH_LLVM
-        if (!_PyLlvm_Init())
-		Py_FatalError("Py_Initialize: can't init LLVM support");
-#endif
-
 	interp = PyInterpreterState_New();
 	if (interp == NULL)
 		Py_FatalError("Py_Initialize: can't make first interpreter");
@@ -206,6 +202,12 @@ Py_InitializeEx(int install_sigs)
 
 	if (!PyByteArray_Init())
 		Py_FatalError("Py_Initialize: can't init bytearray");
+
+#ifdef WITH_LLVM
+        if (!_PyLlvm_Init())
+		Py_FatalError("Py_Initialize: can't init LLVM support");
+        PyLlvm_StartCompilation();
+#endif
 
 	_PyFloat_Init();
 
@@ -480,6 +482,13 @@ Py_Finalize(void)
 	   list, so they become garbage. */
 	while (PyGC_Collect() > 0)
 		/* nothing */;
+#endif
+
+#ifdef WITH_LLVM
+        /* Stop the LLVM compilation background thread.  This must be done
+         * before we finalize the GIL, delete the thread state, or finalize the
+         * modules, because it uses those things.  */
+        PyLlvm_StopCompilation();
 #endif
 
 	/* Destroy all modules */

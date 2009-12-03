@@ -6,6 +6,8 @@
 extern "C" {
 #endif
 
+struct PyGlobalLlvmData;
+
 #ifdef WITH_LLVM
 /* We store an _LlvmFunction in the PyCodeObject; these can be created without
    changing any Python reference counts, which would show up as reference leaks
@@ -25,6 +27,7 @@ typedef struct _LlvmFunction {
    re-translated even if the underlying IR function changes. */
 typedef PyObject *(*PyEvalFrameFunction)(struct _frame *);
 PyAPI_FUNC(PyEvalFrameFunction) _LlvmFunction_Jit(
+    struct PyGlobalLlvmData *global_llvm_data,
     _LlvmFunction *llvm_function);
 
 PyAPI_FUNC(void) _LlvmFunction_Dealloc(_LlvmFunction *functionobj);

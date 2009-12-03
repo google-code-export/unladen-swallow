@@ -3,6 +3,7 @@
 #include "Python.h"
 #include "_llvmfunctionobject.h"
 
+#include "llvm_thread.h"
 #include "frameobject.h"
 #include "structmember.h"
 #include "Python/global_llvm_data.h"
@@ -58,29 +59,15 @@ static llvm::ManagedStatic<LlvmIrSizeStats> llvm_ir_size_stats;
 void
 _LlvmFunction_Dealloc(_LlvmFunction *functionobj)
 {
-    llvm::Function *function = (llvm::Function *)functionobj->lf_function;
-    // Allow global optimizations to destroy the function.
-    function->setLinkage(llvm::GlobalValue::InternalLinkage);
-    if (function->use_empty()) {
-        // Delete the function if it's already unused.
-        // Free the machine code for the function first, or LLVM will try to
-        // reuse it later.  This is probably a bug in LLVM. TODO(twouters):
-        // fix the bug in LLVM and remove this workaround.
-        PyGlobalLlvmData *global_llvm_data =
-            PyThreadState_GET()->interp->global_llvm_data;
-        llvm::ExecutionEngine *engine = global_llvm_data->getExecutionEngine();
-        engine->freeMachineCodeForFunction(function);
-        function->eraseFromParent();
-    }
-    delete functionobj;
+    PyLlvmCompileThread *thread = PyGlobalLlvmData::Get()->getCompileThread();
+    thread->FreeInBackground(functionobj);
 }
 
 PyEvalFrameFunction
-_LlvmFunction_Jit(_LlvmFunction *function_obj)
+_LlvmFunction_Jit(PyGlobalLlvmData *global_llvm_data,
+                  _LlvmFunction *function_obj)
 {
     llvm::Function *function = (llvm::Function *)function_obj->lf_function;
-    PyGlobalLlvmData *global_llvm_data =
-        PyThreadState_GET()->interp->global_llvm_data;
     llvm::ExecutionEngine *engine = global_llvm_data->getExecutionEngine();
 
 #ifdef Py_WITH_INSTRUMENTATION
