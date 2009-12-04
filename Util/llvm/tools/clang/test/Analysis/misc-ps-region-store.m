@@ -1,5 +1,5 @@
-// RUN: clang-cc -triple i386-apple-darwin9 -analyze -checker-cfref --analyzer-store=region --verify -fblocks %s &&
-// RUN: clang-cc -triple x86_64-apple-darwin9 -analyze -checker-cfref --analyzer-store=region --verify -fblocks %s
+// RUN: clang-cc -triple i386-apple-darwin9 -analyze -analyzer-experimental-internal-checks -checker-cfref --analyzer-store=region --verify -fblocks %s
+// RUN: clang-cc -triple x86_64-apple-darwin9 -analyze -analyzer-experimental-internal-checks -checker-cfref --analyzer-store=region --verify -fblocks %s
 
 typedef struct objc_selector *SEL;
 typedef signed char BOOL;
@@ -141,9 +141,11 @@ again:
   }
 }
 
+//===----------------------------------------------------------------------===//
 // Reduced test case from <rdar://problem/7114618>.
 // Basically a null check is performed on the field value, which is then
 // assigned to a variable and then checked again.
+//===----------------------------------------------------------------------===//
 struct s_7114618 { int *p; };
 void test_rdar_7114618(struct s_7114618 *s) {
   if (s->p) {
@@ -168,9 +170,11 @@ void f() {
   }
 }
 
+//===----------------------------------------------------------------------===//
 // <rdar://problem/7185607>
 // Bit-fields of a struct should be invalidated when blasting the entire
 // struct with an integer constant.
+//===----------------------------------------------------------------------===//
 struct test_7185607 {
   int x : 10;
   int y : 22;
@@ -181,9 +185,11 @@ int rdar_test_7185607() {
   return s.x; // no-warning
 }
 
+//===----------------------------------------------------------------------===//
 // <rdar://problem/7242006> [RegionStore] compound literal assignment with
 //  floats not honored
 // This test case is mirrored in misc-ps.m, but this case is a negative.
+//===----------------------------------------------------------------------===//
 typedef float CGFloat;
 typedef struct _NSSize {
     CGFloat width;
@@ -195,9 +201,11 @@ CGFloat rdar7242006_negative(CGFloat x) {
   return y.width; // expected-warning{{garbage}}
 }
 
+//===----------------------------------------------------------------------===//
 // <rdar://problem/7249340> - Allow binding of values to symbolic regions.
 // This test case shows how RegionStore tracks the value bound to 'x'
 // after the assignment.
+//===----------------------------------------------------------------------===//
 typedef int* ptr_rdar_7249340;
 void rdar_7249340(ptr_rdar_7249340 x) {
   *x = 1;
@@ -207,11 +215,13 @@ void rdar_7249340(ptr_rdar_7249340 x) {
   *p = 0xDEADBEEF; // no-warning
 }
 
+//===----------------------------------------------------------------------===//
 // <rdar://problem/7249327> - This test case tests both value tracking of
 // array values and that we handle symbolic values that are casted
 // between different integer types.  Note the assignment 'n = *a++'; here
 // 'n' is and 'int' and '*a' is 'unsigned'.  Previously we got a false positive
 // at 'x += *b++' (undefined value) because we got a false path.
+//===----------------------------------------------------------------------===//
 int rdar_7249327_aux(void);
 
 void rdar_7249327(unsigned int A[2*32]) {
@@ -237,8 +247,10 @@ void rdar_7249327(unsigned int A[2*32]) {
     x += *b++; // no-warning
 }
 
+//===----------------------------------------------------------------------===//
 // <rdar://problem/6914474> - Check that 'x' is invalidated because its
 // address is passed in as a value to a struct.
+//===----------------------------------------------------------------------===//
 struct doodad_6914474 { int *v; };
 extern void prod_6914474(struct doodad_6914474 *d);
 int rdar_6914474(void) {
@@ -274,12 +286,15 @@ struct WrappedStruct { unsigned z; };
 int test_handle_array_wrapper() {
   struct ArrayWrapper x;
   test_handle_array_wrapper(&x);
-  struct WrappedStruct *p = (struct WrappedStruct*) x.y;
+  struct WrappedStruct *p = (struct WrappedStruct*) x.y; // expected-warning{{Casting a non-structure type to a structure type and accessing a field can lead to memory access errors or data corruption.}}
   return p->z;  // no-warning
 }
 
+//===----------------------------------------------------------------------===//
 // <rdar://problem/7261075> [RegionStore] crash when 
 //   handling load: '*((unsigned int *)"????")'
+//===----------------------------------------------------------------------===//
+
 int rdar_7261075(void) {
   unsigned int var = 0;
   if (var == *((unsigned int *)"????"))
@@ -287,8 +302,11 @@ int rdar_7261075(void) {
   return 0;
 }
 
+//===----------------------------------------------------------------------===//
 // <rdar://problem/7275774> false path due to limited pointer 
 //                          arithmetic constraints
+//===----------------------------------------------------------------------===//
+
 void rdar_7275774(void *data, unsigned n) {
   if (!(data || n == 0))
     return;
@@ -301,5 +319,193 @@ void rdar_7275774(void *data, unsigned n) {
     // be '0', meaning that this branch is not feasible.
     *p = *q; // no-warning
   }
+}
+
+//===----------------------------------------------------------------------===//
+// <rdar://problem/7312221>
+//
+//  Test that Objective-C instance variables aren't prematurely pruned
+//  from the analysis state.
+//===----------------------------------------------------------------------===//
+
+struct rdar_7312221_value { int x; };
+
+@interface RDar7312221
+{
+  struct rdar_7312221_value *y;
+}
+- (void) doSomething_7312221;
+@end
+
+extern struct rdar_7312221_value *rdar_7312221_helper();
+extern int rdar_7312221_helper_2(id o);
+extern void rdar_7312221_helper_3(int z);
+
+@implementation RDar7312221
+- (void) doSomething_7312221 {
+  if (y == 0) {
+    y = rdar_7312221_helper();
+    if (y != 0) {
+      y->x = rdar_7312221_helper_2(self);
+      // The following use of 'y->x' previously triggered a null dereference, as the value of 'y'
+      // before 'y = rdar_7312221_helper()' would be used.
+      rdar_7312221_helper_3(y->x); // no-warning
+    }
+  }
+}
+@end
+
+struct rdar_7312221_container {
+  struct rdar_7312221_value *y;
+};
+
+extern int rdar_7312221_helper_4(struct rdar_7312221_container *s);
+
+// This test case essentially matches the one in [RDar7312221 doSomething_7312221].
+void doSomething_7312221_with_struct(struct rdar_7312221_container *Self) {
+  if (Self->y == 0) {
+    Self->y = rdar_7312221_helper();
+    if (Self->y != 0) {
+      Self->y->x = rdar_7312221_helper_4(Self);
+      rdar_7312221_helper_3(Self->y->x); // no-warning
+    }
+  }
+}
+
+//===----------------------------------------------------------------------===//
+// <rdar://problem/7332673> - Just more tests cases for regions
+//===----------------------------------------------------------------------===//
+
+void rdar_7332673_test1() {
+    char value[1];
+    if ( *(value) != 1 ) {} // expected-warning{{The left operand of '!=' is a garbage value}}
+}
+void rdar_rdar_7332673_test2_aux(char *x);
+void rdar_7332673_test2() {
+    char *value;
+    if ( rdar_7332673_test2_aux(value) != 1 ) {} // expected-warning{{Pass-by-value argument in function call is undefined}}
+}
+
+//===----------------------------------------------------------------------===//
+// <rdar://problem/7347252>: Because of a bug in
+//   RegionStoreManager::RemoveDeadBindings(), the symbol for s->session->p
+//   would incorrectly be pruned from the state after the call to
+//   rdar7347252_malloc1(), and would incorrectly result in a warning about
+//   passing a null pointer to rdar7347252_memcpy().
+//===----------------------------------------------------------------------===//
+
+struct rdar7347252_AA { char *p;};
+typedef struct {
+ struct rdar7347252_AA *session;
+ int t;
+ char *q;
+} rdar7347252_SSL1;
+
+int rdar7347252_f(rdar7347252_SSL1 *s);
+char *rdar7347252_malloc1(int);
+char *rdar7347252_memcpy1(char *d, char *s, int n) __attribute__((nonnull (1,2)));
+
+int rdar7347252(rdar7347252_SSL1 *s) {
+ rdar7347252_f(s);  // the SymbolicRegion of 's' is set a default binding of conjured symbol
+ if (s->session->p == ((void*)0)) {
+   if ((s->session->p = rdar7347252_malloc1(10)) == ((void*)0)) {
+     return 0;
+   }
+   rdar7347252_memcpy1(s->session->p, "aa", 2); // no-warning
+ }
+ return 0;
+}
+
+//===----------------------------------------------------------------------===//
+// PR 5316 - "crash when accessing field of lazy compound value"
+//  Previously this caused a crash at the MemberExpr '.chr' when loading
+//  a field value from a LazyCompoundVal
+//===----------------------------------------------------------------------===//
+
+typedef unsigned int pr5316_wint_t;
+typedef pr5316_wint_t pr5316_REFRESH_CHAR;
+typedef struct {
+  pr5316_REFRESH_CHAR chr;
+}
+pr5316_REFRESH_ELEMENT;
+static void pr5316(pr5316_REFRESH_ELEMENT *dst, const pr5316_REFRESH_ELEMENT *src) {
+  while ((*dst++ = *src++).chr != L'\0')  ;
+}
+
+//===----------------------------------------------------------------------===//
+// Exercise creating ElementRegion with symbolic super region.
+//===----------------------------------------------------------------------===//
+void element_region_with_symbolic_superregion(int* p) {
+  int *x;
+  int a;
+  if (p[0] == 1)
+    x = &a;
+  if (p[0] == 1)
+    (void)*x; // no-warning
+}
+
+//===----------------------------------------------------------------------===//
+// Test returning an out-of-bounds pointer (CWE-466)
+//===----------------------------------------------------------------------===//
+
+static int test_cwe466_return_outofbounds_pointer_a[10];
+int *test_cwe466_return_outofbounds_pointer() {
+  int *p = test_cwe466_return_outofbounds_pointer_a+10;
+  return p; // expected-warning{{Returned pointer value points outside the original object}}
+}
+
+//===----------------------------------------------------------------------===//
+// PR 3135 - Test case that shows that a variable may get invalidated when its
+// address is included in a structure that is passed-by-value to an unknown function.
+//===----------------------------------------------------------------------===//
+
+typedef struct { int *a; } pr3135_structure;
+int pr3135_bar(pr3135_structure *x);
+int pr3135() {
+  int x;
+  pr3135_structure y = { &x };
+  // the call to pr3135_bar may initialize x
+  if (pr3135_bar(&y) && x) // no-warning
+    return 1;
+  return 0;
+}
+
+//===----------------------------------------------------------------------===//
+// <rdar://problem/7403269> - Test that we handle compound initializers with
+// partially unspecified array values. Previously this caused a crash.
+//===----------------------------------------------------------------------===//
+
+typedef struct RDar7403269 {
+  unsigned x[10];
+  unsigned y;
+} RDar7403269;
+
+void rdar7403269() {
+  RDar7403269 z = { .y = 0 };
+  if (z.x[4] == 0)
+    return;
+  int *p = 0;
+  *p = 0xDEADBEEF; // no-warning  
+}
+
+typedef struct RDar7403269_b {
+  struct zorg { int w; int k; } x[10];
+  unsigned y;
+} RDar7403269_b;
+
+void rdar7403269_b() {
+  RDar7403269_b z = { .y = 0 };
+  if (z.x[5].w == 0)
+    return;
+  int *p = 0;
+  *p = 0xDEADBEEF; // no-warning
+}
+
+void rdar7403269_b_pos() {
+  RDar7403269_b z = { .y = 0 };
+  if (z.x[5].w == 1)
+    return;
+  int *p = 0;
+  *p = 0xDEADBEEF; // expected-warning{{Dereference of null pointer}}
 }
 

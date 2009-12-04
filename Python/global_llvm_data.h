@@ -27,8 +27,9 @@ class DIFactory;
 class ExecutionEngine;
 class GlobalVariable;
 class Module;
+class ModuleProvider;
 class Value;
-struct ExistingModuleProvider;
+class WeakVH;
 }
 
 struct PyGlobalLlvmData {
@@ -54,13 +55,23 @@ public:
     llvm::LLVMContext &context() const { return llvm::getGlobalContext(); }
 
     llvm::Module *module() { return this->module_; }
-    llvm::ExistingModuleProvider *module_provider() {
+    llvm::ModuleProvider *module_provider() {
         return this->module_provider_; }
 
     PyConstantMirror &constant_mirror() { return *this->constant_mirror_; }
 
     /// This will be NULL if debug info generation is turned off.
     llvm::DIFactory *DebugInfo() { return this->debug_info_.get(); }
+
+    // Runs globaldce to remove unreferenced global variables.
+    // Globals still used in machine code must be referenced from IR
+    // or this pass will delete them and crash.  This function uses
+    // the same strategy as Python's gc to avoid running the
+    // collection "too often"; see long_lived_pending and
+    // long_lived_total in Modules/gcmodule.c for details.  Running
+    // MaybeCollectUnusedGlobals() for the second time in a row with
+    // no allocation in between should be a no-op.
+    void MaybeCollectUnusedGlobals();
 
     // Helper functions for building functions in IR.
 
@@ -83,21 +94,23 @@ private:
     // We have a single global module that holds all compiled code.
     // Any cached global object that function definitions use will be
     // stored in here.  These are owned by engine_.
-    llvm::Module *const module_;
-    llvm::ExistingModuleProvider *const module_provider_;
-    const llvm::OwningPtr<llvm::DIFactory> debug_info_;
+    llvm::ModuleProvider *module_provider_;
+    llvm::Module *module_;
+    llvm::OwningPtr<llvm::DIFactory> debug_info_;
 
     llvm::ExecutionEngine *engine_;  // Not modified after the constructor.
 
     std::vector<llvm::FunctionPassManager *> optimizations_;
+    llvm::PassManager gc_;
 
-    // Cached data in module_.  TODO(jyasskin): Make this hold WeakVHs
-    // or other ValueHandles when we import them from LLVM trunk.
-    llvm::StringMap<llvm::GlobalVariable *> constant_strings_;
+    // Cached data in module_.  The WeakVH should only hold GlobalVariables.
+    llvm::StringMap<llvm::WeakVH> constant_strings_;
 
     llvm::OwningPtr<PyConstantMirror> constant_mirror_;
 
     PyLlvmCompileThread compile_thread_;
+
+    unsigned num_globals_after_last_gc_;
 };
 #endif  /* WITH_LLVM */
 

@@ -1,4 +1,4 @@
-// RUN: clang-cc %s -verify -fsyntax-only
+// RUN: clang-cc -Wsemicolon-before-method-body %s -verify -fsyntax-only
 
 #define nil 0       /* id of Nil instance */
 
@@ -29,7 +29,7 @@
 @end
 
 @implementation Subclass
-- (NSString *)token;
+- (NSString *)token;	// expected-warning {{semicolon before method body is ignored}}
 {
   NSMutableString *result = nil;
 

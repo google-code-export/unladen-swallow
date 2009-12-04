@@ -168,8 +168,28 @@ static bool is32Or64BitBasicType(QualType Ty, ASTContext &Context) {
   return Size == 32 || Size == 64;
 }
 
-static bool areAllFields32Or64BitBasicType(const RecordDecl *RD,
-                                           ASTContext &Context) {
+/// canExpandIndirectArgument - Test whether an argument type which is to be
+/// passed indirectly (on the stack) would have the equivalent layout if it was
+/// expanded into separate arguments. If so, we prefer to do the latter to avoid
+/// inhibiting optimizations.
+///
+// FIXME: This predicate is missing many cases, currently it just follows
+// llvm-gcc (checks that all fields are 32-bit or 64-bit primitive types). We
+// should probably make this smarter, or better yet make the LLVM backend
+// capable of handling it.
+static bool canExpandIndirectArgument(QualType Ty, ASTContext &Context) {
+  // We can only expand structure types.
+  const RecordType *RT = Ty->getAs<RecordType>();
+  if (!RT)
+    return false;
+
+  // We can only expand (C) structures.
+  //
+  // FIXME: This needs to be generalized to handle classes as well.
+  const RecordDecl *RD = RT->getDecl();
+  if (!RD->isStruct() || isa<CXXRecordDecl>(RD))
+    return false;
+
   for (RecordDecl::field_iterator i = RD->field_begin(), e = RD->field_end();
          i != e; ++i) {
     const FieldDecl *FD = *i;
@@ -353,11 +373,17 @@ ABIArgInfo X86_32ABIInfo::classifyReturnType(QualType RetTy,
 
     return ABIArgInfo::getDirect();
   } else if (CodeGenFunction::hasAggregateLLVMType(RetTy)) {
-    // Structures with flexible arrays are always indirect.
-    if (const RecordType *RT = RetTy->getAsStructureType())
+    if (const RecordType *RT = RetTy->getAsStructureType()) {
+      // Structures with either a non-trivial destructor or a non-trivial
+      // copy constructor are always indirect.
+      if (hasNonTrivialDestructorOrCopyConstructor(RT))
+        return ABIArgInfo::getIndirect(0, /*ByVal=*/false);
+      
+      // Structures with flexible arrays are always indirect.
       if (RT->getDecl()->hasFlexibleArrayMember())
         return ABIArgInfo::getIndirect(0);
-
+    }
+    
     // If specified, structs and unions are always indirect.
     if (!IsSmallStructInRegABI && !RetTy->isAnyComplexType())
       return ABIArgInfo::getIndirect(0);
@@ -384,8 +410,7 @@ ABIArgInfo X86_32ABIInfo::classifyReturnType(QualType RetTy,
       } else if (SeltTy->isPointerType()) {
         // FIXME: It would be really nice if this could come out as the proper
         // pointer type.
-        llvm::Type *PtrTy =
-          llvm::PointerType::getUnqual(llvm::Type::getInt8Ty(VMContext));
+        const llvm::Type *PtrTy = llvm::Type::getInt8PtrTy(VMContext);
         return ABIArgInfo::getCoerce(PtrTy);
       } else if (SeltTy->isVectorType()) {
         // 64- and 128-bit vectors are never returned in a
@@ -437,14 +462,13 @@ ABIArgInfo X86_32ABIInfo::classifyArgumentType(QualType Ty,
     if (Ty->isStructureType() && Context.getTypeSize(Ty) == 0)
       return ABIArgInfo::getIgnore();
 
-    // Expand structs with size <= 128-bits which consist only of
-    // basic types (int, long long, float, double, xxx*). This is
-    // non-recursive and does not ignore empty fields.
-    if (const RecordType *RT = Ty->getAsStructureType()) {
-      if (Context.getTypeSize(Ty) <= 4*32 &&
-          areAllFields32Or64BitBasicType(RT->getDecl(), Context))
-        return ABIArgInfo::getExpand();
-    }
+    // Expand small (<= 128-bit) record types when we know that the stack layout
+    // of those arguments will match the struct. This is important because the
+    // LLVM backend isn't smart enough to remove byval, which inhibits many
+    // optimizations.
+    if (Context.getTypeSize(Ty) <= 4*32 &&
+        canExpandIndirectArgument(Ty, Context))
+      return ABIArgInfo::getExpand();
 
     return ABIArgInfo::getIndirect(getIndirectArgumentAlignment(Ty, Context));
   } else {
@@ -455,7 +479,7 @@ ABIArgInfo X86_32ABIInfo::classifyArgumentType(QualType Ty,
 
 llvm::Value *X86_32ABIInfo::EmitVAArg(llvm::Value *VAListAddr, QualType Ty,
                                       CodeGenFunction &CGF) const {
-  const llvm::Type *BP = llvm::PointerType::getUnqual(llvm::Type::getInt8Ty(CGF.getLLVMContext()));
+  const llvm::Type *BP = llvm::Type::getInt8PtrTy(CGF.getLLVMContext());
   const llvm::Type *BPP = llvm::PointerType::getUnqual(BP);
 
   CGBuilderTy &Builder = CGF.Builder;
@@ -1589,8 +1613,7 @@ ABIArgInfo ARMABIInfo::classifyReturnType(QualType RetTy,
 llvm::Value *ARMABIInfo::EmitVAArg(llvm::Value *VAListAddr, QualType Ty,
                                       CodeGenFunction &CGF) const {
   // FIXME: Need to handle alignment
-  const llvm::Type *BP =
-      llvm::PointerType::getUnqual(llvm::Type::getInt8Ty(CGF.getLLVMContext()));
+  const llvm::Type *BP = llvm::Type::getInt8PtrTy(CGF.getLLVMContext());
   const llvm::Type *BPP = llvm::PointerType::getUnqual(BP);
 
   CGBuilderTy &Builder = CGF.Builder;
@@ -1746,14 +1769,14 @@ const ABIInfo &CodeGenTypes::getABIInfo() const {
     return *(TheABIInfo = new SystemZABIInfo());
 
   case llvm::Triple::x86:
-    if (Triple.getOS() == llvm::Triple::Darwin)
-      return *(TheABIInfo = new X86_32ABIInfo(Context, true, true));
-
     switch (Triple.getOS()) {
+    case llvm::Triple::Darwin:
+      return *(TheABIInfo = new X86_32ABIInfo(Context, true, true));
     case llvm::Triple::Cygwin:
-    case llvm::Triple::DragonFly:
     case llvm::Triple::MinGW32:
     case llvm::Triple::MinGW64:
+    case llvm::Triple::AuroraUX:
+    case llvm::Triple::DragonFly:
     case llvm::Triple::FreeBSD:
     case llvm::Triple::OpenBSD:
       return *(TheABIInfo = new X86_32ABIInfo(Context, false, true));

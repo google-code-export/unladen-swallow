@@ -74,6 +74,13 @@ public:
 
   BitVector getReservedRegs(const MachineFunction &MF) const;
 
+  /// getMatchingSuperRegClass - Return a subclass of the specified register
+  /// class A so that each register in it has a sub-register of the
+  /// specified sub-register index which is in the specified register class B.
+  virtual const TargetRegisterClass *
+  getMatchingSuperRegClass(const TargetRegisterClass *A,
+                           const TargetRegisterClass *B, unsigned Idx) const;
+
   const TargetRegisterClass *getPointerRegClass(unsigned Kind = 0) const;
 
   std::pair<TargetRegisterClass::iterator,TargetRegisterClass::iterator>
@@ -89,6 +96,8 @@ public:
 
   bool hasFP(const MachineFunction &MF) const;
 
+  bool needsStackRealignment(const MachineFunction &MF) const;
+
   bool cannotEliminateFrame(const MachineFunction &MF) const;
 
   void processFunctionBeforeCalleeSavedScan(MachineFunction &MF,
@@ -96,7 +105,7 @@ public:
 
   // Debug information queries.
   unsigned getRARegister() const;
-  unsigned getFrameRegister(MachineFunction &MF) const;
+  unsigned getFrameRegister(const MachineFunction &MF) const;
 
   // Exception handling queries.
   unsigned getEHExceptionRegister() const;
@@ -121,6 +130,8 @@ public:
   virtual bool isReservedReg(const MachineFunction &MF, unsigned Reg) const;
 
   virtual bool requiresRegisterScavenging(const MachineFunction &MF) const;
+
+  virtual bool requiresFrameIndexScavenging(const MachineFunction &MF) const;
 
   virtual bool hasReservedCallFrame(MachineFunction &MF) const;
 

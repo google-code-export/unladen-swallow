@@ -193,7 +193,8 @@ static void HandleExtVectorTypeAttr(Scope *scope, Decl *d,
   // This will run the reguired checks.
   QualType T = S.BuildExtVectorType(curType, S.Owned(sizeExpr), Attr.getLoc());
   if (!T.isNull()) {
-    tDecl->setUnderlyingType(T);
+    // FIXME: preserve the old source info.
+    tDecl->setTypeDeclaratorInfo(S.Context.getTrivialDeclaratorInfo(T));
 
     // Remember this typedef decl, we will need it later for diagnostics.
     S.ExtVectorDecls.push_back(tDecl);
@@ -278,8 +279,11 @@ static void HandleVectorSizeAttr(Decl *D, const AttributeList &Attr, Sema &S) {
 
   if (ValueDecl *VD = dyn_cast<ValueDecl>(D))
     VD->setType(CurType);
-  else
-    cast<TypedefDecl>(D)->setUnderlyingType(CurType);
+  else {
+    // FIXME: preserve existing source info.
+    DeclaratorInfo *DInfo = S.Context.getTrivialDeclaratorInfo(CurType);
+    cast<TypedefDecl>(D)->setTypeDeclaratorInfo(DInfo);
+  }
 }
 
 static void HandlePackedAttr(Decl *d, const AttributeList &Attr, Sema &S) {
@@ -858,7 +862,7 @@ static void HandleWeakImportAttr(Decl *D, const AttributeList &Attr, Sema &S) {
   } else if (isa<ObjCPropertyDecl>(D) || isa<ObjCMethodDecl>(D)) {
     // We ignore weak import on properties and methods
     return;
-  } else {
+  } else if (!(S.LangOpts.ObjCNonFragileABI && isa<ObjCInterfaceDecl>(D))) {
     S.Diag(Attr.getLoc(), diag::warn_attribute_wrong_decl_type)
     << Attr.getName() << 2 /*variable and function*/;
     return;
@@ -897,7 +901,7 @@ static void HandleDLLImportAttr(Decl *D, const AttributeList &Attr, Sema &S) {
 
   // Currently, the dllimport attribute is ignored for inlined functions.
   // Warning is emitted.
-  if (FD->isInline()) {
+  if (FD->isInlineSpecified()) {
     S.Diag(Attr.getLoc(), diag::warn_attribute_ignored) << "dllimport";
     return;
   }
@@ -942,7 +946,7 @@ static void HandleDLLExportAttr(Decl *D, const AttributeList &Attr, Sema &S) {
 
   // Currently, the dllexport attribute is ignored for inlined functions, unless
   // the -fkeep-inline-functions flag has been used. Warning is emitted;
-  if (FD->isInline()) {
+  if (FD->isInlineSpecified()) {
     // FIXME: ... unless the -fkeep-inline-functions flag has been used.
     S.Diag(Attr.getLoc(), diag::warn_attribute_ignored) << "dllexport";
     return;
@@ -1004,6 +1008,38 @@ static void HandleSectionAttr(Decl *D, const AttributeList &Attr, Sema &S) {
 
 }
 
+static void HandleCDeclAttr(Decl *d, const AttributeList &Attr, Sema &S) {
+  // Attribute has no arguments.
+  if (Attr.getNumArgs() != 0) {
+    S.Diag(Attr.getLoc(), diag::err_attribute_wrong_number_arguments) << 0;
+    return;
+  }
+
+  // Attribute can be applied only to functions.
+  if (!isa<FunctionDecl>(d)) {
+    S.Diag(Attr.getLoc(), diag::warn_attribute_wrong_decl_type)
+      << Attr.getName() << 0 /*function*/;
+    return;
+  }
+
+  // cdecl and fastcall attributes are mutually incompatible.
+  if (d->getAttr<FastCallAttr>()) {
+    S.Diag(Attr.getLoc(), diag::err_attributes_are_not_compatible)
+      << "cdecl" << "fastcall";
+    return;
+  }
+
+  // cdecl and stdcall attributes are mutually incompatible.
+  if (d->getAttr<StdCallAttr>()) {
+    S.Diag(Attr.getLoc(), diag::err_attributes_are_not_compatible)
+      << "cdecl" << "stdcall";
+    return;
+  }
+
+  d->addAttr(::new (S.Context) CDeclAttr());
+}
+
+
 static void HandleStdCallAttr(Decl *d, const AttributeList &Attr, Sema &S) {
   // Attribute has no arguments.
   if (Attr.getNumArgs() != 0) {
@@ -1028,6 +1064,22 @@ static void HandleStdCallAttr(Decl *d, const AttributeList &Attr, Sema &S) {
   d->addAttr(::new (S.Context) StdCallAttr());
 }
 
+/// Diagnose the use of a non-standard calling convention on the given
+/// function.
+static void DiagnoseCConv(FunctionDecl *D, const char *CConv,
+                          SourceLocation Loc, Sema &S) {
+  if (!D->hasPrototype()) {
+    S.Diag(Loc, diag::err_cconv_knr) << CConv;
+    return;
+  }
+
+  const FunctionProtoType *T = D->getType()->getAs<FunctionProtoType>();
+  if (T->isVariadic()) {
+    S.Diag(Loc, diag::err_cconv_varargs) << CConv;
+    return;
+  }
+}
+
 static void HandleFastCallAttr(Decl *d, const AttributeList &Attr, Sema &S) {
   // Attribute has no arguments.
   if (Attr.getNumArgs() != 0) {
@@ -1040,6 +1092,8 @@ static void HandleFastCallAttr(Decl *d, const AttributeList &Attr, Sema &S) {
       << Attr.getName() << 0 /*function*/;
     return;
   }
+
+  DiagnoseCConv(cast<FunctionDecl>(d), "fastcall", Attr.getLoc(), S);
 
   // stdcall and fastcall attributes are mutually incompatible.
   if (d->getAttr<StdCallAttr>()) {
@@ -1104,8 +1158,9 @@ static void HandleCleanupAttr(Decl *d, const AttributeList &Attr, Sema &S) {
   }
 
   // Look up the function
-  NamedDecl *CleanupDecl = S.LookupName(S.TUScope, Attr.getParameterName(),
-                                        Sema::LookupOrdinaryName);
+  NamedDecl *CleanupDecl
+    = S.LookupSingleName(S.TUScope, Attr.getParameterName(),
+                         Sema::LookupOrdinaryName);
   if (!CleanupDecl) {
     S.Diag(Attr.getLoc(), diag::err_attribute_cleanup_arg_not_found) <<
       Attr.getParameterName();
@@ -1201,6 +1256,35 @@ static void HandleFormatArgAttr(Decl *d, const AttributeList &Attr, Sema &S) {
   d->addAttr(::new (S.Context) FormatArgAttr(Idx.getZExtValue()));
 }
 
+enum FormatAttrKind {
+  CFStringFormat,
+  NSStringFormat,
+  StrftimeFormat,
+  SupportedFormat,
+  InvalidFormat
+};
+
+/// getFormatAttrKind - Map from format attribute names to supported format
+/// types.
+static FormatAttrKind getFormatAttrKind(llvm::StringRef Format) {
+  // Check for formats that get handled specially.
+  if (Format == "NSString")
+    return NSStringFormat;
+  if (Format == "CFString")
+    return CFStringFormat;
+  if (Format == "strftime")
+    return StrftimeFormat;
+
+  // Otherwise, check for supported formats.
+  if (Format == "scanf" || Format == "printf" || Format == "printf0" ||
+      Format == "strfmon" || Format == "cmn_err" || Format == "strftime" ||
+      Format == "NSString" || Format == "CFString" || Format == "vcmn_err" ||
+      Format == "zcmn_err")
+    return SupportedFormat;
+
+  return InvalidFormat;
+}
+
 /// Handle __attribute__((format(type,idx,firstarg))) attributes based on
 /// http://gcc.gnu.org/onlinedocs/gcc/Function-Attributes.html
 static void HandleFormatAttr(Decl *d, const AttributeList &Attr, Sema &S) {
@@ -1225,35 +1309,15 @@ static void HandleFormatAttr(Decl *d, const AttributeList &Attr, Sema &S) {
   unsigned NumArgs  = getFunctionOrMethodNumArgs(d);
   unsigned FirstIdx = 1;
 
-  const char *Format = Attr.getParameterName()->getName();
-  unsigned FormatLen = Attr.getParameterName()->getLength();
+  llvm::StringRef Format = Attr.getParameterName()->getName();
 
   // Normalize the argument, __foo__ becomes foo.
-  if (FormatLen > 4 && Format[0] == '_' && Format[1] == '_' &&
-      Format[FormatLen - 2] == '_' && Format[FormatLen - 1] == '_') {
-    Format += 2;
-    FormatLen -= 4;
-  }
+  if (Format.startswith("__") && Format.endswith("__"))
+    Format = Format.substr(2, Format.size() - 4);
 
-  bool Supported = false;
-  bool is_NSString = false;
-  bool is_strftime = false;
-  bool is_CFString = false;
-
-  switch (FormatLen) {
-  default: break;
-  case 5: Supported = !memcmp(Format, "scanf", 5); break;
-  case 6: Supported = !memcmp(Format, "printf", 6); break;
-  case 7: Supported = !memcmp(Format, "printf0", 7) ||
-                      !memcmp(Format, "strfmon", 7); break;
-  case 8:
-    Supported = (is_strftime = !memcmp(Format, "strftime", 8)) ||
-                (is_NSString = !memcmp(Format, "NSString", 8)) ||
-                (is_CFString = !memcmp(Format, "CFString", 8));
-    break;
-  }
-
-  if (!Supported) {
+  // Check for supported formats.
+  FormatAttrKind Kind = getFormatAttrKind(Format);
+  if (Kind == InvalidFormat) {
     S.Diag(Attr.getLoc(), diag::warn_attribute_type_not_supported)
       << "format" << Attr.getParameterName()->getName();
     return;
@@ -1287,18 +1351,25 @@ static void HandleFormatAttr(Decl *d, const AttributeList &Attr, Sema &S) {
   // FIXME: Do we need to bounds check?
   unsigned ArgIdx = Idx.getZExtValue() - 1;
 
-  if (HasImplicitThisParam) ArgIdx--;
+  if (HasImplicitThisParam) {
+    if (ArgIdx == 0) {
+      S.Diag(Attr.getLoc(), diag::err_format_attribute_not)
+        << "a string type" << IdxExpr->getSourceRange();
+      return;
+    }
+    ArgIdx--;
+  }
 
   // make sure the format string is really a string
   QualType Ty = getFunctionOrMethodArgType(d, ArgIdx);
 
-  if (is_CFString) {
+  if (Kind == CFStringFormat) {
     if (!isCFStringType(Ty, S.Context)) {
       S.Diag(Attr.getLoc(), diag::err_format_attribute_not)
         << "a CFString" << IdxExpr->getSourceRange();
       return;
     }
-  } else if (is_NSString) {
+  } else if (Kind == NSStringFormat) {
     // FIXME: do we need to check if the type is NSString*?  What are the
     // semantics?
     if (!isNSStringType(Ty, S.Context)) {
@@ -1336,7 +1407,7 @@ static void HandleFormatAttr(Decl *d, const AttributeList &Attr, Sema &S) {
 
   // strftime requires FirstArg to be 0 because it doesn't read from any
   // variable the input is just the current time + the format string.
-  if (is_strftime) {
+  if (Kind == StrftimeFormat) {
     if (FirstArg != 0) {
       S.Diag(Attr.getLoc(), diag::err_format_strftime_third_parameter)
         << FirstArgExpr->getSourceRange();
@@ -1349,8 +1420,8 @@ static void HandleFormatAttr(Decl *d, const AttributeList &Attr, Sema &S) {
     return;
   }
 
-  d->addAttr(::new (S.Context) FormatAttr(std::string(Format, FormatLen),
-                            Idx.getZExtValue(), FirstArg.getZExtValue()));
+  d->addAttr(::new (S.Context) FormatAttr(Format, Idx.getZExtValue(),
+                                          FirstArg.getZExtValue()));
 }
 
 static void HandleTransparentUnionAttr(Decl *d, const AttributeList &Attr,
@@ -1492,20 +1563,17 @@ static void HandleModeAttr(Decl *D, const AttributeList &Attr, Sema &S) {
     S.Diag(Attr.getLoc(), diag::err_attribute_missing_parameter_name);
     return;
   }
-  const char *Str = Name->getName();
-  unsigned Len = Name->getLength();
+
+  llvm::StringRef Str = Attr.getParameterName()->getName();
 
   // Normalize the attribute name, __foo__ becomes foo.
-  if (Len > 4 && Str[0] == '_' && Str[1] == '_' &&
-      Str[Len - 2] == '_' && Str[Len - 1] == '_') {
-    Str += 2;
-    Len -= 4;
-  }
+  if (Str.startswith("__") && Str.endswith("__"))
+    Str = Str.substr(2, Str.size() - 4);
 
   unsigned DestWidth = 0;
   bool IntegerMode = true;
   bool ComplexMode = false;
-  switch (Len) {
+  switch (Str.size()) {
   case 2:
     switch (Str[0]) {
     case 'Q': DestWidth = 8; break;
@@ -1527,13 +1595,13 @@ static void HandleModeAttr(Decl *D, const AttributeList &Attr, Sema &S) {
   case 4:
     // FIXME: glibc uses 'word' to define register_t; this is narrower than a
     // pointer on PIC16 and other embedded platforms.
-    if (!memcmp(Str, "word", 4))
+    if (Str == "word")
       DestWidth = S.Context.Target.getPointerWidth(0);
-    if (!memcmp(Str, "byte", 4))
+    else if (Str == "byte")
       DestWidth = S.Context.Target.getCharWidth();
     break;
   case 7:
-    if (!memcmp(Str, "pointer", 7))
+    if (Str == "pointer")
       DestWidth = S.Context.Target.getPointerWidth(0);
     break;
   }
@@ -1629,9 +1697,10 @@ static void HandleModeAttr(Decl *D, const AttributeList &Attr, Sema &S) {
   }
 
   // Install the new type.
-  if (TypedefDecl *TD = dyn_cast<TypedefDecl>(D))
-    TD->setUnderlyingType(NewTy);
-  else
+  if (TypedefDecl *TD = dyn_cast<TypedefDecl>(D)) {
+    // FIXME: preserve existing source info.
+    TD->setTypeDeclaratorInfo(S.Context.getTrivialDeclaratorInfo(NewTy));
+  } else
     cast<ValueDecl>(D)->setType(NewTy);
 }
 
@@ -1681,7 +1750,7 @@ static void HandleGNUInlineAttr(Decl *d, const AttributeList &Attr, Sema &S) {
     return;
   }
 
-  if (!Fn->isInline()) {
+  if (!Fn->isInlineSpecified()) {
     S.Diag(Attr.getLoc(), diag::warn_gnu_inline_attribute_requires_inline);
     return;
   }
@@ -1792,6 +1861,7 @@ static void ProcessDeclAttribute(Scope *scope, Decl *D,
   case AttributeList::AT_analyzer_noreturn:
     HandleAnalyzerNoReturnAttr  (D, Attr, S); break;
   case AttributeList::AT_annotate:    HandleAnnotateAttr  (D, Attr, S); break;
+  case AttributeList::AT_cdecl:       HandleCDeclAttr     (D, Attr, S); break;
   case AttributeList::AT_constructor: HandleConstructorAttr(D, Attr, S); break;
   case AttributeList::AT_deprecated:  HandleDeprecatedAttr(D, Attr, S); break;
   case AttributeList::AT_destructor:  HandleDestructorAttr(D, Attr, S); break;
@@ -1936,4 +2006,63 @@ void Sema::ProcessDeclAttributes(Scope *S, Decl *D, const Declarator &PD) {
   // Finally, apply any attributes on the decl itself.
   if (const AttributeList *Attrs = PD.getAttributes())
     ProcessDeclAttributeList(S, D, Attrs);
+}
+
+/// PushParsingDeclaration - Enter a new "scope" of deprecation
+/// warnings.
+///
+/// The state token we use is the start index of this scope
+/// on the warning stack.
+Action::ParsingDeclStackState Sema::PushParsingDeclaration() {
+  ParsingDeclDepth++;
+  return (ParsingDeclStackState) DelayedDeprecationWarnings.size();
+}
+
+static bool isDeclDeprecated(Decl *D) {
+  do {
+    if (D->hasAttr<DeprecatedAttr>())
+      return true;
+  } while ((D = cast_or_null<Decl>(D->getDeclContext())));
+  return false;
+}
+
+void Sema::PopParsingDeclaration(ParsingDeclStackState S, DeclPtrTy Ctx) {
+  assert(ParsingDeclDepth > 0 && "empty ParsingDeclaration stack");
+  ParsingDeclDepth--;
+
+  if (DelayedDeprecationWarnings.empty())
+    return;
+
+  unsigned SavedIndex = (unsigned) S;
+  assert(SavedIndex <= DelayedDeprecationWarnings.size() &&
+         "saved index is out of bounds");
+
+  if (Ctx && !isDeclDeprecated(Ctx.getAs<Decl>())) {
+    for (unsigned I = 0, E = DelayedDeprecationWarnings.size(); I != E; ++I) {
+      SourceLocation Loc = DelayedDeprecationWarnings[I].first;
+      NamedDecl *&ND = DelayedDeprecationWarnings[I].second;
+      if (ND) {
+        Diag(Loc, diag::warn_deprecated) << ND->getDeclName();
+
+        // Prevent this from triggering multiple times.
+        ND = 0;
+      }
+    }
+  }
+
+  DelayedDeprecationWarnings.set_size(SavedIndex);
+}
+
+void Sema::EmitDeprecationWarning(NamedDecl *D, SourceLocation Loc) {
+  // Delay if we're currently parsing a declaration.
+  if (ParsingDeclDepth) {
+    DelayedDeprecationWarnings.push_back(std::make_pair(Loc, D));
+    return;
+  }
+
+  // Otherwise, don't warn if our current context is deprecated.
+  if (isDeclDeprecated(cast<Decl>(CurContext)))
+    return;
+
+  Diag(Loc, diag::warn_deprecated) << D->getDeclName();
 }

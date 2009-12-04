@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #define DEBUG_TYPE "pic16-lower"
+#include "PIC16ABINames.h"
 #include "PIC16ISelLowering.h"
 #include "PIC16TargetObjectFile.h"
 #include "PIC16TargetMachine.h"
@@ -1069,7 +1070,7 @@ SDValue PIC16TargetLowering::ConvertToMemOperand(SDValue Op,
 
   // Put the value on stack.
   // Get a stack slot index and convert to es.
-  int FI = MF.getFrameInfo()->CreateStackObject(1, 1);
+  int FI = MF.getFrameInfo()->CreateStackObject(1, 1, false);
   const char *tmpName = createESName(PAN::getTempdataLabel(FuncName));
   SDValue ES = DAG.getTargetExternalSymbol(tmpName, MVT::i8);
 

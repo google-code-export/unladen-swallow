@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Sema.h"
+#include "Lookup.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/DeclTemplate.h"
 #include "clang/AST/ExprCXX.h"
@@ -21,6 +22,72 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/raw_ostream.h"
 using namespace clang;
+
+/// \brief Find the current instantiation that associated with the given type.
+static CXXRecordDecl *
+getCurrentInstantiationOf(ASTContext &Context, DeclContext *CurContext, 
+                          QualType T) {
+  if (T.isNull())
+    return 0;
+  
+  T = Context.getCanonicalType(T);
+  
+  for (DeclContext *Ctx = CurContext; Ctx; Ctx = Ctx->getParent()) {
+    // If we've hit a namespace or the global scope, then the
+    // nested-name-specifier can't refer to the current instantiation.
+    if (Ctx->isFileContext())
+      return 0;
+    
+    // Skip non-class contexts.
+    CXXRecordDecl *Record = dyn_cast<CXXRecordDecl>(Ctx);
+    if (!Record)
+      continue;
+    
+    // If this record type is not dependent,
+    if (!Record->isDependentType())
+      return 0;
+    
+    // C++ [temp.dep.type]p1:
+    //
+    //   In the definition of a class template, a nested class of a
+    //   class template, a member of a class template, or a member of a
+    //   nested class of a class template, a name refers to the current
+    //   instantiation if it is
+    //     -- the injected-class-name (9) of the class template or
+    //        nested class,
+    //     -- in the definition of a primary class template, the name
+    //        of the class template followed by the template argument
+    //        list of the primary template (as described below)
+    //        enclosed in <>,
+    //     -- in the definition of a nested class of a class template,
+    //        the name of the nested class referenced as a member of
+    //        the current instantiation, or
+    //     -- in the definition of a partial specialization, the name
+    //        of the class template followed by the template argument
+    //        list of the partial specialization enclosed in <>. If
+    //        the nth template parameter is a parameter pack, the nth
+    //        template argument is a pack expansion (14.6.3) whose
+    //        pattern is the name of the parameter pack.
+    //        (FIXME: parameter packs)
+    //
+    // All of these options come down to having the
+    // nested-name-specifier type that is equivalent to the
+    // injected-class-name of one of the types that is currently in
+    // our context.
+    if (Context.getCanonicalType(Context.getTypeDeclType(Record)) == T)
+      return Record;
+    
+    if (ClassTemplateDecl *Template = Record->getDescribedClassTemplate()) {
+      QualType InjectedClassName
+        = Template->getInjectedClassNameType(Context);
+      if (T == Context.getCanonicalType(InjectedClassName))
+        return Template->getTemplatedDecl();
+    }
+    // FIXME: check for class template partial specializations
+  }  
+  
+  return 0;
+}
 
 /// \brief Compute the DeclContext that is associated with the given type.
 ///
@@ -33,7 +100,7 @@ DeclContext *Sema::computeDeclContext(QualType T) {
   if (const TagType *Tag = T->getAs<TagType>())
     return Tag->getDecl();
 
-  return 0;
+  return ::getCurrentInstantiationOf(Context, CurContext, T);
 }
 
 /// \brief Compute the DeclContext that is associated with the given
@@ -156,68 +223,7 @@ CXXRecordDecl *Sema::getCurrentInstantiationOf(NestedNameSpecifier *NNS) {
     return 0;
 
   QualType T = QualType(NNS->getAsType(), 0);
-  // If the nested name specifier does not refer to a type, then it
-  // does not refer to the current instantiation.
-  if (T.isNull())
-    return 0;
-
-  T = Context.getCanonicalType(T);
-
-  for (DeclContext *Ctx = CurContext; Ctx; Ctx = Ctx->getParent()) {
-    // If we've hit a namespace or the global scope, then the
-    // nested-name-specifier can't refer to the current instantiation.
-    if (Ctx->isFileContext())
-      return 0;
-
-    // Skip non-class contexts.
-    CXXRecordDecl *Record = dyn_cast<CXXRecordDecl>(Ctx);
-    if (!Record)
-      continue;
-
-    // If this record type is not dependent,
-    if (!Record->isDependentType())
-      return 0;
-
-    // C++ [temp.dep.type]p1:
-    //
-    //   In the definition of a class template, a nested class of a
-    //   class template, a member of a class template, or a member of a
-    //   nested class of a class template, a name refers to the current
-    //   instantiation if it is
-    //     -- the injected-class-name (9) of the class template or
-    //        nested class,
-    //     -- in the definition of a primary class template, the name
-    //        of the class template followed by the template argument
-    //        list of the primary template (as described below)
-    //        enclosed in <>,
-    //     -- in the definition of a nested class of a class template,
-    //        the name of the nested class referenced as a member of
-    //        the current instantiation, or
-    //     -- in the definition of a partial specialization, the name
-    //        of the class template followed by the template argument
-    //        list of the partial specialization enclosed in <>. If
-    //        the nth template parameter is a parameter pack, the nth
-    //        template argument is a pack expansion (14.6.3) whose
-    //        pattern is the name of the parameter pack.
-    //        (FIXME: parameter packs)
-    //
-    // All of these options come down to having the
-    // nested-name-specifier type that is equivalent to the
-    // injected-class-name of one of the types that is currently in
-    // our context.
-    if (Context.getCanonicalType(Context.getTypeDeclType(Record)) == T)
-      return Record;
-
-    if (ClassTemplateDecl *Template = Record->getDescribedClassTemplate()) {
-      QualType InjectedClassName
-        = Template->getInjectedClassNameType(Context);
-      if (T == Context.getCanonicalType(InjectedClassName))
-        return Template->getTemplatedDecl();
-    }
-    // FIXME: check for class template partial specializations
-  }
-
-  return 0;
+  return ::getCurrentInstantiationOf(Context, CurContext, T);
 }
 
 /// \brief Require that the context specified by SS be complete.
@@ -302,11 +308,12 @@ NamedDecl *Sema::FindFirstQualifierInScope(Scope *S, NestedNameSpecifier *NNS) {
   if (NNS->getKind() != NestedNameSpecifier::Identifier)
     return 0;
 
-  LookupResult Found
-    = LookupName(S, NNS->getAsIdentifier(), LookupNestedNameSpecifierName);
+  LookupResult Found(*this, NNS->getAsIdentifier(), SourceLocation(),
+                     LookupNestedNameSpecifierName);
+  LookupName(Found, S);
   assert(!Found.isAmbiguous() && "Cannot handle ambiguities here yet");
 
-  NamedDecl *Result = Found;
+  NamedDecl *Result = Found.getAsSingleDecl(Context);
   if (isAcceptableNestedNameSpecifier(Result))
     return Result;
 
@@ -331,6 +338,8 @@ Sema::CXXScopeTy *Sema::BuildCXXNestedNameSpecifier(Scope *S,
   NestedNameSpecifier *Prefix
     = static_cast<NestedNameSpecifier *>(SS.getScopeRep());
 
+  LookupResult Found(*this, &II, IdLoc, LookupNestedNameSpecifierName);
+
   // Determine where to perform name lookup
   DeclContext *LookupCtx = 0;
   bool isDependent = false;
@@ -345,9 +354,10 @@ Sema::CXXScopeTy *Sema::BuildCXXNestedNameSpecifier(Scope *S,
     // so long into the context associated with the prior nested-name-specifier.
     LookupCtx = computeDeclContext(SS, EnteringContext);
     isDependent = isDependentScopeSpecifier(SS);
+    Found.setContextRange(SS.getRange());
   }
 
-  LookupResult Found;
+
   bool ObjectTypeSearchedInScope = false;
   if (LookupCtx) {
     // Perform "qualified" name lookup into the declaration context we
@@ -359,10 +369,9 @@ Sema::CXXScopeTy *Sema::BuildCXXNestedNameSpecifier(Scope *S,
     if (!LookupCtx->isDependentContext() && RequireCompleteDeclContext(SS))
       return 0;
 
-    Found = LookupQualifiedName(LookupCtx, &II, LookupNestedNameSpecifierName,
-                                false);
+    LookupQualifiedName(Found, LookupCtx);
 
-    if (!ObjectType.isNull() && Found.getKind() == LookupResult::NotFound) {
+    if (!ObjectType.isNull() && Found.empty()) {
       // C++ [basic.lookup.classref]p4:
       //   If the id-expression in a class member access is a qualified-id of
       //   the form
@@ -384,9 +393,9 @@ Sema::CXXScopeTy *Sema::BuildCXXNestedNameSpecifier(Scope *S,
       // reconstruct the result from when name lookup was performed at template
       // definition time.
       if (S)
-        Found = LookupName(S, &II, LookupNestedNameSpecifierName);
-      else
-        Found = LookupResult::CreateLookupResult(Context, ScopeLookupResult);
+        LookupName(Found, S);
+      else if (ScopeLookupResult)
+        Found.addDecl(ScopeLookupResult);
 
       ObjectTypeSearchedInScope = true;
     }
@@ -401,11 +410,11 @@ Sema::CXXScopeTy *Sema::BuildCXXNestedNameSpecifier(Scope *S,
     return NestedNameSpecifier::Create(Context, Prefix, &II);
   } else {
     // Perform unqualified name lookup in the current scope.
-    Found = LookupName(S, &II, LookupNestedNameSpecifierName);
+    LookupName(Found, S);
   }
 
   // FIXME: Deal with ambiguities cleanly.
-  NamedDecl *SD = Found;
+  NamedDecl *SD = Found.getAsSingleDecl(Context);
   if (isAcceptableNestedNameSpecifier(SD)) {
     if (!ObjectType.isNull() && !ObjectTypeSearchedInScope) {
       // C++ [basic.lookup.classref]p4:
@@ -416,15 +425,14 @@ Sema::CXXScopeTy *Sema::BuildCXXNestedNameSpecifier(Scope *S,
       // into the current scope (the scope of the postfix-expression) to
       // see if we can find the same name there. As above, if there is no
       // scope, reconstruct the result from the template instantiation itself.
-      LookupResult FoundOuter;
-      if (S)
-        FoundOuter = LookupName(S, &II, LookupNestedNameSpecifierName);
-      else
-        FoundOuter = LookupResult::CreateLookupResult(Context,
-                                                      ScopeLookupResult);
+      NamedDecl *OuterDecl;
+      if (S) {
+        LookupResult FoundOuter(*this, &II, IdLoc, LookupNestedNameSpecifierName);
+        LookupName(FoundOuter, S);
+        OuterDecl = FoundOuter.getAsSingleDecl(Context);
+      } else
+        OuterDecl = ScopeLookupResult;
 
-      // FIXME: Handle ambiguities in FoundOuter!
-      NamedDecl *OuterDecl = FoundOuter;
       if (isAcceptableNestedNameSpecifier(OuterDecl) &&
           OuterDecl->getCanonicalDecl() != SD->getCanonicalDecl() &&
           (!isa<TypeDecl>(OuterDecl) || !isa<TypeDecl>(SD) ||
@@ -461,16 +469,17 @@ Sema::CXXScopeTy *Sema::BuildCXXNestedNameSpecifier(Scope *S,
   // If we didn't find anything during our lookup, try again with
   // ordinary name lookup, which can help us produce better error
   // messages.
-  if (!SD)
-    SD = LookupName(S, &II, LookupOrdinaryName);
+  if (!SD) {
+    Found.clear(LookupOrdinaryName);
+    LookupName(Found, S);
+    SD = Found.getAsSingleDecl(Context);
+  }
 
   unsigned DiagID;
   if (SD)
     DiagID = diag::err_expected_class_or_namespace;
   else if (SS.isSet()) {
-    DiagnoseMissingMember(IdLoc, DeclarationName(&II),
-                          (NestedNameSpecifier *)SS.getScopeRep(),
-                          SS.getRange());
+    Diag(IdLoc, diag::err_no_member) << &II << LookupCtx << SS.getRange();
     return 0;
   } else
     DiagID = diag::err_undeclared_var_use;

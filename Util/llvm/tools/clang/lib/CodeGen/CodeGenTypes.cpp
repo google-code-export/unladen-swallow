@@ -180,7 +180,7 @@ static const llvm::Type* getTypeForFormat(llvm::LLVMContext &VMContext,
 }
 
 const llvm::Type *CodeGenTypes::ConvertNewType(QualType T) {
-  const clang::Type &Ty = *Context.getCanonicalType(T);
+  const clang::Type &Ty = *Context.getCanonicalType(T).getTypePtr();
 
   switch (Ty.getTypeClass()) {
 #define TYPE(Class, Base)
@@ -492,7 +492,7 @@ const CGRecordLayout &
 CodeGenTypes::getCGRecordLayout(const TagDecl *TD) const {
   const Type *Key =
     Context.getTagDeclType(TD).getTypePtr();
-  llvm::DenseMap<const Type*, CGRecordLayout *>::iterator I
+  llvm::DenseMap<const Type*, CGRecordLayout *>::const_iterator I
     = CGRecordLayouts.find(Key);
   assert (I != CGRecordLayouts.end()
           && "Unable to find record layout information for type");

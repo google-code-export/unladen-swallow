@@ -62,7 +62,6 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/Support/Compiler.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
@@ -70,7 +69,7 @@
 using namespace llvm;
 
 namespace {  // Anonymous namespace for class
-  struct VISIBILITY_HIDDEN PreVerifier : public FunctionPass {
+  struct PreVerifier : public FunctionPass {
     static char ID; // Pass ID, replacement for typeid
 
     PreVerifier() : FunctionPass(&ID) { }
@@ -321,7 +320,7 @@ namespace {
     void visitUserOp1(Instruction &I);
     void visitUserOp2(Instruction &I) { visitUserOp1(I); }
     void visitIntrinsicFunctionCall(Intrinsic::ID ID, CallInst &CI);
-    void visitAllocationInst(AllocationInst &AI);
+    void visitAllocaInst(AllocaInst &AI);
     void visitExtractValueInst(ExtractValueInst &EVI);
     void visitInsertValueInst(InsertValueInst &IVI);
 
@@ -339,10 +338,10 @@ namespace {
     void WriteValue(const Value *V) {
       if (!V) return;
       if (isa<Instruction>(V)) {
-        MessagesStr << *V;
+        MessagesStr << *V << '\n';
       } else {
         WriteAsOperand(MessagesStr, V, true, Mod);
-        MessagesStr << "\n";
+        MessagesStr << '\n';
       }
     }
 
@@ -659,6 +658,12 @@ void Verifier::visitFunction(Function &F) {
     BasicBlock *Entry = &F.getEntryBlock();
     Assert1(pred_begin(Entry) == pred_end(Entry),
             "Entry block to function must not have predecessors!", Entry);
+    
+    // The address of the entry block cannot be taken, unless it is dead.
+    if (Entry->hasAddressTaken()) {
+      Assert1(!BlockAddress::get(Entry)->isConstantUsed(),
+              "blockaddress may not be used with the entry block!", Entry);
+    }
   }
   
   // If this function is actually an intrinsic, verify that it is only used in
@@ -775,9 +780,13 @@ void Verifier::visitSwitchInst(SwitchInst &SI) {
   // Check to make sure that all of the constants in the switch instruction
   // have the same type as the switched-on value.
   const Type *SwitchTy = SI.getCondition()->getType();
-  for (unsigned i = 1, e = SI.getNumCases(); i != e; ++i)
+  SmallPtrSet<ConstantInt*, 32> Constants;
+  for (unsigned i = 1, e = SI.getNumCases(); i != e; ++i) {
     Assert1(SI.getCaseValue(i)->getType() == SwitchTy,
             "Switch constants must all be same type as switch value!", &SI);
+    Assert2(Constants.insert(SI.getCaseValue(i)),
+            "Duplicate integer as switch case", &SI, SI.getCaseValue(i));
+  }
 
   visitTerminatorInst(SI);
 }
@@ -1282,7 +1291,7 @@ void Verifier::visitStoreInst(StoreInst &SI) {
   visitInstruction(SI);
 }
 
-void Verifier::visitAllocationInst(AllocationInst &AI) {
+void Verifier::visitAllocaInst(AllocaInst &AI) {
   const PointerType *PTy = AI.getType();
   Assert1(PTy->getAddressSpace() == 0, 
           "Allocation instruction pointer not in the generic address space!",
@@ -1577,6 +1586,17 @@ void Verifier::visitIntrinsicFunctionCall(Intrinsic::ID ID, CallInst &CI) {
     Assert1(isa<AllocaInst>(CI.getOperand(2)->stripPointerCasts()),
             "llvm.stackprotector parameter #2 must resolve to an alloca.",
             &CI);
+    break;
+  case Intrinsic::lifetime_start:
+  case Intrinsic::lifetime_end:
+  case Intrinsic::invariant_start:
+    Assert1(isa<ConstantInt>(CI.getOperand(1)),
+            "size argument of memory use markers must be a constant integer",
+            &CI);
+    break;
+  case Intrinsic::invariant_end:
+    Assert1(isa<ConstantInt>(CI.getOperand(2)),
+            "llvm.invariant.end parameter #2 must be a constant integer", &CI);
     break;
   }
 }

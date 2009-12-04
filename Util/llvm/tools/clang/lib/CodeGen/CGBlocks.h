@@ -55,7 +55,8 @@ public:
         BLOCK_HAS_CXX_OBJ =       (1 << 26),
         BLOCK_IS_GC =             (1 << 27),
         BLOCK_IS_GLOBAL =         (1 << 28),
-        BLOCK_HAS_DESCRIPTOR =    (1 << 29)
+        BLOCK_HAS_DESCRIPTOR =    (1 << 29),
+        BLOCK_HAS_OBJC_TYPE  =    (1 << 30)
     };
 };
 
@@ -112,19 +113,11 @@ public:
       GenericBlockLiteralType(0), GenericExtendedBlockLiteralType(0),
       BlockObjectAssign(0), BlockObjectDispose(0) {
     Block.GlobalUniqueCount = 0;
-    PtrToInt8Ty = llvm::PointerType::getUnqual(
-                llvm::Type::getInt8Ty(M.getContext()));
+    PtrToInt8Ty = llvm::Type::getInt8PtrTy(M.getContext());
   }
 
-  bool BlockRequiresCopying(QualType Ty) {
-    if (Ty->isBlockPointerType())
-      return true;
-    if (getContext().isObjCNSObjectType(Ty))
-      return true;
-    if (Ty->isObjCObjectPointerType())
-      return true;
-    return false;
-  }
+  bool BlockRequiresCopying(QualType Ty)
+    { return getContext().BlockRequiresCopying(Ty); }
 };
 
 class BlockFunction : public BlockBase {
@@ -166,11 +159,7 @@ public:
 
     /// ByCopyDeclRefs - Variables from parent scopes that have been imported
     /// into this block.
-    llvm::SmallVector<const BlockDeclRefExpr *, 8> ByCopyDeclRefs;
-
-    // ByRefDeclRefs - __block variables from parent scopes that have been
-    // imported into this block.
-    llvm::SmallVector<const BlockDeclRefExpr *, 8> ByRefDeclRefs;
+    llvm::SmallVector<const BlockDeclRefExpr *, 8> DeclRefs;
 
     BlockInfo(const llvm::Type *blt, const char *n)
       : BlockLiteralTy(blt), Name(n) {
@@ -229,7 +218,8 @@ public:
   llvm::Value *getBlockObjectDispose();
   void BuildBlockRelease(llvm::Value *DeclPtr, int flag = BLOCK_FIELD_IS_BYREF);
 
-  bool BlockRequiresCopying(QualType Ty);
+  bool BlockRequiresCopying(QualType Ty)
+    { return getContext().BlockRequiresCopying(Ty); }
 };
 
 }  // end namespace CodeGen

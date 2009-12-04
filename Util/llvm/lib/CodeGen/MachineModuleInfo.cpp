@@ -76,6 +76,7 @@ void MachineModuleInfo::EndFunction() {
   FilterEnds.clear();
   CallsEHReturn = 0;
   CallsUnwindInit = 0;
+  VariableDbgInfo.clear();
 }
 
 /// AnalyzeModule - Scan the module for global debug information.

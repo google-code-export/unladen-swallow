@@ -23,6 +23,7 @@
 #include "llvm/ADT/PointerIntPair.h"
 
 namespace llvm {
+  class AliasAnalysis;
   class SUnit;
   class MachineConstantPool;
   class MachineFunction;
@@ -339,28 +340,34 @@ namespace llvm {
     void removePred(const SDep &D);
 
     /// getDepth - Return the depth of this node, which is the length of the
-    /// maximum path up to any node with has no predecessors.
-    unsigned getDepth() const {
-      if (!isDepthCurrent) const_cast<SUnit *>(this)->ComputeDepth();
+    /// maximum path up to any node with has no predecessors. If IgnoreAntiDep
+    /// is true, ignore anti-dependence edges.
+    unsigned getDepth(bool IgnoreAntiDep=false) const {
+      if (!isDepthCurrent) 
+        const_cast<SUnit *>(this)->ComputeDepth(IgnoreAntiDep);
       return Depth;
     }
 
     /// getHeight - Return the height of this node, which is the length of the
-    /// maximum path down to any node with has no successors.
-    unsigned getHeight() const {
-      if (!isHeightCurrent) const_cast<SUnit *>(this)->ComputeHeight();
+    /// maximum path down to any node with has no successors. If IgnoreAntiDep
+    /// is true, ignore anti-dependence edges.
+    unsigned getHeight(bool IgnoreAntiDep=false) const {
+      if (!isHeightCurrent) 
+        const_cast<SUnit *>(this)->ComputeHeight(IgnoreAntiDep);
       return Height;
     }
 
-    /// setDepthToAtLeast - If NewDepth is greater than this node's depth
-    /// value, set it to be the new depth value. This also recursively
-    /// marks successor nodes dirty.
-    void setDepthToAtLeast(unsigned NewDepth);
+    /// setDepthToAtLeast - If NewDepth is greater than this node's
+    /// depth value, set it to be the new depth value. This also
+    /// recursively marks successor nodes dirty.  If IgnoreAntiDep is
+    /// true, ignore anti-dependence edges.
+    void setDepthToAtLeast(unsigned NewDepth, bool IgnoreAntiDep=false);
 
-    /// setDepthToAtLeast - If NewDepth is greater than this node's depth
-    /// value, set it to be the new height value. This also recursively
-    /// marks predecessor nodes dirty.
-    void setHeightToAtLeast(unsigned NewHeight);
+    /// setDepthToAtLeast - If NewDepth is greater than this node's
+    /// depth value, set it to be the new height value. This also
+    /// recursively marks predecessor nodes dirty. If IgnoreAntiDep is
+    /// true, ignore anti-dependence edges.
+    void setHeightToAtLeast(unsigned NewHeight, bool IgnoreAntiDep=false);
 
     /// setDepthDirty - Set a flag in this node to indicate that its
     /// stored Depth value will require recomputation the next time
@@ -393,8 +400,8 @@ namespace llvm {
     void print(raw_ostream &O, const ScheduleDAG *G) const;
 
   private:
-    void ComputeDepth();
-    void ComputeHeight();
+    void ComputeDepth(bool IgnoreAntiDep);
+    void ComputeHeight(bool IgnoreAntiDep);
   };
 
   //===--------------------------------------------------------------------===//
@@ -490,7 +497,7 @@ namespace llvm {
     /// BuildSchedGraph - Build SUnits and set up their Preds and Succs
     /// to form the scheduling dependency graph.
     ///
-    virtual void BuildSchedGraph() = 0;
+    virtual void BuildSchedGraph(AliasAnalysis *AA) = 0;
 
     /// ComputeLatency - Compute node latency.
     ///
@@ -499,8 +506,8 @@ namespace llvm {
     /// ComputeOperandLatency - Override dependence edge latency using
     /// operand use/def information
     ///
-    virtual void ComputeOperandLatency(SUnit *Def, SUnit *Use,
-                                       SDep& dep) const { };
+    virtual void ComputeOperandLatency(SUnit *, SUnit *,
+                                       SDep&) const { }
 
     /// Schedule - Order nodes according to selected style, filling
     /// in the Sequence member.
@@ -517,21 +524,6 @@ namespace llvm {
     void EmitNoop();
 
     void EmitPhysRegCopy(SUnit *SU, DenseMap<SUnit*, unsigned> &VRBaseMap);
-
-  private:
-    /// EmitLiveInCopy - Emit a copy for a live in physical register. If the
-    /// physical register has only a single copy use, then coalesced the copy
-    /// if possible.
-    void EmitLiveInCopy(MachineBasicBlock *MBB,
-                        MachineBasicBlock::iterator &InsertPos,
-                        unsigned VirtReg, unsigned PhysReg,
-                        const TargetRegisterClass *RC,
-                        DenseMap<MachineInstr*, unsigned> &CopyRegMap);
-
-    /// EmitLiveInCopies - If this is the first basic block in the function,
-    /// and if it has live ins that need to be copied into vregs, emit the
-    /// copies into the top of the block.
-    void EmitLiveInCopies(MachineBasicBlock *MBB);
   };
 
   class SUnitIterator : public std::iterator<std::forward_iterator_tag,

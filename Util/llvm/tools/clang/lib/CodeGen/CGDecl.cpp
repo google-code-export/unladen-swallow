@@ -19,6 +19,7 @@
 #include "clang/AST/DeclObjC.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Basic/TargetInfo.h"
+#include "clang/CodeGen/CodeGenOptions.h"
 #include "llvm/GlobalVariable.h"
 #include "llvm/Intrinsics.h"
 #include "llvm/Target/TargetData.h"
@@ -37,6 +38,7 @@ void CodeGenFunction::EmitDecl(const Decl &D) {
   case Decl::Enum:      // enum X;
   case Decl::EnumConstant: // enum ? { X = ? }
   case Decl::CXXRecord: // struct/union/class X; [C++]
+  case Decl::UsingDirective: // using X; [C++]
     // None of these decls require codegen support.
     return;
 
@@ -231,8 +233,7 @@ const llvm::Type *CodeGenFunction::BuildByRefType(const ValueDecl *D) {
 
   std::vector<const llvm::Type *> Types;
   
-  const llvm::PointerType *Int8PtrTy
-    = llvm::PointerType::getUnqual(llvm::Type::getInt8Ty(VMContext));
+  const llvm::PointerType *Int8PtrTy = llvm::Type::getInt8PtrTy(VMContext);
 
   llvm::PATypeHolder ByRefTypeHolder = llvm::OpaqueType::get(VMContext);
   
@@ -276,8 +277,8 @@ const llvm::Type *CodeGenFunction::BuildByRefType(const ValueDecl *D) {
     unsigned NumPaddingBytes = AlignedOffsetInBytes - CurrentOffsetInBytes;
     if (NumPaddingBytes > 0) {
       const llvm::Type *Ty = llvm::Type::getInt8Ty(VMContext);
-      // FIXME: We need a sema error for alignment larger than the minimum of the
-      // maximal stack alignmint and the alignment of malloc on the system.
+      // FIXME: We need a sema error for alignment larger than the minimum of
+      // the maximal stack alignmint and the alignment of malloc on the system.
       if (NumPaddingBytes > 1)
         Ty = llvm::ArrayType::get(Ty, NumPaddingBytes);
     
@@ -316,6 +317,20 @@ void CodeGenFunction::EmitLocalBlockVarDecl(const VarDecl &D) {
   llvm::Value *DeclPtr;
   if (Ty->isConstantSizeType()) {
     if (!Target.useGlobalsForAutomaticVariables()) {
+      
+      // All constant structs and arrays should be global if
+      // their initializer is constant and if the element type is POD.
+      if (CGM.getCodeGenOpts().MergeAllConstants) {
+        if (Ty.isConstant(getContext())
+            && (Ty->isArrayType() || Ty->isRecordType())
+            && (D.getInit() 
+                && D.getInit()->isConstantInitializer(getContext()))
+            && Ty->isPODType()) {
+          EmitStaticBlockVarDecl(D);
+          return;
+        }
+      }
+      
       // A normal fixed sized variable becomes an alloca in the entry block.
       const llvm::Type *LTy = ConvertTypeForMem(Ty);
       Align = getContext().getDeclAlignInBytes(&D);
@@ -345,8 +360,7 @@ void CodeGenFunction::EmitLocalBlockVarDecl(const VarDecl &D) {
 
     if (!DidCallStackSave) {
       // Save the stack.
-      const llvm::Type *LTy =
-        llvm::PointerType::getUnqual(llvm::Type::getInt8Ty(VMContext));
+      const llvm::Type *LTy = llvm::Type::getInt8PtrTy(VMContext);
       llvm::Value *Stack = CreateTempAlloca(LTy, "saved_stack");
 
       llvm::Value *F = CGM.getIntrinsic(llvm::Intrinsic::stacksave);
@@ -418,23 +432,23 @@ void CodeGenFunction::EmitLocalBlockVarDecl(const VarDecl &D) {
       Loc = Builder.CreateStructGEP(DeclPtr, getByRefValueLLVMField(&D), 
                                     D.getNameAsString());
 
+    bool isVolatile = (getContext().getCanonicalType(D.getType())
+                       .isVolatileQualified());
     if (Ty->isReferenceType()) {
       RValue RV = EmitReferenceBindingToExpr(Init, Ty, /*IsInitializer=*/true);
       EmitStoreOfScalar(RV.getScalarVal(), Loc, false, Ty);
     } else if (!hasAggregateLLVMType(Init->getType())) {
       llvm::Value *V = EmitScalarExpr(Init);
-      EmitStoreOfScalar(V, Loc, D.getType().isVolatileQualified(),
-                        D.getType());
+      EmitStoreOfScalar(V, Loc, isVolatile, D.getType());
     } else if (Init->getType()->isAnyComplexType()) {
-      EmitComplexExprIntoAddr(Init, Loc, D.getType().isVolatileQualified());
+      EmitComplexExprIntoAddr(Init, Loc, isVolatile);
     } else {
-      EmitAggExpr(Init, Loc, D.getType().isVolatileQualified());
+      EmitAggExpr(Init, Loc, isVolatile);
     }
   }
 
   if (isByRef) {
-    const llvm::PointerType *PtrToInt8Ty
-      = llvm::PointerType::getUnqual(llvm::Type::getInt8Ty(VMContext));
+    const llvm::PointerType *PtrToInt8Ty = llvm::Type::getInt8PtrTy(VMContext);
 
     EnsureInsertPoint();
     llvm::Value *isa_field = Builder.CreateStructGEP(DeclPtr, 0);
@@ -493,17 +507,30 @@ void CodeGenFunction::EmitLocalBlockVarDecl(const VarDecl &D) {
 
   // Handle CXX destruction of variables.
   QualType DtorTy(Ty);
-  if (const ArrayType *Array = DtorTy->getAs<ArrayType>())
-    DtorTy = Array->getElementType();
+  while (const ArrayType *Array = getContext().getAsArrayType(DtorTy))
+    DtorTy = getContext().getBaseElementType(Array);
   if (const RecordType *RT = DtorTy->getAs<RecordType>())
     if (CXXRecordDecl *ClassDecl = dyn_cast<CXXRecordDecl>(RT->getDecl())) {
       if (!ClassDecl->hasTrivialDestructor()) {
         const CXXDestructorDecl *D = ClassDecl->getDestructor(getContext());
         assert(D && "EmitLocalBlockVarDecl - destructor is nul");
-        assert(!Ty->getAs<ArrayType>() && "FIXME - destruction of arrays NYI");
-
-        CleanupScope scope(*this);
-        EmitCXXDestructorCall(D, Dtor_Complete, DeclPtr);
+        
+        if (const ConstantArrayType *Array = 
+              getContext().getAsConstantArrayType(Ty)) {
+          CleanupScope Scope(*this);
+          QualType BaseElementTy = getContext().getBaseElementType(Array);
+          const llvm::Type *BasePtr = ConvertType(BaseElementTy);
+          BasePtr = llvm::PointerType::getUnqual(BasePtr);
+          llvm::Value *BaseAddrPtr =
+            Builder.CreateBitCast(DeclPtr, BasePtr);
+          EmitCXXAggrDestructorCall(D, Array, BaseAddrPtr);
+          
+          // Make sure to jump to the exit block.
+          EmitBranch(Scope.getCleanupExitBlock());
+        } else {
+          CleanupScope Scope(*this);
+          EmitCXXDestructorCall(D, Dtor_Complete, DeclPtr);
+        }
       }
   }
 
@@ -549,6 +576,7 @@ void CodeGenFunction::EmitParmDecl(const VarDecl &D, llvm::Value *Arg) {
   assert((isa<ParmVarDecl>(D) || isa<ImplicitParamDecl>(D)) &&
          "Invalid argument to EmitParmDecl");
   QualType Ty = D.getType();
+  CanQualType CTy = getContext().getCanonicalType(Ty);
 
   llvm::Value *DeclPtr;
   if (!Ty->isConstantSizeType()) {
@@ -565,7 +593,7 @@ void CodeGenFunction::EmitParmDecl(const VarDecl &D, llvm::Value *Arg) {
       DeclPtr->setName(Name.c_str());
 
       // Store the initial value into the alloca.
-      EmitStoreOfScalar(Arg, DeclPtr, Ty.isVolatileQualified(), Ty);
+      EmitStoreOfScalar(Arg, DeclPtr, CTy.isVolatileQualified(), Ty);
     } else {
       // Otherwise, if this is an aggregate, just use the input pointer.
       DeclPtr = Arg;
@@ -583,4 +611,3 @@ void CodeGenFunction::EmitParmDecl(const VarDecl &D, llvm::Value *Arg) {
     DI->EmitDeclareOfArgVariable(&D, DeclPtr, Builder);
   }
 }
-

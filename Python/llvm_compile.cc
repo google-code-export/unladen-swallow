@@ -154,10 +154,19 @@ find_basic_blocks(PyObject *bytecode, py::LlvmFunctionBuilder &fbuilder,
         // the instruction right after the jump. In either case, if a block
         // for that instruction already exists, use the existing block.
         if (iter.NextIndex() >= instr_info.size()) {
-            err->SetError(PyExc_SystemError, "Fell through out of bytecode.");
-            return -1;
+            // An unconditional jump as the last instruction will have a
+            // NextIndex() just beyond the end of the bytecode.
+            // Handle this by not allocating a fallthrough block and
+            // passing NULL as the fallthrough parameter to 
+            // LlvmFunctionBuilder::JUMP_ABSOLUTE.  This method doesn't use
+            // its fallthrough parameter so this does not cause a problem.
+            if (iter.Opcode() != JUMP_ABSOLUTE &&
+                iter.Opcode() != JUMP_FORWARD) {
+                err->SetError(PyExc_SystemError, "Fell through out of bytecode.");
+                return -1;
+            }
         }
-        if (instr_info[iter.NextIndex()].block_ == NULL) {
+        else if (instr_info[iter.NextIndex()].block_ == NULL) {
             instr_info[iter.NextIndex()].block_ =
                 fbuilder.CreateBasicBlock(fallthrough_name);
         }
@@ -195,6 +204,8 @@ _PyCode_ToLlvmIr(PyCodeObject *code, PyLlvmError *err,
                       "non-string codestring in code object");
         return NULL;
     }
+
+    llvm_data->MaybeCollectUnusedGlobals();
 
     py::LlvmFunctionBuilder fbuilder(llvm_data, code);
     std::vector<InstrInfo> instr_info(PyString_GET_SIZE(code->co_code));
@@ -274,6 +285,7 @@ _PyCode_ToLlvmIr(PyCodeObject *code, PyLlvmError *err,
         OPCODE(DELETE_SLICE_RIGHT)
         OPCODE(DELETE_SLICE_BOTH)
         OPCODE(STORE_MAP)
+        OPCODE(IMPORT_NAME)
         OPCODE(INPLACE_ADD)
         OPCODE(INPLACE_SUBTRACT)
         OPCODE(INPLACE_MULTIPLY)
@@ -338,6 +350,7 @@ _PyCode_ToLlvmIr(PyCodeObject *code, PyLlvmError *err,
 #define REL iter.NextIndex() + iter.Oparg()
 #define NO_OPINDEX target
 #define NEED_OPINDEX target, target_opindex
+#define COND_BRANCH iter.Oparg(), iter.NextIndex(), target
 #define OPCODE_J(opname, OPINDEX_EXPR, TARGET_PARAM) \
     case opname: \
         target_opindex = OPINDEX_EXPR; \
@@ -346,18 +359,22 @@ _PyCode_ToLlvmIr(PyCodeObject *code, PyLlvmError *err,
         } else { \
             target = instr_info[target_opindex].block_; \
         } \
-        fallthrough = instr_info[iter.NextIndex()].block_; \
         assert(target != NULL && "Missing target block"); \
-        assert(fallthrough != NULL && "Missing fallthrough block"); \
+        if (iter.NextIndex() < instr_info.size()) { \
+            fallthrough = instr_info[iter.NextIndex()].block_; \
+            assert(fallthrough != NULL && "Missing fallthrough block"); \
+        } else { \
+            fallthrough = NULL; \
+        } \
         fbuilder.opname(TARGET_PARAM, fallthrough); \
         break;
 
-        OPCODE_J(JUMP_IF_FALSE_OR_POP, ABS, NO_OPINDEX)
-        OPCODE_J(JUMP_IF_TRUE_OR_POP, ABS, NO_OPINDEX)
-        OPCODE_J(JUMP_ABSOLUTE, ABS, NO_OPINDEX)
-        OPCODE_J(POP_JUMP_IF_FALSE, ABS, NO_OPINDEX)
-        OPCODE_J(POP_JUMP_IF_TRUE, ABS, NO_OPINDEX)
+        OPCODE_J(JUMP_IF_FALSE_OR_POP, ABS, COND_BRANCH)
+        OPCODE_J(JUMP_IF_TRUE_OR_POP, ABS, COND_BRANCH)
+        OPCODE_J(POP_JUMP_IF_FALSE, ABS, COND_BRANCH)
+        OPCODE_J(POP_JUMP_IF_TRUE, ABS, COND_BRANCH)
         OPCODE_J(CONTINUE_LOOP, ABS, NEED_OPINDEX)
+        OPCODE_J(JUMP_ABSOLUTE, ABS, NO_OPINDEX)
         OPCODE_J(JUMP_FORWARD, REL, NO_OPINDEX)
         OPCODE_J(FOR_ITER, REL, NO_OPINDEX)
         OPCODE_J(SETUP_LOOP, REL, NEED_OPINDEX)
@@ -419,7 +436,5 @@ _PyCode_ToLlvmIr(PyCodeObject *code, PyLlvmError *err,
     // Make sure the function survives global optimizations.
     fbuilder.function()->setLinkage(llvm::GlobalValue::ExternalLinkage);
 
-    _LlvmFunction *wrapper = new _LlvmFunction();
-    wrapper->lf_function = fbuilder.function();
-    return wrapper;
+    return _LlvmFunction_New(fbuilder.function());
 }

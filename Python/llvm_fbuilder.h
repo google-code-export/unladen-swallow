@@ -14,6 +14,7 @@
 #include "llvm/Analysis/DebugInfo.h"
 #include "llvm/Constants.h"
 #include "llvm/Support/IRBuilder.h"
+#include "llvm/Support/TargetFolder.h"
 #include <string>
 
 struct PyCodeObject;
@@ -33,7 +34,8 @@ public:
     LlvmFunctionBuilder(PyGlobalLlvmData *global_data, PyCodeObject *code);
 
     llvm::Function *function() { return function_; }
-    llvm::IRBuilder<>& builder() { return builder_; }
+    typedef llvm::IRBuilder<true, llvm::TargetFolder> BuilderT;
+    BuilderT& builder() { return builder_; }
     llvm::BasicBlock *unreachable_block() { return unreachable_block_; }
 
     /// Returns true if this function actually makes use of the LOAD_GLOBAL
@@ -98,13 +100,21 @@ public:
     }
     void JUMP_ABSOLUTE(llvm::BasicBlock *target, llvm::BasicBlock *fallthrough);
 
-    void POP_JUMP_IF_FALSE(llvm::BasicBlock *target,
+    void POP_JUMP_IF_FALSE(unsigned target_idx,
+                           unsigned fallthrough_idx,
+                           llvm::BasicBlock *target,
                            llvm::BasicBlock *fallthrough);
-    void POP_JUMP_IF_TRUE(llvm::BasicBlock *target,
+    void POP_JUMP_IF_TRUE(unsigned target_idx,
+                          unsigned fallthrough_idx,
+                          llvm::BasicBlock *target,
                           llvm::BasicBlock *fallthrough);
-    void JUMP_IF_FALSE_OR_POP(llvm::BasicBlock *target,
+    void JUMP_IF_FALSE_OR_POP(unsigned target_idx,
+                              unsigned fallthrough_idx,
+                              llvm::BasicBlock *target,
                               llvm::BasicBlock *fallthrough);
-    void JUMP_IF_TRUE_OR_POP(llvm::BasicBlock *target,
+    void JUMP_IF_TRUE_OR_POP(unsigned target_idx,
+                             unsigned fallthrough_idx,
+                             llvm::BasicBlock *target,
                              llvm::BasicBlock *fallthrough);
     void CONTINUE_LOOP(llvm::BasicBlock *target,
                        int target_opindex,
@@ -173,6 +183,7 @@ public:
     void DELETE_SUBSCR();
     void STORE_MAP();
     void LIST_APPEND();
+    void IMPORT_NAME();
 
     void COMPARE_OP(int cmp_op);
     void CALL_FUNCTION(int num_args);
@@ -319,7 +330,8 @@ private:
     // cached in the ExecutionEngine's global mapping table, and they
     // incref the object so its address doesn't get re-used while the
     // GlobalVariable is still alive.  See Util/ConstantMirror.h for
-    // more details.
+    // more details.  Use this in preference to GetGlobalVariable()
+    // for PyObjects that may be immutable.
     llvm::Constant *GetGlobalVariableFor(PyObject *obj);
 
     // Copies the elements from array[0] to array[N-1] to target, bytewise.
@@ -329,6 +341,31 @@ private:
     // thread-switching when it expires.  Falls through to next_block (or a
     // new block if it's NULL) and leaves the insertion point there.
     void CheckPyTicker(llvm::BasicBlock *next_block = NULL);
+
+    // Helper function for the POP_JUMP_IF_{TRUE,FALSE} and
+    // JUMP_IF_{TRUE,FALSE}_OR_POP, used for omitting untake branches.
+    // If sufficient data is availble, we made decide to omit one side of a
+    // conditional branch, replacing that code with a jump to the interpreter.
+    // If sufficient data is available:
+    //      - set true_block or false_block to a bail-to-interpreter block.
+    //      - set bail_idx and bail_block to handle bailing.
+    // If sufficient data is available or we decide not to optimize:
+    //      - leave true_block and false_block alone.
+    //      - bail_idx will be 0, bail_block will be NULL.
+    //
+    // Out parameters: true_block, false_block, bail_idx, bail_block.
+    void GetPyCondBranchBailBlock(unsigned true_idx,
+                                  llvm::BasicBlock **true_block,
+                                  unsigned false_idx,
+                                  llvm::BasicBlock **false_block,
+                                  unsigned *bail_idx,
+                                  llvm::BasicBlock **bail_block);
+
+    // Helper function for the POP_JUMP_IF_{TRUE,FALSE} and
+    // JUMP_IF_{TRUE,FALSE}_OR_POP. Fill in the bail block for these opcodes
+    // that was obtained from GetPyCondBranchBailBlock().
+    void FillPyCondBranchBailBlock(llvm::BasicBlock *bail_to,
+                                   unsigned bail_idx);
 
     // These are just like the CreateCall* calls on IRBuilder, except they also
     // apply callee's calling convention and attributes to the call site.
@@ -360,6 +397,10 @@ private:
 
     /// Marks the end of the function and inserts a return instruction.
     llvm::ReturnInst *CreateRet(llvm::Value *retval);
+
+    /// Get the LLVM NULL Value for the given type.
+    template<typename T>
+    llvm::Value *GetNull();
 
     // Returns an i1, true if value represents a NULL pointer.
     llvm::Value *IsNull(llvm::Value *value);
@@ -393,6 +434,12 @@ private:
     // Propagates an exception by jumping to the unwind block with an
     // appropriate unwind reason set.
     void PropagateException();
+
+    // Set up a block preceding the bail-to-interpreter block.
+    void CreateBailPoint(unsigned bail_idx, char reason);
+    void CreateBailPoint(char reason) {
+        CreateBailPoint(f_lasti_, reason);
+    }
 
     // Only for use in the constructor: Fills in the block that
     // handles bailing out of JITted code back to the interpreter
@@ -514,6 +561,14 @@ private:
     /// installed, execution will continue at fallthrough_block.
     void BailIfProfiling(llvm::BasicBlock *fallthrough_block);
 
+    /// Return the BasicBlock we should jump to in order to bail to the
+    /// interpreter.
+    llvm::BasicBlock *GetBailBlock() const;
+
+    /// Return the BasicBlock we should jump to in order to handle a Python
+    /// exception.
+    llvm::BasicBlock *GetExceptionBlock() const;
+
     PyGlobalLlvmData *const llvm_data_;
     PyLlvmCompileThread *const compile_thread_;
     // The code object is used for looking up peripheral information
@@ -523,7 +578,7 @@ private:
     llvm::LLVMContext &context_;
     llvm::Module *const module_;
     llvm::Function *const function_;
-    llvm::IRBuilder<> builder_;
+    BuilderT builder_;
     const bool is_generator_;
     llvm::DIFactory *const debug_info_;
     const llvm::DICompileUnit debug_compile_unit_;

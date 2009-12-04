@@ -73,29 +73,60 @@ llvm::Constant *BlockModule::getNSConcreteStackBlock() {
   return NSConcreteStackBlock;
 }
 
-static void CollectBlockDeclRefInfo(const Stmt *S,
-                                    CodeGenFunction::BlockInfo &Info) {
+static void CollectBlockDeclRefInfo(
+  const Stmt *S, CodeGenFunction::BlockInfo &Info,
+  llvm::SmallSet<const DeclContext *, 16> &InnerContexts) {
   for (Stmt::const_child_iterator I = S->child_begin(), E = S->child_end();
        I != E; ++I)
     if (*I)
-      CollectBlockDeclRefInfo(*I, Info);
+      CollectBlockDeclRefInfo(*I, Info, InnerContexts);
 
-  if (const BlockDeclRefExpr *DE = dyn_cast<BlockDeclRefExpr>(S)) {
+  // We want to ensure we walk down into block literals so we can find
+  // all nested BlockDeclRefExprs.
+  if (const BlockExpr *BE = dyn_cast<BlockExpr>(S)) {
+    InnerContexts.insert(cast<DeclContext>(BE->getBlockDecl()));
+    CollectBlockDeclRefInfo(BE->getBody(), Info, InnerContexts);
+  }
+
+  if (const BlockDeclRefExpr *BDRE = dyn_cast<BlockDeclRefExpr>(S)) {
     // FIXME: Handle enums.
-    if (isa<FunctionDecl>(DE->getDecl()))
+    if (isa<FunctionDecl>(BDRE->getDecl()))
       return;
 
-    if (DE->isByRef())
-      Info.ByRefDeclRefs.push_back(DE);
-    else
-      Info.ByCopyDeclRefs.push_back(DE);
+    // Only Decls that escape are added.
+    if (!InnerContexts.count(BDRE->getDecl()->getDeclContext()))
+      Info.DeclRefs.push_back(BDRE);
   }
 }
 
 /// CanBlockBeGlobal - Given a BlockInfo struct, determines if a block can be
 /// declared as a global variable instead of on the stack.
 static bool CanBlockBeGlobal(const CodeGenFunction::BlockInfo &Info) {
-  return Info.ByRefDeclRefs.empty() && Info.ByCopyDeclRefs.empty();
+  return Info.DeclRefs.empty();
+}
+
+/// AllocateAllBlockDeclRefs - Preallocate all nested BlockDeclRefExprs to
+/// ensure we can generate the debug information for the parameter for the block
+/// invoke function.
+static void AllocateAllBlockDeclRefs(const CodeGenFunction::BlockInfo &Info,
+                                     CodeGenFunction *CGF) {
+  // Always allocate self, as it is often handy in the debugger, even if there
+  // is no codegen in the block that uses it.  This is also useful to always do
+  // this as if we didn't, we'd have to figure out all code that uses a self
+  // pointer, including implicit uses.
+  if (const ObjCMethodDecl *OMD
+      = dyn_cast_or_null<ObjCMethodDecl>(CGF->CurFuncDecl)) {
+    ImplicitParamDecl *SelfDecl = OMD->getSelfDecl();
+    BlockDeclRefExpr *BDRE = new (CGF->getContext())
+      BlockDeclRefExpr(SelfDecl,
+                       SelfDecl->getType(), SourceLocation(), false);
+    CGF->AllocateBlockDecl(BDRE);
+  }
+
+  // FIXME: Also always forward the this pointer in C++ as well.
+
+  for (size_t i = 0; i < Info.DeclRefs.size(); ++i)
+    CGF->AllocateBlockDecl(Info.DeclRefs[i]);
 }
 
 // FIXME: Push most into CGM, passing down a few bits, like current function
@@ -104,7 +135,9 @@ llvm::Value *CodeGenFunction::BuildBlockLiteralTmp(const BlockExpr *BE) {
 
   std::string Name = CurFn->getName();
   CodeGenFunction::BlockInfo Info(0, Name.c_str());
-  CollectBlockDeclRefInfo(BE->getBody(), Info);
+  llvm::SmallSet<const DeclContext *, 16> InnerContexts;
+  InnerContexts.insert(BE->getBlockDecl());
+  CollectBlockDeclRefInfo(BE->getBody(), Info, InnerContexts);
 
   // Check if the block can be global.
   // FIXME: This test doesn't work for nested blocks yet.  Longer term, I'd like
@@ -113,13 +146,32 @@ llvm::Value *CodeGenFunction::BuildBlockLiteralTmp(const BlockExpr *BE) {
   if (0 && CanBlockBeGlobal(Info))
     return CGM.GetAddrOfGlobalBlock(BE, Name.c_str());
 
-  std::vector<llvm::Constant*> Elts(5);
+  size_t BlockFields = 5;
+
+  bool hasIntrospection  = CGM.getContext().getLangOptions().BlockIntrospection;
+
+  if (hasIntrospection) {
+    BlockFields++;
+  }
+  std::vector<llvm::Constant*> Elts(BlockFields);
+
+  if (hasIntrospection) {
+    std::string BlockTypeEncoding;
+    CGM.getContext().getObjCEncodingForBlock(BE, BlockTypeEncoding);
+
+    Elts[5] = llvm::ConstantExpr::getBitCast(
+            CGM.GetAddrOfConstantCString(BlockTypeEncoding), PtrToInt8Ty);
+  }
+
   llvm::Constant *C;
   llvm::Value *V;
 
   {
     // C = BuildBlockStructInitlist();
     unsigned int flags = BLOCK_HAS_DESCRIPTOR;
+
+    if (hasIntrospection)
+      flags |= BLOCK_HAS_OBJC_TYPE;
 
     // We run this first so that we set BlockHasCopyDispose from the entire
     // block literal.
@@ -159,7 +211,8 @@ llvm::Value *CodeGenFunction::BuildBlockLiteralTmp(const BlockExpr *BE) {
 
     if (subBlockDeclRefDecls.size() == 0) {
       // __descriptor
-      Elts[4] = BuildDescriptorBlockDecl(subBlockHasCopyDispose, subBlockSize, 0, 0);
+      Elts[4] = BuildDescriptorBlockDecl(subBlockHasCopyDispose, subBlockSize,
+                                         0, 0);
 
       // Optimize to being a global block.
       Elts[0] = CGM.getNSConcreteGlobalBlock();
@@ -177,19 +230,21 @@ llvm::Value *CodeGenFunction::BuildBlockLiteralTmp(const BlockExpr *BE) {
       return C;
     }
 
-    std::vector<const llvm::Type *> Types(5+subBlockDeclRefDecls.size());
+    std::vector<const llvm::Type *> Types(BlockFields+subBlockDeclRefDecls.size());
     for (int i=0; i<4; ++i)
       Types[i] = Elts[i]->getType();
     Types[4] = PtrToInt8Ty;
+    if (hasIntrospection)
+      Types[5] = PtrToInt8Ty;
 
     for (unsigned i=0; i < subBlockDeclRefDecls.size(); ++i) {
       const Expr *E = subBlockDeclRefDecls[i];
       const BlockDeclRefExpr *BDRE = dyn_cast<BlockDeclRefExpr>(E);
       QualType Ty = E->getType();
       if (BDRE && BDRE->isByRef()) {
-        Types[i+5] = llvm::PointerType::get(BuildByRefType(BDRE->getDecl()), 0);
+        Types[i+BlockFields] = llvm::PointerType::get(BuildByRefType(BDRE->getDecl()), 0);
       } else
-        Types[i+5] = ConvertType(Ty);
+        Types[i+BlockFields] = ConvertType(Ty);
     }
 
     llvm::StructType *Ty = llvm::StructType::get(VMContext, Types, true);
@@ -203,6 +258,8 @@ llvm::Value *CodeGenFunction::BuildBlockLiteralTmp(const BlockExpr *BE) {
 
     for (unsigned i=0; i<4; ++i)
       Builder.CreateStore(Elts[i], Builder.CreateStructGEP(V, i, "block.tmp"));
+    if (hasIntrospection)
+      Builder.CreateStore(Elts[5], Builder.CreateStructGEP(V, 5, "block.tmp"));
 
     for (unsigned i=0; i < subBlockDeclRefDecls.size(); ++i)
       {
@@ -218,7 +275,7 @@ llvm::Value *CodeGenFunction::BuildBlockLiteralTmp(const BlockExpr *BE) {
         BlockDeclRefExpr *BDRE = dyn_cast<BlockDeclRefExpr>(E);
         VD = BDRE->getDecl();
 
-        llvm::Value* Addr = Builder.CreateStructGEP(V, i+5, "tmp");
+        llvm::Value* Addr = Builder.CreateStructGEP(V, i+BlockFields, "tmp");
         NoteForHelper[helpersize].index = i+5;
         NoteForHelper[helpersize].RequiresCopying
           = BlockRequiresCopying(VD->getType());
@@ -257,7 +314,7 @@ llvm::Value *CodeGenFunction::BuildBlockLiteralTmp(const BlockExpr *BE) {
         RValue r = EmitAnyExpr(E, Addr, false);
         if (r.isScalar()) {
           llvm::Value *Loc = r.getScalarVal();
-          const llvm::Type *Ty = Types[i+5];
+          const llvm::Type *Ty = Types[i+BlockFields];
           if  (BDRE->isByRef()) {
             // E is now the address of the value field, instead, we want the
             // address of the actual ByRef struct.  We optimize this slightly
@@ -269,7 +326,7 @@ llvm::Value *CodeGenFunction::BuildBlockLiteralTmp(const BlockExpr *BE) {
             llvm::Value *BlockLiteral = LoadBlockStruct();
 
             Loc = Builder.CreateGEP(BlockLiteral,
-                                    llvm::ConstantInt::get(llvm::Type::getInt64Ty(VMContext),
+                       llvm::ConstantInt::get(llvm::Type::getInt64Ty(VMContext),
                                                            offset),
                                     "block.literal");
             Ty = llvm::PointerType::get(Ty, 0);
@@ -341,8 +398,20 @@ const llvm::Type *BlockModule::getGenericBlockLiteralType() {
   //   int __reserved;
   //   void (*__invoke)(void *);
   //   struct __block_descriptor *__descriptor;
+  //   // GNU runtime only:
+  //   const char *types;
   // };
-  GenericBlockLiteralType = llvm::StructType::get(IntTy->getContext(),
+  if (CGM.getContext().getLangOptions().BlockIntrospection)
+    GenericBlockLiteralType = llvm::StructType::get(IntTy->getContext(),
+                                                  PtrToInt8Ty,
+                                                  IntTy,
+                                                  IntTy,
+                                                  PtrToInt8Ty,
+                                                  BlockDescPtrTy,
+                                                  PtrToInt8Ty,
+                                                  NULL);
+  else
+    GenericBlockLiteralType = llvm::StructType::get(IntTy->getContext(),
                                                   PtrToInt8Ty,
                                                   IntTy,
                                                   IntTy,
@@ -391,10 +460,6 @@ const llvm::Type *BlockModule::getGenericExtendedBlockLiteralType() {
   return GenericExtendedBlockLiteralType;
 }
 
-bool BlockFunction::BlockRequiresCopying(QualType Ty) {
-  return CGM.BlockRequiresCopying(Ty);
-}
-
 RValue CodeGenFunction::EmitBlockCallExpr(const CallExpr* E) {
   const BlockPointerType *BPT =
     E->getCallee()->getType()->getAs<BlockPointerType>();
@@ -414,8 +479,7 @@ RValue CodeGenFunction::EmitBlockCallExpr(const CallExpr* E) {
 
   BlockLiteral =
     Builder.CreateBitCast(BlockLiteral,
-                          llvm::PointerType::getUnqual(
-                              llvm::Type::getInt8Ty(VMContext)),
+                          llvm::Type::getInt8PtrTy(VMContext),
                           "tmp");
 
   // Add the block literal.
@@ -448,24 +512,34 @@ RValue CodeGenFunction::EmitBlockCallExpr(const CallExpr* E) {
   return EmitCall(FnInfo, Func, Args);
 }
 
-llvm::Value *CodeGenFunction::GetAddrOfBlockDecl(const BlockDeclRefExpr *E) {
+uint64_t CodeGenFunction::AllocateBlockDecl(const BlockDeclRefExpr *E) {
   const ValueDecl *VD = E->getDecl();
-  
   uint64_t &offset = BlockDecls[VD];
 
-
   // See if we have already allocated an offset for this variable.
-  if (offset == 0) {
-    // Don't run the expensive check, unless we have to.
-    if (!BlockHasCopyDispose && BlockRequiresCopying(E->getType()))
+  if (offset)
+    return offset;
+
+  // Don't run the expensive check, unless we have to.
+  if (!BlockHasCopyDispose)
+    if (E->isByRef()
+        || BlockRequiresCopying(E->getType()))
       BlockHasCopyDispose = true;
-    // if not, allocate one now.
-    offset = getBlockOffset(E);
-  }
+
+  // if not, allocate one now.
+  offset = getBlockOffset(E);
+
+  return offset;
+}
+
+llvm::Value *CodeGenFunction::GetAddrOfBlockDecl(const BlockDeclRefExpr *E) {
+  const ValueDecl *VD = E->getDecl();
+  uint64_t offset = AllocateBlockDecl(E);
+  
 
   llvm::Value *BlockLiteral = LoadBlockStruct();
   llvm::Value *V = Builder.CreateGEP(BlockLiteral,
-                                  llvm::ConstantInt::get(llvm::Type::getInt64Ty(VMContext),
+                       llvm::ConstantInt::get(llvm::Type::getInt64Ty(VMContext),
                                                          offset),
                                      "block.literal");
   if (E->isByRef()) {
@@ -532,8 +606,12 @@ BlockModule::GetAddrOfGlobalBlock(const BlockExpr *BE, const char * n) {
                              llvm::GlobalVariable::InternalLinkage,
                              DescriptorStruct, "__block_descriptor_global");
 
+  int FieldCount = 5;
   // Generate the constants for the block literal.
-  llvm::Constant *LiteralFields[5];
+  if (CGM.getContext().getLangOptions().BlockIntrospection)
+    FieldCount = 6;
+
+  std::vector<llvm::Constant*> LiteralFields(FieldCount);
 
   CodeGenFunction::BlockInfo Info(0, n);
   uint64_t subBlockSize, subBlockAlign;
@@ -553,7 +631,9 @@ BlockModule::GetAddrOfGlobalBlock(const BlockExpr *BE, const char * n) {
   LiteralFields[0] = getNSConcreteGlobalBlock();
 
   // Flags
-  LiteralFields[1] =
+  LiteralFields[1] = CGM.getContext().getLangOptions().BlockIntrospection ?
+    llvm::ConstantInt::get(IntTy, BLOCK_IS_GLOBAL | BLOCK_HAS_DESCRIPTOR |
+            BLOCK_HAS_OBJC_TYPE) :
     llvm::ConstantInt::get(IntTy, BLOCK_IS_GLOBAL | BLOCK_HAS_DESCRIPTOR);
 
   // Reserved
@@ -564,9 +644,17 @@ BlockModule::GetAddrOfGlobalBlock(const BlockExpr *BE, const char * n) {
 
   // Descriptor
   LiteralFields[4] = Descriptor;
+  
+  // Type encoding
+  if (CGM.getContext().getLangOptions().BlockIntrospection) {
+    std::string BlockTypeEncoding;
+    CGM.getContext().getObjCEncodingForBlock(BE, BlockTypeEncoding);
+
+    LiteralFields[5] = CGM.GetAddrOfConstantCString(BlockTypeEncoding);
+  }
 
   llvm::Constant *BlockLiteralStruct =
-    llvm::ConstantStruct::get(VMContext, &LiteralFields[0], 5, false);
+    llvm::ConstantStruct::get(VMContext, LiteralFields, false);
 
   llvm::GlobalVariable *BlockLiteral =
     new llvm::GlobalVariable(getModule(), BlockLiteralStruct->getType(), true,
@@ -577,7 +665,10 @@ BlockModule::GetAddrOfGlobalBlock(const BlockExpr *BE, const char * n) {
 }
 
 llvm::Value *CodeGenFunction::LoadBlockStruct() {
-  return Builder.CreateLoad(LocalDeclMap[getBlockStructDecl()], "self");
+  llvm::Value *V = Builder.CreateLoad(LocalDeclMap[getBlockStructDecl()],
+                                      "self");
+  // For now, we codegen based upon byte offsets.
+  return Builder.CreateBitCast(V, PtrToInt8Ty);
 }
 
 llvm::Function *
@@ -606,14 +697,8 @@ CodeGenFunction::GenerateBlockFunction(const BlockExpr *BExpr,
       LocalDeclMap[VD] = i->second;
   }
 
-  // FIXME: We need to rearrange the code for copy/dispose so we have this
-  // sooner, so we can calculate offsets correctly.
-  if (!BlockHasCopyDispose)
-    BlockOffset = CGM.getTargetData()
-      .getTypeStoreSizeInBits(CGM.getGenericBlockLiteralType()) / 8;
-  else
-    BlockOffset = CGM.getTargetData()
-      .getTypeStoreSizeInBits(CGM.getGenericExtendedBlockLiteralType()) / 8;
+  BlockOffset = CGM.getTargetData()
+    .getTypeStoreSizeInBits(CGM.getGenericBlockLiteralType()) / 8;
   BlockAlign = getContext().getTypeAlign(getContext().VoidPtrTy) / 8;
 
   const FunctionType *BlockFunctionType = BExpr->getFunctionType();
@@ -631,13 +716,22 @@ CodeGenFunction::GenerateBlockFunction(const BlockExpr *BExpr,
 
   FunctionArgList Args;
 
+  CurFuncDecl = OuterFuncDecl;
+
   const BlockDecl *BD = BExpr->getBlockDecl();
 
+  IdentifierInfo *II = &CGM.getContext().Idents.get(".block_descriptor");
+
+  // Allocate all BlockDeclRefDecls, so we can calculate the right ParmTy below.
+  AllocateAllBlockDeclRefs(Info, this);
+
+  QualType ParmTy = getContext().getBlockParmType(BlockHasCopyDispose,
+                                                  BlockDeclRefDecls);
   // FIXME: This leaks
   ImplicitParamDecl *SelfDecl =
     ImplicitParamDecl::Create(getContext(), 0,
-                              SourceLocation(), 0,
-                              getContext().getPointerType(getContext().VoidTy));
+                              SourceLocation(), II,
+                              ParmTy);
 
   Args.push_back(std::make_pair(SelfDecl, SelfDecl->getType()));
   BlockStructDecl = SelfDecl;
@@ -759,11 +853,13 @@ GenerateCopyHelperFunction(bool BlockHasCopyDispose, const llvm::StructType *T,
   FunctionArgList Args;
   // FIXME: This leaks
   ImplicitParamDecl *Dst =
-    ImplicitParamDecl::Create(getContext(), 0, SourceLocation(), 0,
+    ImplicitParamDecl::Create(getContext(), 0,
+                              SourceLocation(), 0,
                               getContext().getPointerType(getContext().VoidTy));
   Args.push_back(std::make_pair(Dst, Dst->getType()));
   ImplicitParamDecl *Src =
-    ImplicitParamDecl::Create(getContext(), 0, SourceLocation(), 0,
+    ImplicitParamDecl::Create(getContext(), 0,
+                              SourceLocation(), 0,
                               getContext().getPointerType(getContext().VoidTy));
   Args.push_back(std::make_pair(Src, Src->getType()));
 
@@ -844,7 +940,8 @@ GenerateDestroyHelperFunction(bool BlockHasCopyDispose,
   FunctionArgList Args;
   // FIXME: This leaks
   ImplicitParamDecl *Src =
-    ImplicitParamDecl::Create(getContext(), 0, SourceLocation(), 0,
+    ImplicitParamDecl::Create(getContext(), 0,
+                              SourceLocation(), 0,
                               getContext().getPointerType(getContext().VoidTy));
 
   Args.push_back(std::make_pair(Src, Src->getType()));
@@ -923,13 +1020,15 @@ GeneratebyrefCopyHelperFunction(const llvm::Type *T, int flag) {
   FunctionArgList Args;
   // FIXME: This leaks
   ImplicitParamDecl *Dst =
-    ImplicitParamDecl::Create(getContext(), 0, SourceLocation(), 0,
+    ImplicitParamDecl::Create(getContext(), 0,
+                              SourceLocation(), 0,
                               getContext().getPointerType(getContext().VoidTy));
   Args.push_back(std::make_pair(Dst, Dst->getType()));
 
   // FIXME: This leaks
   ImplicitParamDecl *Src =
-    ImplicitParamDecl::Create(getContext(), 0, SourceLocation(), 0,
+    ImplicitParamDecl::Create(getContext(), 0,
+                              SourceLocation(), 0,
                               getContext().getPointerType(getContext().VoidTy));
   Args.push_back(std::make_pair(Src, Src->getType()));
 
@@ -992,7 +1091,8 @@ BlockFunction::GeneratebyrefDestroyHelperFunction(const llvm::Type *T,
   FunctionArgList Args;
   // FIXME: This leaks
   ImplicitParamDecl *Src =
-    ImplicitParamDecl::Create(getContext(), 0, SourceLocation(), 0,
+    ImplicitParamDecl::Create(getContext(), 0,
+                              SourceLocation(), 0,
                               getContext().getPointerType(getContext().VoidTy));
 
   Args.push_back(std::make_pair(Src, Src->getType()));

@@ -34,6 +34,7 @@ namespace clang {
   class BlockDecl;
   class CXXOperatorCallExpr;
   class CXXMemberCallExpr;
+  class TemplateArgumentLoc;
 
 /// Expr - This represents one expression.  Note that Expr's are subclasses of
 /// Stmt.  This allows an expression to be transparently used any place a Stmt
@@ -86,7 +87,7 @@ public:
     // type. Additionally, inspect Expr::isLvalue to determine whether
     // an expression that is adjusted in this manner should be
     // considered an lvalue.
-    assert((TR.isNull() || !TR->isReferenceType()) &&
+    assert((t.isNull() || !t->isReferenceType()) &&
            "Expressions can't have reference type");
 
     TR = t;
@@ -134,7 +135,7 @@ public:
   /// with location to warn on and the source range[s] to report with the
   /// warning.
   bool isUnusedResultAWarning(SourceLocation &Loc, SourceRange &R1,
-                              SourceRange &R2) const;
+                              SourceRange &R2, ASTContext &Ctx) const;
 
   /// isLvalue - C99 6.3.2.1: an lvalue is an expression with an object type or
   /// incomplete type other than void. Nonarray expressions that can be lvalues:
@@ -241,10 +242,20 @@ public:
   /// in Result.
   bool Evaluate(EvalResult &Result, ASTContext &Ctx) const;
 
+  /// EvaluateAsAny - The same as Evaluate, except that it also succeeds on
+  /// stack based objects.
+  bool EvaluateAsAny(EvalResult &Result, ASTContext &Ctx) const;
+
   /// isEvaluatable - Call Evaluate to see if this expression can be constant
   /// folded, but discard the result.
   bool isEvaluatable(ASTContext &Ctx) const;
 
+  /// HasSideEffects - This routine returns true for all those expressions
+  /// which must be evaluated each time and must not be optimization away 
+  /// or evaluated at compile time. Example is a function call, volatile
+  /// variable read.
+  bool HasSideEffects(ASTContext &Ctx) const;
+  
   /// EvaluateAsInt - Call Evaluate and return the folded integer. This
   /// must be called on an expression that constant folds to an integer.
   llvm::APSInt EvaluateAsInt(ASTContext &Ctx) const;
@@ -322,47 +333,221 @@ public:
 // Primary Expressions.
 //===----------------------------------------------------------------------===//
 
+/// \brief Represents the qualifier that may precede a C++ name, e.g., the
+/// "std::" in "std::sort".
+struct NameQualifier {
+  /// \brief The nested name specifier.
+  NestedNameSpecifier *NNS;
+  
+  /// \brief The source range covered by the nested name specifier.
+  SourceRange Range;
+};
+
+/// \brief Represents an explicit template argument list in C++, e.g.,
+/// the "<int>" in "sort<int>".
+struct ExplicitTemplateArgumentList {
+  /// \brief The source location of the left angle bracket ('<');
+  SourceLocation LAngleLoc;
+  
+  /// \brief The source location of the right angle bracket ('>');
+  SourceLocation RAngleLoc;
+  
+  /// \brief The number of template arguments in TemplateArgs.
+  /// The actual template arguments (if any) are stored after the
+  /// ExplicitTemplateArgumentList structure.
+  unsigned NumTemplateArgs;
+  
+  /// \brief Retrieve the template arguments
+  TemplateArgumentLoc *getTemplateArgs() {
+    return reinterpret_cast<TemplateArgumentLoc *> (this + 1);
+  }
+  
+  /// \brief Retrieve the template arguments
+  const TemplateArgumentLoc *getTemplateArgs() const {
+    return reinterpret_cast<const TemplateArgumentLoc *> (this + 1);
+  }
+};
+  
 /// DeclRefExpr - [C99 6.5.1p2] - A reference to a declared variable, function,
 /// enum, etc.
 class DeclRefExpr : public Expr {
-  NamedDecl *D;
+  enum {
+    // Flag on DecoratedD that specifies when this declaration reference 
+    // expression has a C++ nested-name-specifier.
+    HasQualifierFlag = 0x01,
+    // Flag on DecoratedD that specifies when this declaration reference 
+    // expression has an explicit C++ template argument list.
+    HasExplicitTemplateArgumentListFlag = 0x02
+  };
+  
+  // DecoratedD - The declaration that we are referencing, plus two bits to 
+  // indicate whether (1) the declaration's name was explicitly qualified and
+  // (2) the declaration's name was followed by an explicit template 
+  // argument list.
+  llvm::PointerIntPair<NamedDecl *, 2> DecoratedD;
+  
+  // Loc - The location of the declaration name itself.
   SourceLocation Loc;
 
+  /// \brief Retrieve the qualifier that preceded the declaration name, if any.
+  NameQualifier *getNameQualifier() {
+    if ((DecoratedD.getInt() & HasQualifierFlag) == 0)
+      return 0;
+    
+    return reinterpret_cast<NameQualifier *> (this + 1);
+  }
+  
+  /// \brief Retrieve the qualifier that preceded the member name, if any.
+  const NameQualifier *getNameQualifier() const {
+    return const_cast<DeclRefExpr *>(this)->getNameQualifier();
+  }
+  
+  /// \brief Retrieve the explicit template argument list that followed the
+  /// member template name, if any.
+  ExplicitTemplateArgumentList *getExplicitTemplateArgumentList() {
+    if ((DecoratedD.getInt() & HasExplicitTemplateArgumentListFlag) == 0)
+      return 0;
+    
+    if ((DecoratedD.getInt() & HasQualifierFlag) == 0)
+      return reinterpret_cast<ExplicitTemplateArgumentList *>(this + 1);
+    
+    return reinterpret_cast<ExplicitTemplateArgumentList *>(
+                                                      getNameQualifier() + 1);
+  }
+  
+  /// \brief Retrieve the explicit template argument list that followed the
+  /// member template name, if any.
+  const ExplicitTemplateArgumentList *getExplicitTemplateArgumentList() const {
+    return const_cast<DeclRefExpr *>(this)->getExplicitTemplateArgumentList();
+  }
+  
+  DeclRefExpr(NestedNameSpecifier *Qualifier, SourceRange QualifierRange,
+              NamedDecl *D, SourceLocation NameLoc,
+              bool HasExplicitTemplateArgumentList,
+              SourceLocation LAngleLoc,
+              const TemplateArgumentLoc *ExplicitTemplateArgs,
+              unsigned NumExplicitTemplateArgs,
+              SourceLocation RAngleLoc,
+              QualType T, bool TD, bool VD);
+  
 protected:
   // FIXME: Eventually, this constructor will go away and all subclasses
   // will have to provide the type- and value-dependent flags.
   DeclRefExpr(StmtClass SC, NamedDecl *d, QualType t, SourceLocation l) :
-    Expr(SC, t), D(d), Loc(l) {}
+    Expr(SC, t), DecoratedD(d, 0), Loc(l) {}
 
   DeclRefExpr(StmtClass SC, NamedDecl *d, QualType t, SourceLocation l, bool TD,
               bool VD) :
-    Expr(SC, t, TD, VD), D(d), Loc(l) {}
+    Expr(SC, t, TD, VD), DecoratedD(d, 0), Loc(l) {}
 
 public:
   // FIXME: Eventually, this constructor will go away and all clients
   // will have to provide the type- and value-dependent flags.
   DeclRefExpr(NamedDecl *d, QualType t, SourceLocation l) :
-    Expr(DeclRefExprClass, t), D(d), Loc(l) {}
+    Expr(DeclRefExprClass, t), DecoratedD(d, 0), Loc(l) {}
 
   DeclRefExpr(NamedDecl *d, QualType t, SourceLocation l, bool TD, bool VD) :
-    Expr(DeclRefExprClass, t, TD, VD), D(d), Loc(l) {}
+    Expr(DeclRefExprClass, t, TD, VD), DecoratedD(d, 0), Loc(l) {}
 
   /// \brief Construct an empty declaration reference expression.
   explicit DeclRefExpr(EmptyShell Empty)
     : Expr(DeclRefExprClass, Empty) { }
 
-  NamedDecl *getDecl() { return D; }
-  const NamedDecl *getDecl() const { return D; }
-  void setDecl(NamedDecl *NewD) { D = NewD; }
+  static DeclRefExpr *Create(ASTContext &Context,
+                             NestedNameSpecifier *Qualifier,
+                             SourceRange QualifierRange,
+                             NamedDecl *D,
+                             SourceLocation NameLoc,
+                             QualType T, bool TD, bool VD);
+  
+  static DeclRefExpr *Create(ASTContext &Context,
+                             NestedNameSpecifier *Qualifier,
+                             SourceRange QualifierRange,
+                             NamedDecl *D,
+                             SourceLocation NameLoc,
+                             bool HasExplicitTemplateArgumentList,
+                             SourceLocation LAngleLoc,
+                             const TemplateArgumentLoc *ExplicitTemplateArgs,
+                             unsigned NumExplicitTemplateArgs,
+                             SourceLocation RAngleLoc,
+                             QualType T, bool TD, bool VD);
+  
+  NamedDecl *getDecl() { return DecoratedD.getPointer(); }
+  const NamedDecl *getDecl() const { return DecoratedD.getPointer(); }
+  void setDecl(NamedDecl *NewD) { DecoratedD.setPointer(NewD); }
 
   SourceLocation getLocation() const { return Loc; }
   void setLocation(SourceLocation L) { Loc = L; }
-  virtual SourceRange getSourceRange() const { return SourceRange(Loc); }
+  virtual SourceRange getSourceRange() const;
 
+  /// \brief Determine whether this declaration reference was preceded by a
+  /// C++ nested-name-specifier, e.g., \c N::foo.
+  bool hasQualifier() const { return DecoratedD.getInt() & HasQualifierFlag; }
+  
+  /// \brief If the name was qualified, retrieves the source range of
+  /// the nested-name-specifier that precedes the name. Otherwise,
+  /// returns an empty source range.
+  SourceRange getQualifierRange() const {
+    if (!hasQualifier())
+      return SourceRange();
+    
+    return getNameQualifier()->Range;
+  }
+  
+  /// \brief If the name was qualified, retrieves the nested-name-specifier 
+  /// that precedes the name. Otherwise, returns NULL.
+  NestedNameSpecifier *getQualifier() const {
+    if (!hasQualifier())
+      return 0;
+    
+    return getNameQualifier()->NNS;
+  }
+  
+  /// \brief Determines whether this member expression actually had a C++
+  /// template argument list explicitly specified, e.g., x.f<int>.
+  bool hasExplicitTemplateArgumentList() const {
+    return DecoratedD.getInt() & HasExplicitTemplateArgumentListFlag;
+  }
+  
+  /// \brief Retrieve the location of the left angle bracket following the
+  /// member name ('<'), if any.
+  SourceLocation getLAngleLoc() const {
+    if (!hasExplicitTemplateArgumentList())
+      return SourceLocation();
+    
+    return getExplicitTemplateArgumentList()->LAngleLoc;
+  }
+  
+  /// \brief Retrieve the template arguments provided as part of this
+  /// template-id.
+  const TemplateArgumentLoc *getTemplateArgs() const {
+    if (!hasExplicitTemplateArgumentList())
+      return 0;
+    
+    return getExplicitTemplateArgumentList()->getTemplateArgs();
+  }
+  
+  /// \brief Retrieve the number of template arguments provided as part of this
+  /// template-id.
+  unsigned getNumTemplateArgs() const {
+    if (!hasExplicitTemplateArgumentList())
+      return 0;
+    
+    return getExplicitTemplateArgumentList()->NumTemplateArgs;
+  }
+  
+  /// \brief Retrieve the location of the right angle bracket following the
+  /// template arguments ('>').
+  SourceLocation getRAngleLoc() const {
+    if (!hasExplicitTemplateArgumentList())
+      return SourceLocation();
+    
+    return getExplicitTemplateArgumentList()->RAngleLoc;
+  }
+  
   static bool classof(const Stmt *T) {
     return T->getStmtClass() == DeclRefExprClass ||
-           T->getStmtClass() == CXXConditionDeclExprClass ||
-           T->getStmtClass() == QualifiedDeclRefExprClass;
+           T->getStmtClass() == CXXConditionDeclExprClass;
   }
   static bool classof(const DeclRefExpr *) { return true; }
 
@@ -797,7 +982,7 @@ class SizeOfAlignOfExpr : public Expr {
   bool isSizeof : 1;  // true if sizeof, false if alignof.
   bool isType : 1;    // true if operand is a type, false if an expression
   union {
-    void *Ty;
+    DeclaratorInfo *Ty;
     Stmt *Ex;
   } Argument;
   SourceLocation OpLoc, RParenLoc;
@@ -806,15 +991,15 @@ protected:
   virtual void DoDestroy(ASTContext& C);
 
 public:
-  SizeOfAlignOfExpr(bool issizeof, QualType T,
+  SizeOfAlignOfExpr(bool issizeof, DeclaratorInfo *DInfo,
                     QualType resultType, SourceLocation op,
                     SourceLocation rp) :
       Expr(SizeOfAlignOfExprClass, resultType,
            false, // Never type-dependent (C++ [temp.dep.expr]p3).
            // Value-dependent if the argument is type-dependent.
-           T->isDependentType()),
+           DInfo->getType()->isDependentType()),
       isSizeof(issizeof), isType(true), OpLoc(op), RParenLoc(rp) {
-    Argument.Ty = T.getAsOpaquePtr();
+    Argument.Ty = DInfo;
   }
 
   SizeOfAlignOfExpr(bool issizeof, Expr *E,
@@ -837,8 +1022,11 @@ public:
 
   bool isArgumentType() const { return isType; }
   QualType getArgumentType() const {
+    return getArgumentTypeInfo()->getType();
+  }
+  DeclaratorInfo *getArgumentTypeInfo() const {
     assert(isArgumentType() && "calling getArgumentType() when arg is expr");
-    return QualType::getFromOpaquePtr(Argument.Ty);
+    return Argument.Ty;
   }
   Expr *getArgumentExpr() {
     assert(!isArgumentType() && "calling getArgumentExpr() when arg is type");
@@ -849,8 +1037,8 @@ public:
   }
 
   void setArgument(Expr *E) { Argument.Ex = E; isType = false; }
-  void setArgument(QualType T) {
-    Argument.Ty = T.getAsOpaquePtr();
+  void setArgument(DeclaratorInfo *DInfo) {
+    Argument.Ty = DInfo;
     isType = true;
   }
 
@@ -991,6 +1179,9 @@ public:
 
   /// \brief If the callee is a FunctionDecl, return it. Otherwise return 0.
   FunctionDecl *getDirectCallee();
+  const FunctionDecl *getDirectCallee() const {
+    return const_cast<CallExpr*>(this)->getDirectCallee();
+  }
 
   /// getNumArgs - Return the number of actual arguments to this call.
   ///
@@ -1059,41 +1250,6 @@ public:
   virtual child_iterator child_end();
 };
 
-/// \brief Represents the qualifier that may precede a C++ name, e.g., the
-/// "std::" in "std::sort".
-struct NameQualifier {
-  /// \brief The nested name specifier.
-  NestedNameSpecifier *NNS;
-
-  /// \brief The source range covered by the nested name specifier.
-  SourceRange Range;
-};
-
-/// \brief Represents an explicit template argument list in C++, e.g.,
-/// the "<int>" in "sort<int>".
-struct ExplicitTemplateArgumentList {
-  /// \brief The source location of the left angle bracket ('<');
-  SourceLocation LAngleLoc;
-
-  /// \brief The source location of the right angle bracket ('>');
-  SourceLocation RAngleLoc;
-
-  /// \brief The number of template arguments in TemplateArgs.
-  /// The actual template arguments (if any) are stored after the
-  /// ExplicitTemplateArgumentList structure.
-  unsigned NumTemplateArgs;
-
-  /// \brief Retrieve the template arguments
-  TemplateArgument *getTemplateArgs() {
-    return reinterpret_cast<TemplateArgument *> (this + 1);
-  }
-
-  /// \brief Retrieve the template arguments
-  const TemplateArgument *getTemplateArgs() const {
-    return reinterpret_cast<const TemplateArgument *> (this + 1);
-  }
-};
-
 /// MemberExpr - [C99 6.5.2.3] Structure and Union Members.  X->F and X.F.
 ///
 class MemberExpr : public Expr {
@@ -1158,7 +1314,7 @@ class MemberExpr : public Expr {
   MemberExpr(Expr *base, bool isarrow, NestedNameSpecifier *qual,
              SourceRange qualrange, NamedDecl *memberdecl, SourceLocation l,
              bool has_explicit, SourceLocation langle,
-             const TemplateArgument *targs, unsigned numtargs,
+             const TemplateArgumentLoc *targs, unsigned numtargs,
              SourceLocation rangle, QualType ty);
 
 public:
@@ -1180,7 +1336,7 @@ public:
                             SourceLocation l,
                             bool has_explicit,
                             SourceLocation langle,
-                            const TemplateArgument *targs,
+                            const TemplateArgumentLoc *targs,
                             unsigned numtargs,
                             SourceLocation rangle,
                             QualType ty);
@@ -1237,7 +1393,7 @@ public:
 
   /// \brief Retrieve the template arguments provided as part of this
   /// template-id.
-  const TemplateArgument *getTemplateArgs() const {
+  const TemplateArgumentLoc *getTemplateArgs() const {
     if (!HasExplicitTemplateArgumentList)
       return 0;
 
@@ -1363,6 +1519,9 @@ public:
     /// CK_NoOp - Used for const_cast.
     CK_NoOp,
 
+    /// CK_BaseToDerived - Base to derived class casts.
+    CK_BaseToDerived,
+
     /// CK_DerivedToBase - Derived to base class casts.
     CK_DerivedToBase,
 
@@ -1385,6 +1544,10 @@ public:
     /// member pointer in derived class.
     CK_BaseToDerivedMemberPointer,
 
+    /// CK_DerivedToBaseMemberPointer - Member pointer in derived class to
+    /// member pointer in base class.
+    CK_DerivedToBaseMemberPointer,
+    
     /// CK_UserDefinedConversion - Conversion using a user defined type
     /// conversion function.
     CK_UserDefinedConversion,
@@ -1396,7 +1559,27 @@ public:
     CK_IntegralToPointer,
     
     /// CK_PointerToIntegral - Pointer to integral
-    CK_PointerToIntegral
+    CK_PointerToIntegral,
+    
+    /// CK_ToVoid - Cast to void.
+    CK_ToVoid,
+    
+    /// CK_VectorSplat - Casting from an integer/floating type to an extended
+    /// vector type with the same element type as the src type. Splats the 
+    /// src expression into the destination expression.
+    CK_VectorSplat,
+    
+    /// CK_IntegralCast - Casting between integral types of different size.
+    CK_IntegralCast,
+
+    /// CK_IntegralToFloating - Integral to floating point.
+    CK_IntegralToFloating,
+    
+    /// CK_FloatingToIntegral - Floating point to integral.
+    CK_FloatingToIntegral,
+    
+    /// CK_FloatingCast - Casting between floating types of different size.
+    CK_FloatingCast
   };
 
 private:
@@ -1662,14 +1845,20 @@ public:
   /// predicates to categorize the respective opcodes.
   bool isMultiplicativeOp() const { return Opc >= Mul && Opc <= Rem; }
   bool isAdditiveOp() const { return Opc == Add || Opc == Sub; }
-  bool isShiftOp() const { return Opc == Shl || Opc == Shr; }
-  bool isBitwiseOp() const { return Opc >= And && Opc <= Or; }
+  static bool isShiftOp(Opcode Opc) { return Opc == Shl || Opc == Shr; }
+  bool isShiftOp() const { return isShiftOp(Opc); }
+
+  static bool isBitwiseOp(Opcode Opc) { return Opc >= And && Opc <= Or; }
+  bool isBitwiseOp() const { return isBitwiseOp(Opc); }
 
   static bool isRelationalOp(Opcode Opc) { return Opc >= LT && Opc <= GE; }
   bool isRelationalOp() const { return isRelationalOp(Opc); }
 
   static bool isEqualityOp(Opcode Opc) { return Opc == EQ || Opc == NE; }
   bool isEqualityOp() const { return isEqualityOp(Opc); }
+
+  static bool isComparisonOp(Opcode Opc) { return Opc >= LT && Opc <= NE; }
+  bool isComparisonOp() const { return isComparisonOp(Opc); }
 
   static bool isLogicalOp(Opcode Opc) { return Opc == LAnd || Opc == LOr; }
   bool isLogicalOp() const { return isLogicalOp(Opc); }

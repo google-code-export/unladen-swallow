@@ -73,6 +73,10 @@ class ExtraAssertsTestCase(unittest.TestCase):
             self.fail("%r not raised" % expected_exception_type)
         self.assertEquals(real_exception.args, expected_args)
 
+    def assertContains(self, obj, container):
+        if obj not in container:
+            self.fail("%r not found in %r" % (obj, container))
+
 
 class LlvmTestCase(unittest.TestCase):
 
@@ -140,6 +144,20 @@ class GeneralCompilationTests(ExtraAssertsTestCase, LlvmTestCase):
         f = _llvm.compile(f.func_code, level)
         self.assertTrue(isinstance(f, _llvm._function))
         self.assertRaises(TypeError, _llvm.compile, f, level)
+
+    def test_co_llvm(self):
+        def f():
+            return 1 + 2
+        for _ in xrange(JIT_SPIN_COUNT):
+            f()
+        str_co_llvm = str(f.__code__.co_llvm)
+        # After code objects are compiled to machine code, the IR form
+        # is mostly cleared out. However, we want to be able to print
+        # the IR generated for any particular function, so this tests
+        # that it gets regenerated when we ask for its string
+        # representation.  The cleared-out form is around 5 lines
+        # long, while all full functions are much longer.
+        self.assertTrue(10 < len(str_co_llvm.split('\n')), msg=str_co_llvm)
 
     @at_each_optimization_level
     def test_run_simple_function(self, level):
@@ -248,6 +266,16 @@ def loop(range):
         pass
 """, level)
         self.assertRaises(RuntimeError, loop, RaisingNext())
+
+    @at_each_optimization_level
+    def test_import_name(self, level):
+        importer = compile_for_llvm("importer", """
+def importer():
+    import os
+    return os
+""", level)
+        import os
+        self.assertEqual(importer(), os)
 
     @at_each_optimization_level
     def test_loop(self, level):
@@ -661,7 +689,7 @@ def setglobal(x):
         testvalue = "test global value"
         self.assertTrue('_test_global' not in our_globals)
         setglobal(testvalue)
-        self.assertTrue('_test_global' in our_globals)
+        self.assertContains('_test_global', our_globals)
         self.assertEquals(our_globals['_test_global'], testvalue)
 
     @at_each_optimization_level
@@ -673,7 +701,7 @@ def delglobal():
     del _test_global
 ''', level, our_globals)
         our_globals['_test_global'] = 'test global value'
-        self.assertTrue('_test_global' in our_globals)
+        self.assertContains('_test_global', our_globals)
         delglobal()
         self.assertTrue('_test_global' not in our_globals)
 
@@ -1442,6 +1470,23 @@ def unbound_local(level):
         inner = unbound_local(level)
         self.assertRaisesWithArgs(UnboundLocalError,
             ("local variable 'b' referenced before assignment",), inner)
+
+    @at_each_optimization_level
+    def test_ends_with_unconditional_jump(self, level):
+        foo = compile_for_llvm('foo', '''
+from opcode import opmap
+from types import CodeType, FunctionType
+foo_bytecode = [
+    opmap["JUMP_FORWARD"],  4, 0,  #  0  JUMP_FORWARD   4 (to 7)
+    opmap["LOAD_CONST"],    0, 0,  #  3  LOAD_CONST     0 (1)
+    opmap["RETURN_VALUE"],         #  6  RETURN_VALUE
+    opmap["JUMP_ABSOLUTE"], 3, 0,  #  7  JUMP_ABSOLUTE  3
+]
+foo_code = CodeType(0, 0, 1, 0, "".join(chr(x) for x in foo_bytecode),
+                    (1,), (), (), "<string>", "foo", 1, "")
+foo = FunctionType(foo_code, globals())
+''', level)
+        self.assertEquals(1, foo())
 
 
 class LoopExceptionInteractionTests(LlvmTestCase):
@@ -2396,7 +2441,14 @@ def unpack(x):
 
 
 # These tests are skipped when -j never or -j always is passed to Python.
-class OptimizationTests(LlvmTestCase):
+class OptimizationTests(LlvmTestCase, ExtraAssertsTestCase):
+
+    def test_manual_optimization(self):
+        foo = compile_for_llvm("foo", "def foo(): return 5",
+                               optimization_level=None)
+        foo.__code__.co_optimization = 2
+        self.assertContains("getelementptr", str(foo.__code__.co_llvm))
+        self.assertEqual(foo(), 5)
 
     def test_hotness(self):
         foo = compile_for_llvm("foo", "def foo(): pass",
@@ -2407,6 +2459,7 @@ class OptimizationTests(LlvmTestCase):
         self.assertEqual(foo.__code__.co_hotness, iterations * 10)
         self.assertEqual(foo.__code__.__use_llvm__, True)
         self.assertEqual(foo.__code__.co_optimization, JIT_OPT_LEVEL)
+        self.assertContains("getelementptr", str(foo.__code__.co_llvm))
 
     def test_loop_hotness(self):
         # Test that long-running loops count toward the hotness metric. A
@@ -2490,25 +2543,27 @@ def foo(x, callback):
 
     def test_global_name_unknown_at_compilation_time(self):
         # Extracted from Sympy: the global `match` is unknown when foo() becomes
-        # hot, but will be known by the time `trigger` becomes True. This used
+        # hot, but will be known by the time `trigger` has items. This used
         # to raise a NameError while compiling foo() to LLVM IR.
+        #
+        # The code-under-test is written like this to avoid conditional jumps,
+        # which may contain their own guards.
         foo = compile_for_llvm("foo", """
 def foo(trigger):
-    if trigger:
+    for x in trigger:
         return match
-    else:
-        return 5
+    return 5
 """, optimization_level=None)
         for _ in xrange(JIT_SPIN_COUNT):  # Spin foo() until it becomes hot.
-            foo(False)
+            foo([])
         _llvm.wait_for_jit()
         self.assertEquals(foo.__code__.__use_llvm__, True)
-        self.assertEquals(foo(False), 5)
+        self.assertEquals(foo([]), 5)
 
         # Set `match` so that we can run foo(True) and have it work correctly.
         global match
         match = 7
-        self.assertEquals(foo(True), 7)
+        self.assertEquals(foo([1]), 7)
         # Looking up `match` doesn't depend on any pointers cached in the IR,
         # so changing the globals didn't invalidate the code.
         self.assertEquals(foo.__code__.__use_llvm__, True)
@@ -2599,6 +2654,56 @@ def foo(trigger):
         k, v = foo(d.popitem)
         self.assertTrue(k < 12000, k)
         self.assertEqual(v, None)
+
+    def test_fast_calls_two_arguments(self):
+        # Test our ability to optimize calls to METH_ARG_RANGE/arity=2 functions.
+        foo = compile_for_llvm('foo', 'def foo(x): return isinstance(x, int)',
+                               optimization_level=None)
+        for _ in xrange(JIT_SPIN_COUNT):
+            foo(5)
+        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo(5))
+        self.assertFalse(foo([]))
+        self.assertContains("@isinstance", str(foo.__code__.co_llvm))
+
+    def test_fast_calls_three_arguments(self):
+        # Test our ability to optimize calls to METH_ARG_RANGE/arity=3 functions.
+        foo = compile_for_llvm('foo', 'def foo(x): setattr(x, "y", 5)',
+                               optimization_level=None)
+        class Object(object):
+            pass
+        x = Object()
+        for _ in xrange(JIT_SPIN_COUNT):
+            foo(x)
+        self.assertEqual(x.y, 5)
+        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertContains("@setattr", str(foo.__code__.co_llvm))
+
+    def test_fast_calls_variadic_arguments(self):
+        # Test our ability to optimize calls to METH_ARG_RANGE functions.
+        foo = compile_for_llvm('foo', 'def foo(x): return sum(x, 1)',
+                               optimization_level=None)
+        input = [1, 2]
+        for _ in xrange(JIT_SPIN_COUNT):
+            foo(input)
+        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertEqual(foo([2, 3]), 6)
+        self.assertRaises(TypeError, foo, 5)
+        self.assertContains("@sum", str(foo.__code__.co_llvm))
+
+    def test_fast_calls_variadic_arguments_missing_args(self):
+        # Test our ability to optimize calls to METH_ARG_RANGE functions.
+        # Call with #args < max arity.
+        foo = compile_for_llvm('foo', 'def foo(x): return sum(x)',
+                               optimization_level=None)
+        input = [1, 2]
+        for _ in xrange(JIT_SPIN_COUNT):
+            foo(input)
+        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertEqual(foo([2, 3]), 5)
+        self.assertRaises(TypeError, foo, 5)
+        self.assertContains("@sum", str(foo.__code__.co_llvm))
+
 
     def test_fast_calls_same_method_different_invocant(self):
         # For all strings, x.join will resolve to the same C function, so
@@ -2705,6 +2810,210 @@ def foo(x):
         # Sanity check to make sure we're getting the right frame.
         self.assertEqual(tb.tb_next.tb_frame.f_code.co_name, "foo")
         self.assertEqual(tb.tb_next.tb_frame.f_locals, {"y": 7, "x": 8, "z": 9})
+
+    def test_POP_JUMP_IF_FALSE_training_consistent(self):
+        # If we have runtime feedback, we'd like to be able to omit untaken
+        # branches to a) reduce code size, b) give the optimizers less input.
+        # We only do this if the branch is consistent (always 100%
+        # taken/not-taken).
+        foo = compile_for_llvm("foo", """
+def foo(x):
+    if x:
+        return 7
+    len([])
+    return 8
+""", optimization_level=None)
+
+        for _ in xrange(JIT_SPIN_COUNT):
+            foo(True)
+
+        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertEqual(foo(True), 7)
+        self.assertRaises(RuntimeError, foo, False)
+        self.assertEqual(foo.__code__.co_fatalbailcount, 0)
+
+        sys.setbailerror(False)
+        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertEqual(foo(False), 8)
+
+        # Make sure we didn't actually compile the untaken branch to LLVM IR.
+        self.assertTrue("@len" not in str(foo.__code__.co_llvm))
+
+    def test_POP_JUMP_IF_FALSE_training_inconsistent(self):
+        # If we have runtime feedback, we'd like to be able to omit untaken
+        # branches. We can't do this, though, if the branch is inconsistent.
+        foo = compile_for_llvm("foo", """
+def foo(x):
+    if x:
+        return 7
+    len([])
+    return 8
+""", optimization_level=None)
+
+        for _ in xrange(JIT_SPIN_COUNT):
+            foo(True)
+            foo(False)
+
+        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertEqual(foo(True), 7)
+        self.assertEqual(foo(False), 8)  # Does not raise RuntimeError
+
+        # Make sure we compiled both branches to LLVM IR.
+        self.assertContains("@len", str(foo.__code__.co_llvm))
+
+    def test_POP_JUMP_IF_TRUE_training_consistent(self):
+        # If we have runtime feedback, we'd like to be able to omit untaken
+        # branches to a) reduce code size, b) give the optimizers less input.
+        # We only do this if the branch is consistent (always 100%
+        # taken/not-taken).
+        foo = compile_for_llvm("foo", """
+def foo(x):
+    if not x:
+        return 7
+    len([])
+    return 8
+""", optimization_level=None)
+
+        for _ in xrange(JIT_SPIN_COUNT):
+            foo(False)
+
+        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertEqual(foo(False), 7)
+        self.assertRaises(RuntimeError, foo, True)
+        self.assertEqual(foo.__code__.co_fatalbailcount, 0)
+
+        sys.setbailerror(False)
+        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertEqual(foo(True), 8)
+
+        # Make sure we didn't actually compile the untaken branch to LLVM IR.
+        self.assertTrue("@len" not in str(foo.__code__.co_llvm))
+
+    def test_POP_JUMP_IF_TRUE_training_inconsistent(self):
+        # If we have runtime feedback, we'd like to be able to omit untaken
+        # branches. We can't do this, though, if the branch is inconsistent.
+        foo = compile_for_llvm("foo", """
+def foo(x):
+    if not x:
+        return 7
+    len([])
+    return 8
+""", optimization_level=None)
+
+        for _ in xrange(JIT_SPIN_COUNT):
+            foo(True)
+            foo(False)
+
+        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertEqual(foo(False), 7)
+        self.assertEqual(foo(True), 8)  # Does not raise RuntimeError
+
+        # Make sure we compiled both branches to LLVM IR.
+        self.assertContains("@len", str(foo.__code__.co_llvm))
+
+    def test_JUMP_IF_FALSE_OR_POP_training_consistent(self):
+        # If we have runtime feedback, we'd like to be able to omit untaken
+        # branches to a) reduce code size, b) give the optimizers less input.
+        # We only do this if the branch is consistent (always 100%
+        # taken/not-taken).
+        foo = compile_for_llvm("foo", """
+def foo(x):
+    return x and len([1, 2])
+""", optimization_level=None)
+
+        for _ in xrange(JIT_SPIN_COUNT):
+            foo(False)
+
+        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertEqual(foo(False), False)
+        self.assertRaises(RuntimeError, foo, True)
+        self.assertEqual(foo.__code__.co_fatalbailcount, 0)
+
+        sys.setbailerror(False)
+        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertEqual(foo(True), 2)
+
+        # Make sure we didn't actually compile the untaken branch to LLVM IR.
+        self.assertTrue("@len" not in str(foo.__code__.co_llvm))
+
+    def test_JUMP_IF_FALSE_OR_POP_training_inconsistent(self):
+        # If we have runtime feedback, we'd like to be able to omit untaken
+        # branches. We can't do this, though, if the branch is inconsistent.
+        foo = compile_for_llvm("foo", """
+def foo(x):
+    return x and len([1, 2])
+""", optimization_level=None)
+
+        for _ in xrange(JIT_SPIN_COUNT):
+            foo(True)
+            foo(False)
+
+        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertEqual(foo(False), False)
+        self.assertEqual(foo(True), 2)  # Does not raise RuntimeError
+
+        # Make sure we compiled both branches to LLVM IR.
+        self.assertContains("@len", str(foo.__code__.co_llvm))
+
+    def test_JUMP_IF_TRUE_OR_POP_training_consistent(self):
+        # If we have runtime feedback, we'd like to be able to omit untaken
+        # branches to a) reduce code size, b) give the optimizers less input.
+        # We only do this if the branch is consistent (always 100%
+        # taken/not-taken).
+        foo = compile_for_llvm("foo", """
+def foo(x):
+    return x or len([1, 2])
+""", optimization_level=None)
+
+        for _ in xrange(JIT_SPIN_COUNT):
+            foo(True)
+
+        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertEqual(foo(True), True)
+        self.assertRaises(RuntimeError, foo, False)
+        self.assertEqual(foo.__code__.co_fatalbailcount, 0)
+
+        sys.setbailerror(False)
+        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertEqual(foo(False), 2)
+
+        # Make sure we didn't actually compile the untaken branch to LLVM IR.
+        self.assertTrue("@len" not in str(foo.__code__.co_llvm))
+
+    def test_JUMP_IF_TRUE_OR_POP_training_inconsistent(self):
+        # If we have runtime feedback, we'd like to be able to omit untaken
+        # branches. We can't do this, though, if the branch is inconsistent.
+        foo = compile_for_llvm("foo", """
+def foo(x):
+    return x or len([1, 2])
+""", optimization_level=None)
+
+        for _ in xrange(JIT_SPIN_COUNT):
+            foo(True)
+            foo(False)
+
+        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertEqual(foo(True), True)
+        self.assertEqual(foo(False), 2)  # Does not raise RuntimeError
+
+        # Make sure we compiled both branches to LLVM IR.
+        self.assertContains("@len", str(foo.__code__.co_llvm))
+
+    def test_import_does_not_bail(self):
+        # Regression test: this simple import (which hits sys.modules!) used
+        # to cause invalidation due to no-op assignments to the globals dict
+        # done deep within the import machinery.
+        foo = compile_for_llvm("foo", """
+def foo():
+    import os
+    return len([])
+""", optimization_level=None)
+        import os  # Make sure this is in sys.modules.
+        for _ in xrange(JIT_SPIN_COUNT):
+            foo()
+
+        # If we get here, we haven't bailed, but double-check to be sure.
+        self.assertTrue(foo.__code__.__use_llvm__)
 
 
 class LlvmRebindBuiltinsTests(test_dynamic.RebindBuiltinsTests):

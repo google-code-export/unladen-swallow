@@ -26,7 +26,7 @@
 #include "clang/AST/ASTContext.h"
 #include "clang/Analysis/Analyses/LiveVariables.h"
 #include "llvm/Support/Casting.h"
-#include "llvm/Support/DataTypes.h"
+#include "llvm/System/DataTypes.h"
 #include "llvm/ADT/APSInt.h"
 #include "llvm/ADT/FoldingSet.h"
 #include "llvm/ADT/ImmutableMap.h"
@@ -195,6 +195,9 @@ public:
   //
 
   const GRState *Assume(DefinedOrUnknownSVal cond, bool assumption) const;
+  
+  std::pair<const GRState*, const GRState*>
+  Assume(DefinedOrUnknownSVal cond) const;
 
   const GRState *AssumeInBound(DefinedOrUnknownSVal idx,
                                DefinedOrUnknownSVal upperBound,
@@ -219,11 +222,9 @@ public:
 
   const GRState *BindExpr(const Stmt *S, SVal V, bool Invalidate = true) const;
 
-  const GRState *bindDecl(const VarDecl *VD, const LocationContext *LC,
-                          SVal V) const;
+  const GRState *bindDecl(const VarRegion *VR, SVal V) const;
 
-  const GRState *bindDeclWithNoInit(const VarDecl *VD,
-                                    const LocationContext *LC) const;
+  const GRState *bindDeclWithNoInit(const VarRegion *VR) const;
 
   const GRState *bindLoc(Loc location, SVal V) const;
 
@@ -243,10 +244,10 @@ public:
   SVal getLValue(const ObjCIvarDecl *decl, SVal base) const;
 
   /// Get the lvalue for a field reference.
-  SVal getLValue(SVal Base, const FieldDecl *decl) const;
+  SVal getLValue(const FieldDecl *decl, SVal Base) const;
 
   /// Get the lvalue for an array index.
-  SVal getLValue(QualType ElementType, SVal Base, SVal Idx) const;
+  SVal getLValue(QualType ElementType, SVal Idx, SVal Base) const;
 
   const llvm::APSInt *getSymVal(SymbolRef sym) const;
 
@@ -332,12 +333,6 @@ public:
   void printStdErr() const;
 
   void printDOT(llvm::raw_ostream& Out) const;
-
-  // Tags used for the Generic Data Map.
-  struct NullDerefTag {
-    static int TagInt;
-    typedef const SVal* data_type;
-  };
 };
 
 class GRStateSet {
@@ -404,10 +399,6 @@ private:
 
   /// Alloc - A BumpPtrAllocator to allocate states.
   llvm::BumpPtrAllocator& Alloc;
-
-  /// CurrentStmt - The block-level statement currently being visited.  This
-  ///  is set by GRExprEngine.
-  Stmt* CurrentStmt;
 
   /// TF - Object that represents a bundle of transfer functions
   ///  for manipulating and creating SVals.
@@ -585,6 +576,15 @@ inline const GRState *GRState::Assume(DefinedOrUnknownSVal Cond,
   return getStateManager().ConstraintMgr->Assume(this, cast<DefinedSVal>(Cond),
                                                  Assumption);
 }
+  
+inline std::pair<const GRState*, const GRState*>
+GRState::Assume(DefinedOrUnknownSVal Cond) const {
+  if (Cond.isUnknown())
+    return std::make_pair(this, this);
+  
+  return getStateManager().ConstraintMgr->AssumeDual(this,
+                                                     cast<DefinedSVal>(Cond));
+}
 
 inline const GRState *GRState::AssumeInBound(DefinedOrUnknownSVal Idx,
                                              DefinedOrUnknownSVal UpperBound,
@@ -602,15 +602,12 @@ inline const GRState *GRState::bindCompoundLiteral(const CompoundLiteralExpr* CL
   return getStateManager().StoreMgr->BindCompoundLiteral(this, CL, V);
 }
 
-inline const GRState *GRState::bindDecl(const VarDecl* VD,
-                                        const LocationContext *LC,
-                                        SVal IVal) const {
-  return getStateManager().StoreMgr->BindDecl(this, VD, LC, IVal);
+inline const GRState *GRState::bindDecl(const VarRegion* VR, SVal IVal) const {
+  return getStateManager().StoreMgr->BindDecl(this, VR, IVal);
 }
 
-inline const GRState *GRState::bindDeclWithNoInit(const VarDecl* VD,
-                                                  const LocationContext *LC) const {
-  return getStateManager().StoreMgr->BindDeclWithNoInit(this, VD, LC);
+inline const GRState *GRState::bindDeclWithNoInit(const VarRegion* VR) const {
+  return getStateManager().StoreMgr->BindDeclWithNoInit(this, VR);
 }
 
 inline const GRState *GRState::bindLoc(Loc LV, SVal V) const {
@@ -623,27 +620,27 @@ inline const GRState *GRState::bindLoc(SVal LV, SVal V) const {
 
 inline SVal GRState::getLValue(const VarDecl* VD,
                                const LocationContext *LC) const {
-  return getStateManager().StoreMgr->getLValueVar(this, VD, LC);
+  return getStateManager().StoreMgr->getLValueVar(VD, LC);
 }
 
 inline SVal GRState::getLValue(const StringLiteral *literal) const {
-  return getStateManager().StoreMgr->getLValueString(this, literal);
+  return getStateManager().StoreMgr->getLValueString(literal);
 }
 
 inline SVal GRState::getLValue(const CompoundLiteralExpr *literal) const {
-  return getStateManager().StoreMgr->getLValueCompoundLiteral(this, literal);
+  return getStateManager().StoreMgr->getLValueCompoundLiteral(literal);
 }
 
 inline SVal GRState::getLValue(const ObjCIvarDecl *D, SVal Base) const {
-  return getStateManager().StoreMgr->getLValueIvar(this, D, Base);
+  return getStateManager().StoreMgr->getLValueIvar(D, Base);
 }
 
-inline SVal GRState::getLValue(SVal Base, const FieldDecl* D) const {
-  return getStateManager().StoreMgr->getLValueField(this, Base, D);
+inline SVal GRState::getLValue(const FieldDecl* D, SVal Base) const {
+  return getStateManager().StoreMgr->getLValueField(D, Base);
 }
 
-inline SVal GRState::getLValue(QualType ElementType, SVal Base, SVal Idx) const{
-  return getStateManager().StoreMgr->getLValueElement(this, ElementType, Base, Idx);
+inline SVal GRState::getLValue(QualType ElementType, SVal Idx, SVal Base) const{
+  return getStateManager().StoreMgr->getLValueElement(ElementType, Idx, Base);
 }
 
 inline const llvm::APSInt *GRState::getSymVal(SymbolRef sym) const {

@@ -56,7 +56,7 @@ class CGDebugInfo {
   bool BlockLiteralGenericSet;
   llvm::DIType BlockLiteralGeneric;
 
-  std::vector<llvm::DIDescriptor> RegionStack;
+  std::vector<llvm::TrackingVH<llvm::MDNode> > RegionStack;
 
   /// Helper functions for getOrCreateType.
   llvm::DIType CreateType(const BuiltinType *Ty, llvm::DICompileUnit U);
@@ -73,7 +73,11 @@ class CGDebugInfo {
   llvm::DIType CreateType(const ObjCInterfaceType *Ty, llvm::DICompileUnit U);
   llvm::DIType CreateType(const EnumType *Ty, llvm::DICompileUnit U);
   llvm::DIType CreateType(const ArrayType *Ty, llvm::DICompileUnit U);
+  llvm::DIType CreateType(const LValueReferenceType *Ty, llvm::DICompileUnit U);
 
+  llvm::DIType CreatePointerLikeType(unsigned Tag,
+                                     const Type *Ty, QualType PointeeTy,
+                                     llvm::DICompileUnit U);
 public:
   CGDebugInfo(CodeGenModule *m);
   ~CGDebugInfo();
@@ -88,7 +92,7 @@ public:
 
   /// EmitFunctionStart - Emit a call to llvm.dbg.function.start to indicate
   /// start of a new function.
-  void EmitFunctionStart(const char *Name, QualType ReturnType,
+  void EmitFunctionStart(const char *Name, QualType FnType,
                          llvm::Function *Fn, CGBuilderTy &Builder);
 
   /// EmitRegionStart - Emit a call to llvm.dbg.region.start to indicate start

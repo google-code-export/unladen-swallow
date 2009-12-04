@@ -4,21 +4,55 @@ Python News
 
 (editors: check NEWS.help for information about editing NEWS using ReST.)
 
+What's New in Unladen Swallow 2009Q4 (Python 2.6.1)
+===================================================
+
+*Release date: XX-Jan-2010*
+
+
+
 What's New in Unladen Swallow 2009Q3 (Python 2.6.1)
 ===================================================
 
-*Release date: XX-Sept-2009*
+*Release date: 20-Oct-2009*
 
 C-API
 -----
 
-- Previously, if extension modules forked, then were supposed to call
+- Previously, if extension modules forked, they were supposed to call
   PyOS_AfterFork from the child process.  Now they are required to call
   PyOS_BeforeFork and PyOS_AfterFork in both the child and the parent and pass
   a new boolean parameter to PyOS_AfterFork specifying whether the current
-  process is the child or the parent.  To be specific, you should change
-  "if (pid == 0) PyOS_AfterFork()" to "PyOS_AfterFork(pid == 0)".  This resolves
+  process is the child or the parent.  To be specific, you should change "if
+  (pid == 0) PyOS_AfterFork()" to "PyOS_AfterFork(pid == 0)".  This resolves
   issue #6642 and #6643.
+
+Core and Builtins
+-----------------
+
+- Unladen Swallow 2009Q3 adds optimizations based on runtime feedback. It is
+  20-70% faster than 2009Q2, depending on benchmark.
+
+- Memory usage has been reduced by up to 500% from the 2009Q2 release when run
+  in the fastest configuration.
+
+- Unladen Swallow 2009Q3 supports the JIT debugging interface added to gdb 7.0.
+  This means that backtraces with JIT-compiled stack frames will symbolize
+  properly.
+
+- Unladen Swallow 2009Q3 supports profiling with OProfile 0.9.4 and newer when
+  configured with --with-oprofile=<oprofile-prefix>.
+
+- The 2009Q2 limit of 16MB of machine code has been removed.
+
+- The 2009Q2 problem where test_import would die under -j always has been
+  resolved.
+
+Known Problems
+--------------
+
+- A bug in LLVM's machine code generator on x86-64 systems can cause segfaults
+  under certain workloads. This is being tracked at http://llvm.org/PR5201.
 
 
 What's New in Unladen Swallow 2009Q2 (Python 2.6.1)

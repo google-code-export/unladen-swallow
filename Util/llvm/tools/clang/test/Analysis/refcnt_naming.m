@@ -1,5 +1,5 @@
-// RUN: clang-cc -analyze -checker-cfref -analyzer-store=basic -verify %s &&
-// RUN: clang-cc -analyze -checker-cfref -analyzer-store=region -verify %s
+// RUN: clang-cc -analyze -analyzer-experimental-internal-checks -checker-cfref -analyzer-store=basic -verify %s
+// RUN: clang-cc -analyze -analyzer-experimental-internal-checks -checker-cfref -analyzer-store=region -verify %s
 
 typedef const struct __CFString * CFStringRef;
 typedef const struct __CFAllocator * CFAllocatorRef;
@@ -15,7 +15,7 @@ typedef signed char BOOL;
 -(NSObject*)photoCopy;    // read as "photo Copy"
 -(NSObject*)__blebPRCopy; // read as "bleb PRCopy"
 -(NSObject*)__blebPRcopy; // read as "bleb P Rcopy"
--(NSObject*)new_theprefixdoesnotcount; // read as "theprefixdoesnotcount"
+-(NSObject*)new_theprefixdoescount; // read as "new theprefixdoescount"
 -(NSObject*)newestAwesomeStuff; // read as "newest awesome stuff"
 
 @end
@@ -49,7 +49,7 @@ void testNames(NamingTest* x) {
   [x photoCopy]; // expected-warning{{leak}}
   [x __blebPRCopy]; // expected-warning{{leak}}
   [x __blebPRcopy]; // no-warning
-  [x new_theprefixdoesnotcount]; // no-warning
+  [x new_theprefixdoescount]; // expected-warning{{leak}}
   [x newestAwesomeStuff]; // no-warning
 }
 

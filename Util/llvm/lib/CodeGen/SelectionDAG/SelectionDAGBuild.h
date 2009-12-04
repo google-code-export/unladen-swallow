@@ -44,12 +44,12 @@ class FPExtInst;
 class FPToSIInst;
 class FPToUIInst;
 class FPTruncInst;
-class FreeInst;
 class Function;
 class GetElementPtrInst;
 class GCFunctionInfo;
 class ICmpInst;
 class IntToPtrInst;
+class IndirectBrInst;
 class InvokeInst;
 class InsertElementInst;
 class InsertValueInst;
@@ -60,7 +60,6 @@ class MachineFunction;
 class MachineInstr;
 class MachineModuleInfo;
 class MachineRegisterInfo;
-class MallocInst;
 class PHINode;
 class PtrToIntInst;
 class ReturnInst;
@@ -90,6 +89,14 @@ public:
   Function *Fn;
   MachineFunction *MF;
   MachineRegisterInfo *RegInfo;
+
+  /// CanLowerReturn - true iff the function's return value can be lowered to
+  /// registers.
+  bool CanLowerReturn;
+
+  /// DemoteRegister - if CanLowerReturn is false, DemoteRegister is a vreg
+  /// allocated to hold a pointer to the hidden sret parameter.
+  unsigned DemoteRegister;
 
   explicit FunctionLoweringInfo(TargetLowering &TLI);
 
@@ -194,9 +201,9 @@ class SelectionDAGLowering {
     Case() : Low(0), High(0), BB(0) { }
     Case(Constant* low, Constant* high, MachineBasicBlock* bb) :
       Low(low), High(high), BB(bb) { }
-    uint64_t size() const {
-      uint64_t rHigh = cast<ConstantInt>(High)->getSExtValue();
-      uint64_t rLow  = cast<ConstantInt>(Low)->getSExtValue();
+    APInt size() const {
+      const APInt &rHigh = cast<ConstantInt>(High)->getValue();
+      const APInt &rLow  = cast<ConstantInt>(Low)->getValue();
       return (rHigh - rLow + 1ULL);
     }
   };
@@ -450,6 +457,7 @@ private:
   void visitRet(ReturnInst &I);
   void visitBr(BranchInst &I);
   void visitSwitch(SwitchInst &I);
+  void visitIndirectBr(IndirectBrInst &I);
   void visitUnreachable(UnreachableInst &I) { /* noop */ }
 
   // Helpers for visitSwitch
@@ -529,8 +537,6 @@ private:
   void visitGetElementPtr(User &I);
   void visitSelect(User &I);
 
-  void visitMalloc(MallocInst &I);
-  void visitFree(FreeInst &I);
   void visitAlloca(AllocaInst &I);
   void visitLoad(LoadInst &I);
   void visitStore(StoreInst &I);

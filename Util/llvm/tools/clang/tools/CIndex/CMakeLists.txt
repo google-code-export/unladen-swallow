@@ -3,7 +3,7 @@ set(SHARED_LIBRARY TRUE)
 set(LLVM_NO_RTTI 1)
 
 set(LLVM_USED_LIBS
-  clangFrontend clangIndex clangSema clangAST clangLex clangBasic)
+  clangFrontend clangIndex clangSema clangAnalysis clangAST clangParse clangLex clangBasic)
 
 set( LLVM_LINK_COMPONENTS
   MC
@@ -21,6 +21,14 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     INSTALL_NAME_DIR "@executable_path/../lib"
     )
 endif()
+
+if(MSVC)
+  # windows.h doesn't compile with /Za
+  get_target_property(NON_ANSI_COMPILE_FLAGS CIndex COMPILE_FLAGS)
+  string(REPLACE /Za "" NON_ANSI_COMPILE_FLAGS ${NON_ANSI_COMPILE_FLAGS})
+  set(NON_ANSI_COMPILE_FLAGS "${NON_ANSI_COMPILE_FLAGS} /D_CINDEX_LIB_")
+  set_target_properties(CIndex PROPERTIES COMPILE_FLAGS ${NON_ANSI_COMPILE_FLAGS})
+endif(MSVC)
 
 set_target_properties(CIndex
   PROPERTIES

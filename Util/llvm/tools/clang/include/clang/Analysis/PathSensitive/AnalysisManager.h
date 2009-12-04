@@ -37,7 +37,6 @@ class AnalysisManager : public BugReporterData {
 
   enum AnalysisScope { ScopeTU, ScopeDecl } AScope;
 
-  bool DisplayedFunction;
   bool VisualizeEGDot;
   bool VisualizeEGUbi;
   bool PurgeDead;
@@ -62,9 +61,16 @@ public:
 
     : Ctx(ctx), Diags(diags), LangInfo(lang), PD(pd),
       CreateStoreMgr(storemgr), CreateConstraintMgr(constraintmgr),
-      AScope(ScopeDecl), DisplayedFunction(!displayProgress),
+      AScope(ScopeDecl),
       VisualizeEGDot(vizdot), VisualizeEGUbi(vizubi), PurgeDead(purge),
       EagerlyAssume(eager), TrimGraph(trim) {}
+  
+  ~AnalysisManager() { FlushDiagnostics(); }
+  
+  void ClearContexts() {
+    LocCtxMgr.clear();
+    AnaCtxMgr.clear();
+  }
 
   StoreManagerCreator getStoreManagerCreator() {
     return CreateStoreMgr;
@@ -93,6 +99,11 @@ public:
   virtual PathDiagnosticClient *getPathDiagnosticClient() {
     return PD.get();
   }
+  
+  void FlushDiagnostics() {
+    if (PD.get())
+      PD->FlushDiagnostics();
+  }
 
   bool shouldVisualizeGraphviz() const { return VisualizeEGDot; }
 
@@ -108,8 +119,6 @@ public:
 
   bool shouldEagerlyAssume() const { return EagerlyAssume; }
 
-  void DisplayFunction(Decl *D);
-
   CFG *getCFG(Decl const *D) {
     return AnaCtxMgr.getContext(D)->getCFG();
   }
@@ -122,8 +131,16 @@ public:
     return AnaCtxMgr.getContext(D)->getParentMap();
   }
 
+  // Get the top level stack frame.
   StackFrameContext *getStackFrame(Decl const *D) {
     return LocCtxMgr.getStackFrame(AnaCtxMgr.getContext(D), 0, 0);
+  }
+
+  // Get a stack frame with parent.
+  StackFrameContext const *getStackFrame(Decl const *D, 
+                                         LocationContext const *Parent,
+                                         Stmt const *S) {
+    return LocCtxMgr.getStackFrame(AnaCtxMgr.getContext(D), Parent, S);
   }
 };
 

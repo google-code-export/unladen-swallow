@@ -18,14 +18,24 @@
 #include "clang/AST/StmtVisitor.h"
 #include "clang/Lex/HeaderSearch.h"
 #include "clang/Lex/Preprocessor.h"
+#include "clang/Basic/TargetOptions.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Basic/Diagnostic.h"
 #include "llvm/Support/Compiler.h"
+#include "llvm/System/Path.h"
 
 using namespace clang;
 
-ASTUnit::ASTUnit(Diagnostic &_Diags) : Diags(_Diags) { }
-ASTUnit::~ASTUnit() { }
+ASTUnit::ASTUnit(DiagnosticClient *diagClient) : tempFile(false) {      
+  Diags.setClient(diagClient ? diagClient : new TextDiagnosticBuffer());
+}
+ASTUnit::~ASTUnit() { 
+  if (tempFile)
+    llvm::sys::Path(getPCHFileName()).eraseFromDisk();
+  
+  //  The ASTUnit object owns the DiagnosticClient.
+  delete Diags.getClient();
+}
 
 namespace {
 
@@ -52,14 +62,14 @@ public:
     return false;
   }
 
-  virtual bool ReadTargetTriple(const std::string &Triple) {
+  virtual bool ReadTargetTriple(llvm::StringRef Triple) {
     TargetTriple = Triple;
     return false;
   }
 
-  virtual bool ReadPredefinesBuffer(const char *PCHPredef,
-                                    unsigned PCHPredefLen,
+  virtual bool ReadPredefinesBuffer(llvm::StringRef PCHPredef,
                                     FileID PCHBufferID,
+                                    llvm::StringRef OriginalFileName,
                                     std::string &SuggestedPredefines) {
     Predefines = PCHPredef;
     return false;
@@ -80,17 +90,18 @@ const std::string &ASTUnit::getOriginalSourceFileName() {
   return dyn_cast<PCHReader>(Ctx->getExternalSource())->getOriginalSourceFile();
 }
 
-FileManager &ASTUnit::getFileManager() {
-  return HeaderInfo->getFileMgr();
+const std::string &ASTUnit::getPCHFileName() {
+  return dyn_cast<PCHReader>(Ctx->getExternalSource())->getFileName();
 }
 
 ASTUnit *ASTUnit::LoadFromPCHFile(const std::string &Filename,
-                                  Diagnostic &Diags,
-                                  FileManager &FileMgr,
-                                  std::string *ErrMsg) {
-  llvm::OwningPtr<ASTUnit> AST(new ASTUnit(Diags));
-
-  AST->HeaderInfo.reset(new HeaderSearch(FileMgr));
+                                  std::string *ErrMsg,
+                                  DiagnosticClient *diagClient,
+                                  bool OnlyLocalDecls,
+                                  bool UseBumpAllocator) {
+  llvm::OwningPtr<ASTUnit> AST(new ASTUnit(diagClient));
+  AST->OnlyLocalDecls = OnlyLocalDecls;
+  AST->HeaderInfo.reset(new HeaderSearch(AST->getFileManager()));
 
   // Gather Info for preprocessor construction later on.
 
@@ -103,7 +114,8 @@ ASTUnit *ASTUnit::LoadFromPCHFile(const std::string &Filename,
   llvm::OwningPtr<PCHReader> Reader;
   llvm::OwningPtr<ExternalASTSource> Source;
 
-  Reader.reset(new PCHReader(AST->getSourceManager(), FileMgr, AST->Diags));
+  Reader.reset(new PCHReader(AST->getSourceManager(), AST->getFileManager(),
+                             AST->Diags));
   Reader->setListener(new PCHInfoCollector(LangInfo, HeaderInfo, TargetTriple,
                                            Predefines, Counter));
 
@@ -121,7 +133,14 @@ ASTUnit *ASTUnit::LoadFromPCHFile(const std::string &Filename,
   // PCH loaded successfully. Now create the preprocessor.
 
   // Get information about the target being compiled for.
-  AST->Target.reset(TargetInfo::CreateTargetInfo(TargetTriple));
+  //
+  // FIXME: This is broken, we should store the TargetOptions in the PCH.
+  TargetOptions TargetOpts;
+  TargetOpts.ABI = "";
+  TargetOpts.CPU = "";
+  TargetOpts.Features.clear();
+  TargetOpts.Triple = TargetTriple;
+  AST->Target.reset(TargetInfo::CreateTargetInfo(AST->Diags, TargetOpts));
   AST->PP.reset(new Preprocessor(AST->Diags, LangInfo, *AST->Target.get(),
                                  AST->getSourceManager(), HeaderInfo));
   Preprocessor &PP = *AST->PP.get();
@@ -138,7 +157,7 @@ ASTUnit *ASTUnit::LoadFromPCHFile(const std::string &Filename,
                                 PP.getIdentifierTable(),
                                 PP.getSelectorTable(),
                                 PP.getBuiltinInfo(),
-                                /* FreeMemory = */ true,
+                                /* FreeMemory = */ !UseBumpAllocator,
                                 /* size_reserve = */0));
   ASTContext &Context = *AST->Ctx.get();
 

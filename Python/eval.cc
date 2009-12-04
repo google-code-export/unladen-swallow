@@ -25,6 +25,7 @@
 #include "_llvmfunctionobject.h"
 #include "llvm/Function.h"
 #include "llvm/Support/ManagedStatic.h"
+#include "llvm/Support/raw_ostream.h"
 #include "Util/RuntimeFeedback.h"
 #include "Util/Stats.h"
 #endif
@@ -157,6 +158,74 @@ _PyEval_RecordWatcherCount(size_t watcher_count)
 	watcher_count_stats->RecordDataPoint(watcher_count);
 }
 
+
+class BailCountStats {
+public:
+	BailCountStats() : total_(0), trace_on_entry_(0), line_trace_(0),
+	                   backedge_trace_(0), call_profile_(0),
+	                   fatal_guard_fail_(0), guard_fail_(0) {};
+
+	~BailCountStats() {
+		printf("\nBailed to the interpreter %ld times\n", this->total_);
+		printf("TRACE_ON_ENTRY: %ld\n", this->trace_on_entry_);
+		printf("LINE_TRACE: %ld\n", this->line_trace_);
+		printf("BACKEDGE_TRACE: %ld\n", this->backedge_trace_);
+		printf("CALL_PROFILE: %ld\n", this->call_profile_);
+		printf("FATAL_GUARD_FAIL: %ld\n", this->fatal_guard_fail_);
+		printf("GUARD_FAIL: %ld\n", this->guard_fail_);
+
+		printf("\n%zd bail sites:\n", this->bail_sites_.size());
+		for (BailData::iterator i = this->bail_sites_.begin(),
+		     end = this->bail_sites_.end(); i != end; ++i) {
+			llvm::outs() << "    " << *i << "\n";
+		}
+	}
+
+	void RecordBail(PyFrameObject *frame, _PyFrameBailReason bail_reason) {
+		++this->total_;
+
+    		std::string record;
+		llvm::raw_string_ostream wrapper(record);
+		wrapper << PyString_AsString(frame->f_code->co_filename) << ":";
+		wrapper << frame->f_code->co_firstlineno << ":";
+		wrapper << PyString_AsString(frame->f_code->co_name) << ":";
+		wrapper << frame->f_lasti;
+    		wrapper.flush();
+
+		this->bail_sites_.insert(record);
+
+#define BAIL_CASE(name, field) \
+	case name: \
+		++this->field; \
+		break;
+
+		switch (bail_reason) {
+			BAIL_CASE(_PYFRAME_TRACE_ON_ENTRY, trace_on_entry_)
+			BAIL_CASE(_PYFRAME_LINE_TRACE, line_trace_)
+			BAIL_CASE(_PYFRAME_BACKEDGE_TRACE, backedge_trace_)
+			BAIL_CASE(_PYFRAME_CALL_PROFILE, call_profile_)
+			BAIL_CASE(_PYFRAME_FATAL_GUARD_FAIL, fatal_guard_fail_)
+			BAIL_CASE(_PYFRAME_GUARD_FAIL, guard_fail_)
+			default:
+				abort();   // Unknown bail reason.
+		}
+#undef BAIL_CASE
+	}
+
+private:
+	typedef std::set<std::string> BailData;
+	BailData bail_sites_;
+
+	long total_;
+	long trace_on_entry_;
+	long line_trace_;
+	long backedge_trace_;
+	long call_profile_;
+	long fatal_guard_fail_;
+	long guard_fail_;
+};
+
+static llvm::ManagedStatic<BailCountStats> bail_count_stats;
 #endif  // Py_WITH_INSTRUMENTATION
 
 
@@ -186,6 +255,7 @@ static PyObject * load_args(PyObject ***, int);
 /* Record data for use in generating optimized machine code. */
 static void record_type(PyCodeObject *, int, int, int, PyObject *);
 static void record_func(PyCodeObject *, int, int, int, PyObject *);
+static void record_object(PyCodeObject *, int, int, int, PyObject *);
 static void inc_feedback_counter(PyCodeObject *, int, int, int);
 
 int _Py_TracingPossible = 0;
@@ -797,6 +867,8 @@ PyEval_EvalFrame(PyFrameObject *f)
 #ifdef WITH_LLVM
 #define RECORD_TYPE(arg_index, obj) \
 	record_type(co, opcode, f->f_lasti, arg_index, obj)
+#define RECORD_OBJECT(arg_index, obj) \
+	record_object(co, opcode, f->f_lasti, arg_index, obj)
 #define RECORD_FUNC(obj) \
 	record_func(co, opcode, f->f_lasti, 0, obj)
 #define RECORD_TRUE() \
@@ -807,6 +879,8 @@ PyEval_EvalFrame(PyFrameObject *f)
 	inc_feedback_counter(co, opcode, f->f_lasti, PY_FDO_JUMP_NON_BOOLEAN)
 #else
 #define RECORD_TYPE(arg_index, obj)
+#define RECORD_OBJECT(arg_index, obj)
+#define RECORD_FUNC(obj)
 #define RECORD_TRUE()
 #define RECORD_FALSE()
 #define RECORD_NONBOOLEAN()
@@ -944,10 +1018,15 @@ PyEval_EvalFrame(PyFrameObject *f)
 		}
 	}
 
-	if (bail_reason != _PYFRAME_NO_BAIL && _Py_BailError) {
-		PyErr_SetString(PyExc_RuntimeError,
-			        "bailed to the interpreter");
-		goto exit_eval_frame;
+	if (bail_reason != _PYFRAME_NO_BAIL) {
+#ifdef Py_WITH_INSTRUMENTATION
+		bail_count_stats->RecordBail(f, bail_reason);
+#endif
+		if (_Py_BailError) {
+			PyErr_SetString(PyExc_RuntimeError,
+	        	                "bailed to the interpreter");
+			goto exit_eval_frame;
+		}
 	}
 #endif  /* WITH_LLVM */
 
@@ -2752,6 +2831,22 @@ PyEval_EvalFrame(PyFrameObject *f)
 			}
 			DISPATCH();
 
+		TARGET(IMPORT_NAME)
+			w = POP();
+			v = POP();
+			u = TOP();
+			x = _PyEval_ImportName(u, v, w);
+			Py_DECREF(w);
+			Py_DECREF(v);
+			Py_DECREF(u);
+			SET_TOP(x);
+			if (x == NULL) {
+				why = UNWIND_EXCEPTION;
+				break;
+			}
+			RECORD_OBJECT(0, x);
+			DISPATCH();
+
 		TARGET(EXTENDED_ARG)
 			opcode = NEXTOP();
 			oparg = oparg<<16 | NEXTARG();
@@ -3997,17 +4092,28 @@ PyEval_GetFuncDesc(PyObject *func)
 }
 
 static void
-err_args(PyObject *func, int flags, int nargs)
+err_args(PyObject *func, int flags, int min_arity, int max_arity, int nargs)
 {
-	if (flags & METH_NOARGS)
+	if (min_arity != max_arity)
+		PyErr_Format(PyExc_TypeError,
+				 "%.200s() takes %d-%d arguments (%d given)",
+				 ((PyCFunctionObject *)func)->m_ml->ml_name,
+				 min_arity, max_arity, nargs);
+	else if (min_arity == 0)
 		PyErr_Format(PyExc_TypeError,
 			     "%.200s() takes no arguments (%d given)",
 			     ((PyCFunctionObject *)func)->m_ml->ml_name,
 			     nargs);
-	else
+	else if (min_arity == 1)
 		PyErr_Format(PyExc_TypeError,
 			     "%.200s() takes exactly one argument (%d given)",
 			     ((PyCFunctionObject *)func)->m_ml->ml_name,
+			     nargs);
+	else
+		PyErr_Format(PyExc_TypeError,
+			     "%.200s() takes exactly %d arguments (%d given)",
+			     ((PyCFunctionObject *)func)->m_ml->ml_name,
+			     min_arity,
 			     nargs);
 }
 
@@ -4140,19 +4246,35 @@ _PyEval_CallFunction(PyObject **stack_pointer, int na, int nk)
 		PyThreadState *tstate = PyThreadState_GET();
 
 		PCALL(PCALL_CFUNCTION);
-		if (flags & (METH_NOARGS | METH_O)) {
+		if (flags & METH_ARG_RANGE) {
 			PyCFunction meth = PyCFunction_GET_FUNCTION(func);
 			PyObject *self = PyCFunction_GET_SELF(func);
-			if (flags & METH_NOARGS && na == 0) {
-				C_TRACE(x, (*meth)(self,NULL));
+			int min_arity = PyCFunction_GET_MIN_ARITY(func);
+			int max_arity = PyCFunction_GET_MAX_ARITY(func);
+			PyObject *args[PY_MAX_ARITY] = {NULL};
+
+			switch (na) {
+				default:
+					PyErr_BadInternalCall();
+					return NULL;
+				case 3: args[2] = EXT_POP(stack_pointer);
+				case 2: args[1] = EXT_POP(stack_pointer);
+				case 1: args[0] = EXT_POP(stack_pointer);
+				case 0: break;
 			}
-			else if (flags & METH_O && na == 1) {
-				PyObject *arg = EXT_POP(stack_pointer);
-				C_TRACE(x, (*meth)(self,arg));
-				Py_DECREF(arg);
+
+			/* But wait, you ask, what about {un,bin}ary functions?
+			   Aren't we passing more arguments than it expects?
+			   Yes, but C allows this. Go C. */
+			if (min_arity <= na && na <= max_arity) {
+				C_TRACE(x, (*(PyCFunctionThreeArgs)meth)
+				           (self, args[0], args[1], args[2]));
+				Py_XDECREF(args[0]);
+				Py_XDECREF(args[1]);
+				Py_XDECREF(args[2]);
 			}
 			else {
-				err_args(func, flags, na);
+				err_args(func, flags, min_arity, max_arity, na);
 				x = NULL;
 			}
 		}
@@ -4511,25 +4633,6 @@ ext_call_fail:
 	return result;
 }
 
-// Records the type of obj into the feedback array.
-void record_type(PyCodeObject *co, int expected_opcode,
-		 int opcode_index, int arg_index, PyObject *obj)
-{
-#ifdef WITH_LLVM
-#ifndef NDEBUG
-	unsigned char actual_opcode =
-		PyString_AS_STRING(co->co_code)[opcode_index];
-	assert((actual_opcode == expected_opcode ||
-		actual_opcode == EXTENDED_ARG) &&
-	       "Mismatch between feedback and opcode array.");
-#endif  /* NDEBUG */
-	PyRuntimeFeedback &feedback =
-		co->co_runtime_feedback->GetOrCreateFeedbackEntry(
-			opcode_index, arg_index);
-	feedback.AddTypeSeen(obj);
-#endif  /* WITH_LLVM */
-}
-
 void inc_feedback_counter(PyCodeObject *co, int expected_opcode,
 			  int opcode_index, int counter_id)
 {
@@ -4565,6 +4668,36 @@ void record_func(PyCodeObject *co, int expected_opcode,
 			opcode_index, arg_index);
 	feedback.AddFuncSeen(func);
 #endif  /* WITH_LLVM */
+}
+
+// Records obj into the feedback array. Only use this on long-lived objects,
+// since the feedback system will keep any object live forever.
+void record_object(PyCodeObject *co, int expected_opcode,
+		   int opcode_index, int arg_index, PyObject *obj)
+{
+#ifdef WITH_LLVM
+#ifndef NDEBUG
+	unsigned char actual_opcode =
+		PyString_AS_STRING(co->co_code)[opcode_index];
+	assert((actual_opcode == expected_opcode ||
+		actual_opcode == EXTENDED_ARG) &&
+	       "Mismatch between feedback and opcode array.");
+#endif  /* NDEBUG */
+	PyRuntimeFeedback &feedback =
+		co->co_runtime_feedback->GetOrCreateFeedbackEntry(
+			opcode_index, arg_index);
+	feedback.AddObjectSeen(obj);
+#endif  /* WITH_LLVM */
+}
+
+// Records the type of obj into the feedback array.
+void record_type(PyCodeObject *co, int expected_opcode,
+                 int opcode_index, int arg_index, PyObject *obj)
+{
+	if (obj == NULL)
+		return;
+	PyObject *type = (PyObject *)Py_TYPE(obj);
+	record_object(co, expected_opcode, opcode_index, arg_index, type);
 }
 
 
@@ -4749,6 +4882,42 @@ _PyEval_DeleteName(PyFrameObject *f, int name_index)
 		     PyObject_REPR(a1));
 	return -1;
 }
+
+PyObject *
+_PyEval_ImportName(PyObject *level, PyObject *names, PyObject *module_name)
+{
+	PyObject *import, *import_args, *module;
+	PyFrameObject *frame = PyThreadState_Get()->frame;
+
+	import = PyDict_GetItemString(frame->f_builtins, "__import__");
+	if (import == NULL) {
+		PyErr_SetString(PyExc_ImportError, "__import__ not found");
+		return NULL;
+	}
+	Py_INCREF(import);
+	if (PyInt_AsLong(level) != -1 || PyErr_Occurred())
+		import_args = PyTuple_Pack(5,
+			    module_name,
+			    frame->f_globals,
+			    frame->f_locals == NULL ? Py_None : frame->f_locals,
+			    names,
+			    level);
+	else
+		import_args = PyTuple_Pack(4,
+			    module_name,
+			    frame->f_globals,
+			    frame->f_locals == NULL ? Py_None : frame->f_locals,
+			    names);
+	if (import_args == NULL) {
+		Py_DECREF(import);
+		return NULL;
+	}
+	module = PyEval_CallObject(import, import_args);
+	Py_DECREF(import);
+	Py_DECREF(import_args);
+	return module;
+}
+
 
 #define Py3kExceptionClass_Check(x)     \
     (PyType_Check((x)) &&               \

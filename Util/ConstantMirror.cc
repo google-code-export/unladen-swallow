@@ -21,6 +21,7 @@ using llvm::ConstantInt;
 using llvm::ConstantStruct;
 using llvm::ExecutionEngine;
 using llvm::Function;
+using llvm::FunctionType;
 using llvm::GlobalValue;
 using llvm::GlobalVariable;
 using llvm::IntegerType;
@@ -363,8 +364,9 @@ public:
         // cache.
         this->parent_.engine_.updateGlobalMapping(
             cast<GlobalValue>(this->getValPtr()), NULL);
-        if (!this->parent_.python_shutting_down_)
+        if (!this->parent_.python_shutting_down_) {
             Py_DECREF(this->obj_);
+        }
         this->setValPtr(NULL);
         delete this;
     }
@@ -387,25 +389,50 @@ PyConstantMirror::GetGlobalVariableForOwned(T *ptr, PyObject *owner)
     if (ptr == NULL) {
         return Constant::getNullValue(PyTypeBuilder<T*>::get(this->context()));
     }
-    GlobalValue *result =
-        const_cast<GlobalValue*>(this->engine_.getGlobalValueAtAddress(ptr));
+    // If the JIT already knows of an object at *ptr and knows its
+    // initial value, just return that.  If LLVM doesn't know the
+    // initial value, we'll have to tell it.
+    GlobalVariable *result = const_cast<GlobalVariable*>(
+        llvm::cast_or_null<GlobalVariable>(
+            this->engine_.getGlobalValueAtAddress(ptr)));
+    if (result && result->hasInitializer()) {
+        return result;
+    }
+    Constant *initializer = this->GetConstantFor(ptr);
     if (result == NULL) {
-        Constant *initializer = this->GetConstantFor(ptr);
+        // If we don't know of any object there, create one.
         result = new GlobalVariable(*this->llvm_data_.module(),
                                     initializer->getType(),
                                     false,  // Not constant.
-                                    GlobalValue::InternalLinkage, initializer,
+                                    GlobalValue::InternalLinkage, NULL,
                                     /*name=*/"");
-        Py_INCREF(owner);
+        // And tell the JIT about its address.
         this->engine_.addGlobalMapping(result, ptr);
-        // The object created on the next line owns itself:
-        new RemovePyObjFromGlobalMappingsVH(this, result, owner);
     }
+    assert(!result->hasInitializer());
+
+    // Now assign the object's initial value.  This currently assumes
+    // that any existing GlobalVariable has the same type as the new
+    // initializer.
+
+    // The initializer refers to things inside *ptr, so we have to
+    // make sure they're not deallocated before the GlobalVariable is.
+    Py_INCREF(owner);
+    // The object created on the next line owns itself and the
+    // just inc'ed reference to owner:
+    new RemovePyObjFromGlobalMappingsVH(this, result, owner);
+    result->setInitializer(initializer);
+
     return result;
 }
 
+#define ONE_ARG  PyObject*(PyObject*, PyObject*)
+#define TWO_ARGS PyObject*(PyObject*, PyObject*, PyObject*)
+#define THREE_ARGS PyObject*(PyObject*, PyObject*, PyObject*, PyObject*)
+
 Constant *
 PyConstantMirror::GetGlobalForCFunction(PyCFunction cfunc_ptr,
+                                        int arity,
                                         const llvm::StringRef &name)
 {
     // Reuse an existing LLVM global if we can.
@@ -415,12 +442,26 @@ PyConstantMirror::GetGlobalForCFunction(PyCFunction cfunc_ptr,
                 (this->engine_.getGlobalValueAtAddress(func_ptr)))
         return found;
 
+    const FunctionType *func_type = NULL;
+    if (arity == 0 || arity == 1)
+        func_type = PyTypeBuilder<ONE_ARG>::get(this->context());
+    else if (arity == 2)
+        func_type = PyTypeBuilder<TWO_ARGS>::get(this->context());
+    else if (arity == 3)
+        func_type = PyTypeBuilder<THREE_ARGS>::get(this->context());
+    else
+        assert(0 && "Invalid arity");
+
     // Create a new LLVM global if we haven't seen this function pointer before.
     Function *global_func = Function::Create(
-        PyTypeBuilder<PyObject*(PyObject*, PyObject*)>::get(this->context()),
+        func_type,
         GlobalVariable::ExternalLinkage,
         name,
         this->llvm_data_.module());
     this->engine_.addGlobalMapping(global_func, func_ptr);
     return global_func;
 }
+
+#undef ONE_ARG
+#undef TWO_ARGS
+#undef THREE_ARGS

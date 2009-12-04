@@ -5,10 +5,12 @@
 #include "Include/llvm_thread.h"
 #include "Util/PyAliasAnalysis.h"
 #include "Util/SingleFunctionInliner.h"
+#include "Util/Stats.h"
 #include "_llvmfunctionobject.h"
 
 #include "llvm/Analysis/DebugInfo.h"
 #include "llvm/Analysis/Verifier.h"
+#include "llvm/Bitcode/ReaderWriter.h"
 #include "llvm/CallingConv.h"
 #include "llvm/Constants.h"
 #include "llvm/DerivedTypes.h"
@@ -19,15 +21,17 @@
 #include "llvm/ModuleProvider.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ManagedStatic.h"
+#include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/ValueHandle.h"
+#include "llvm/System/Path.h"
 #include "llvm/Target/TargetData.h"
 #include "llvm/Target/TargetSelect.h"
+#include "llvm/Transforms/IPO.h"
 #include "llvm/Transforms/Scalar.h"
-
-// Declare the function from initial_llvm_module.cc.
-llvm::Module* FillInitialGlobalModule(llvm::Module*);
 
 using llvm::FunctionPassManager;
 using llvm::Module;
+using llvm::StringRef;
 
 // We have to keep this global here instead of in PyInterpreterState because the
 // JIT background thread needs it, and it is allowed to run when there is no
@@ -46,15 +50,57 @@ PyGlobalLlvmData::Get()
     return global_llvm_data;
 }
 
+#define STRINGIFY(X) STRINGIFY2(X)
+#define STRINGIFY2(X) #X
+// The basename of the bitcode file holding the standard library.
+#define LIBPYTHON_BC "libpython" STRINGIFY(PY_MAJOR_VERSION) "." \
+    STRINGIFY(PY_MINOR_VERSION) ".bc"
+
+// Searches for the bitcode file holding the Python standard library.
+// If one is found, returns its contents in a MemoryBuffer.  If not,
+// dies with a fatal error.
+static llvm::MemoryBuffer *
+find_stdlib_bc()
+{
+    llvm::sys::Path path;
+    llvm::SmallVector<StringRef, 8> sys_path;
+    StringRef(Py_GetPath()).split(sys_path, ":");
+    for (ssize_t i = 0, size = sys_path.size(); i < size; ++i) {
+        StringRef elem = sys_path[i];
+        path = elem;
+        path.appendComponent(LIBPYTHON_BC);
+        llvm::MemoryBuffer *stdlib_file =
+            llvm::MemoryBuffer::getFile(path.str(), NULL);
+        if (stdlib_file != NULL) {
+            return stdlib_file;
+        }
+    }
+    Py_FatalError("Could not find " LIBPYTHON_BC " on sys.path");
+    return NULL;
+}
+
 PyGlobalLlvmData::PyGlobalLlvmData()
-    : module_(new Module("<main>", this->context())),
-      module_provider_(new llvm::ExistingModuleProvider(module_)),
-      debug_info_(Py_GenerateDebugInfoFlag ? new llvm::DIFactory(*module_)
-                  : NULL),
-      optimizations_(4, (FunctionPassManager*)NULL),
-      compile_thread_(this)
+    : optimizations_(4, (FunctionPassManager*)NULL),
+      compile_thread_(this), num_globals_after_last_gc_(0)
 {
     std::string error;
+    llvm::MemoryBuffer *stdlib_file = find_stdlib_bc();
+    this->module_provider_ =
+      llvm::getBitcodeModuleProvider(stdlib_file, this->context(), &error);
+    if (this->module_provider_ == NULL) {
+      Py_FatalError(error.c_str());
+    }
+    // TODO(jyasskin): Change this to getModule once we avoid the crash
+    // in BitcodeReader::ParseFunctionBody.  http://llvm.org/PR5663
+    this->module_ = this->module_provider_->materializeModule(&error);
+    if (this->module_ == NULL) {
+      Py_FatalError(error.c_str());
+    }
+
+    if (Py_GenerateDebugInfoFlag) {
+      this->debug_info_.reset(new llvm::DIFactory(*module_));
+    }
+
     llvm::InitializeNativeTarget();
     engine_ = llvm::ExecutionEngine::create(
         module_provider_,
@@ -71,9 +117,6 @@ PyGlobalLlvmData::PyGlobalLlvmData()
         Py_FatalError(error.c_str());
     }
 
-    this->module_->setDataLayout(
-        this->engine_->getTargetData()->getStringRepresentation());
-
     // When we ask to JIT a function, we should also JIT other
     // functions that function depends on.  This lets us JIT in a
     // background thread to avoid blocking the main thread during
@@ -85,13 +128,12 @@ PyGlobalLlvmData::PyGlobalLlvmData()
     this->InstallInitialModule();
 
     this->InitializeOptimizations();
+    this->gc_.add(llvm::createGlobalDCEPass());
 }
 
 void
 PyGlobalLlvmData::InstallInitialModule()
 {
-    FillInitialGlobalModule(this->module_);
-
     for (llvm::Module::iterator it = this->module_->begin();
          it != this->module_->end(); ++it) {
         if (it->getName().find("_PyLlvm_Fast") == 0) {
@@ -135,7 +177,7 @@ PyGlobalLlvmData::InitializeOptimizations()
     O2->add(llvm::createScalarReplAggregatesPass());
     O2->add(CreatePyAliasAnalysis(*this));
     O2->add(llvm::createLICMPass());
-    O2->add(llvm::createCondPropagationPass());
+    O2->add(llvm::createJumpThreadingPass());
     O2->add(CreatePyAliasAnalysis(*this));
     O2->add(llvm::createGVNPass());
     O2->add(llvm::createSCCPPass());
@@ -177,7 +219,6 @@ PyGlobalLlvmData::InitializeOptimizations()
     optO3->add(createCFGSimplificationPass());     // Merge & remove BBs
     optO3->add(createScalarReplAggregatesPass());  // Break up aggregate allocas
     optO3->add(createInstructionCombiningPass());  // Combine silly seq's
-    optO3->add(createCondPropagationPass());       // Propagate conditionals
     optO3->add(createTailCallEliminationPass());   // Eliminate tail calls
     optO3->add(createCFGSimplificationPass());     // Merge & remove BBs
     optO3->add(createReassociatePass());           // Reassociate expressions
@@ -200,7 +241,7 @@ PyGlobalLlvmData::InitializeOptimizations()
     // Run instcombine after redundancy elimination to exploit opportunities
     // opened up by them.
     optO3->add(createInstructionCombiningPass());
-    optO3->add(createCondPropagationPass());       // Propagate conditionals
+    optO3->add(createJumpThreadingPass());         // Thread jumps.
     optO3->add(CreatePyAliasAnalysis(*this));
     optO3->add(createDeadStoreEliminationPass());  // Delete dead stores
     optO3->add(createAggressiveDCEPass());   // Delete dead instructions
@@ -240,9 +281,54 @@ PyGlobalLlvmData_Optimize(struct PyGlobalLlvmData *global_data,
                           _LlvmFunction *llvm_function,
                           int level)
 {
-    return global_data->Optimize(
-        *(llvm::Function *)llvm_function->lf_function,
-        level);
+    return _LlvmFunction_Optimize(global_data, llvm_function, level);
+}
+
+#ifdef Py_WITH_INSTRUMENTATION
+// Collect statistics about the time it takes to collect unused globals.
+class GlobalGCTimes : public DataVectorStats<int64_t> {
+public:
+    GlobalGCTimes()
+        : DataVectorStats<int64_t>("Time for a globaldce run in ns") {}
+};
+
+class GlobalGCCollected : public DataVectorStats<int> {
+public:
+    GlobalGCCollected()
+        : DataVectorStats<int>("Number of globals collected by globaldce") {}
+};
+
+static llvm::ManagedStatic<GlobalGCTimes> global_gc_times;
+static llvm::ManagedStatic<GlobalGCCollected> global_gc_collected;
+
+#endif  // Py_WITH_INSTRUMENTATION
+
+void
+PyGlobalLlvmData::MaybeCollectUnusedGlobals()
+{
+    unsigned num_globals = this->module_->getGlobalList().size() +
+        this->module_->getFunctionList().size();
+    // Don't incur the cost of collecting globals if there are too few
+    // of them, or if doing so now would cost a quadratic amount of
+    // time as we allocate more long-lived globals.  The thresholds
+    // here are just guesses, not tuned numbers.
+    if (num_globals < 20 ||
+        num_globals < (this->num_globals_after_last_gc_ +
+                       (this->num_globals_after_last_gc_ >> 2)))
+        return;
+
+    {
+#if Py_WITH_INSTRUMENTATION
+        Timer timer(*global_gc_times);
+#endif
+        this->gc_.run(*this->module_);
+    }
+    num_globals_after_last_gc_ = this->module_->getGlobalList().size() +
+        this->module_->getFunctionList().size();
+#if Py_WITH_INSTRUMENTATION
+    global_gc_collected->RecordDataPoint(
+        num_globals - num_globals_after_last_gc_);
+#endif
 }
 
 llvm::Value *
@@ -250,7 +336,7 @@ PyGlobalLlvmData::GetGlobalStringPtr(const std::string &value)
 {
     // Use operator[] because we want to insert a new value if one
     // wasn't already present.
-    llvm::GlobalVariable *& the_string = this->constant_strings_[value];
+    llvm::WeakVH& the_string = this->constant_strings_[value];
     if (the_string == NULL) {
         llvm::Constant *str_const = llvm::ConstantArray::get(this->context(),
                                                              value, true);
@@ -273,7 +359,8 @@ PyGlobalLlvmData::GetGlobalStringPtr(const std::string &value)
         llvm::ConstantInt::get(int64_type, 0),
         llvm::ConstantInt::get(int64_type, 0)
     };
-    return llvm::ConstantExpr::getGetElementPtr(the_string, indices, 2);
+    return llvm::ConstantExpr::getGetElementPtr(
+        llvm::cast<llvm::Constant>(the_string), indices, 2);
 }
 
 int

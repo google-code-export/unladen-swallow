@@ -13,11 +13,13 @@
 
 #include "clang/Frontend/PCHReader.h"
 #include "clang/Frontend/FrontendDiagnostic.h"
+#include "clang/Frontend/Utils.h"
 #include "../Sema/Sema.h" // FIXME: move Sema headers elsewhere
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/Type.h"
+#include "clang/AST/TypeLocVisitor.h"
 #include "clang/Lex/MacroInfo.h"
 #include "clang/Lex/Preprocessor.h"
 #include "clang/Lex/HeaderSearch.h"
@@ -27,9 +29,12 @@
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Basic/Version.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/Bitcode/BitstreamReader.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/ErrorHandling.h"
+#include "llvm/System/Path.h"
 #include <algorithm>
 #include <iterator>
 #include <cstdio>
@@ -101,6 +106,7 @@ PCHValidator::ReadLanguageOptions(const LangOptions &LangOpts) {
   PARSE_LANGOPT_IMPORTANT(NoInline, diag::warn_pch_no_inline);
   PARSE_LANGOPT_IMPORTANT(AccessControl, diag::warn_pch_access_control);
   PARSE_LANGOPT_IMPORTANT(CharIsSigned, diag::warn_pch_char_signed);
+  PARSE_LANGOPT_IMPORTANT(ShortWChar, diag::warn_pch_short_wchar);
   if ((PPLangOpts.getGCMode() != 0) != (LangOpts.getGCMode() != 0)) {
     Reader.Diag(diag::warn_pch_gc_mode)
       << LangOpts.getGCMode() << PPLangOpts.getGCMode();
@@ -118,83 +124,56 @@ PCHValidator::ReadLanguageOptions(const LangOptions &LangOpts) {
   return false;
 }
 
-bool PCHValidator::ReadTargetTriple(const std::string &Triple) {
-  if (Triple != PP.getTargetInfo().getTriple().getTriple()) {
-    Reader.Diag(diag::warn_pch_target_triple)
-      << Triple << PP.getTargetInfo().getTriple().getTriple();
-    return true;
-  }
-  return false;
-}
+bool PCHValidator::ReadTargetTriple(llvm::StringRef Triple) {
+  if (Triple == PP.getTargetInfo().getTriple().str())
+    return false;
 
-/// \brief Split the given string into a vector of lines, eliminating
-/// any empty lines in the process.
-///
-/// \param Str the string to split.
-/// \param Len the length of Str.
-/// \param KeepEmptyLines true if empty lines should be included
-/// \returns a vector of lines, with the line endings removed
-static std::vector<std::string> splitLines(const char *Str, unsigned Len,
-                                           bool KeepEmptyLines = false) {
-  std::vector<std::string> Lines;
-  for (unsigned LineStart = 0; LineStart < Len; ++LineStart) {
-    unsigned LineEnd = LineStart;
-    while (LineEnd < Len && Str[LineEnd] != '\n')
-      ++LineEnd;
-    if (LineStart != LineEnd || KeepEmptyLines)
-      Lines.push_back(std::string(&Str[LineStart], &Str[LineEnd]));
-    LineStart = LineEnd;
-  }
-  return Lines;
-}
-
-/// \brief Determine whether the string Haystack starts with the
-/// substring Needle.
-static bool startsWith(const std::string &Haystack, const char *Needle) {
-  for (unsigned I = 0, N = Haystack.size(); Needle[I] != 0; ++I) {
-    if (I == N)
-      return false;
-    if (Haystack[I] != Needle[I])
-      return false;
-  }
-
+  Reader.Diag(diag::warn_pch_target_triple)
+    << Triple << PP.getTargetInfo().getTriple().str();
   return true;
 }
 
-/// \brief Determine whether the string Haystack starts with the
-/// substring Needle.
-static inline bool startsWith(const std::string &Haystack,
-                              const std::string &Needle) {
-  return startsWith(Haystack, Needle.c_str());
-}
-
-bool PCHValidator::ReadPredefinesBuffer(const char *PCHPredef,
-                                        unsigned PCHPredefLen,
+bool PCHValidator::ReadPredefinesBuffer(llvm::StringRef PCHPredef,
                                         FileID PCHBufferID,
+                                        llvm::StringRef OriginalFileName,
                                         std::string &SuggestedPredefines) {
-  const char *Predef = PP.getPredefines().c_str();
-  unsigned PredefLen = PP.getPredefines().size();
+  // We are in the context of an implicit include, so the predefines buffer will
+  // have a #include entry for the PCH file itself (as normalized by the
+  // preprocessor initialization). Find it and skip over it in the checking
+  // below.
+  llvm::SmallString<256> PCHInclude;
+  PCHInclude += "#include \"";
+  PCHInclude += NormalizeDashIncludePath(OriginalFileName);
+  PCHInclude += "\"\n";
+  std::pair<llvm::StringRef,llvm::StringRef> Split =
+    llvm::StringRef(PP.getPredefines()).split(PCHInclude.str());
+  llvm::StringRef Left =  Split.first, Right = Split.second;
+  assert(Left != PP.getPredefines() && "Missing PCH include entry!");
 
-  // If the two predefines buffers compare equal, we're done!
-  if (PredefLen == PCHPredefLen &&
-      strncmp(Predef, PCHPredef, PCHPredefLen) == 0)
+  // If the predefines is equal to the joined left and right halves, we're done!
+  if (Left.size() + Right.size() == PCHPredef.size() &&
+      PCHPredef.startswith(Left) && PCHPredef.endswith(Right))
     return false;
 
   SourceManager &SourceMgr = PP.getSourceManager();
 
-  // The predefines buffers are different. Determine what the
-  // differences are, and whether they require us to reject the PCH
-  // file.
-  std::vector<std::string> CmdLineLines = splitLines(Predef, PredefLen);
-  std::vector<std::string> PCHLines = splitLines(PCHPredef, PCHPredefLen);
+  // The predefines buffers are different. Determine what the differences are,
+  // and whether they require us to reject the PCH file.
+  llvm::SmallVector<llvm::StringRef, 8> PCHLines;
+  PCHPredef.split(PCHLines, "\n", /*MaxSplit=*/-1, /*KeepEmpty=*/false);
 
-  // Sort both sets of predefined buffer lines, since
+  llvm::SmallVector<llvm::StringRef, 8> CmdLineLines;
+  Left.split(CmdLineLines, "\n", /*MaxSplit=*/-1, /*KeepEmpty=*/false);
+  Right.split(CmdLineLines, "\n", /*MaxSplit=*/-1, /*KeepEmpty=*/false);
+
+  // Sort both sets of predefined buffer lines, since we allow some extra
+  // definitions and they may appear at any point in the output.
   std::sort(CmdLineLines.begin(), CmdLineLines.end());
   std::sort(PCHLines.begin(), PCHLines.end());
 
-  // Determine which predefines that where used to build the PCH file
-  // are missing from the command line.
-  std::vector<std::string> MissingPredefines;
+  // Determine which predefines that were used to build the PCH file are missing
+  // from the command line.
+  std::vector<llvm::StringRef> MissingPredefines;
   std::set_difference(PCHLines.begin(), PCHLines.end(),
                       CmdLineLines.begin(), CmdLineLines.end(),
                       std::back_inserter(MissingPredefines));
@@ -202,31 +181,30 @@ bool PCHValidator::ReadPredefinesBuffer(const char *PCHPredef,
   bool MissingDefines = false;
   bool ConflictingDefines = false;
   for (unsigned I = 0, N = MissingPredefines.size(); I != N; ++I) {
-    const std::string &Missing = MissingPredefines[I];
-    if (!startsWith(Missing, "#define ") != 0) {
+    llvm::StringRef Missing = MissingPredefines[I];
+    if (!Missing.startswith("#define ")) {
       Reader.Diag(diag::warn_pch_compiler_options_mismatch);
       return true;
     }
 
-    // This is a macro definition. Determine the name of the macro
-    // we're defining.
+    // This is a macro definition. Determine the name of the macro we're
+    // defining.
     std::string::size_type StartOfMacroName = strlen("#define ");
     std::string::size_type EndOfMacroName
       = Missing.find_first_of("( \n\r", StartOfMacroName);
     assert(EndOfMacroName != std::string::npos &&
            "Couldn't find the end of the macro name");
-    std::string MacroName = Missing.substr(StartOfMacroName,
-                                           EndOfMacroName - StartOfMacroName);
+    llvm::StringRef MacroName = Missing.slice(StartOfMacroName, EndOfMacroName);
 
-    // Determine whether this macro was given a different definition
-    // on the command line.
-    std::string MacroDefStart = "#define " + MacroName;
+    // Determine whether this macro was given a different definition on the
+    // command line.
+    std::string MacroDefStart = "#define " + MacroName.str();
     std::string::size_type MacroDefLen = MacroDefStart.size();
-    std::vector<std::string>::iterator ConflictPos
+    llvm::SmallVector<llvm::StringRef, 8>::iterator ConflictPos
       = std::lower_bound(CmdLineLines.begin(), CmdLineLines.end(),
                          MacroDefStart);
     for (; ConflictPos != CmdLineLines.end(); ++ConflictPos) {
-      if (!startsWith(*ConflictPos, MacroDefStart)) {
+      if (!ConflictPos->startswith(MacroDefStart)) {
         // Different macro; we're done.
         ConflictPos = CmdLineLines.end();
         break;
@@ -247,21 +225,18 @@ bool PCHValidator::ReadPredefinesBuffer(const char *PCHPredef,
           << MacroName;
 
       // Show the definition of this macro within the PCH file.
-      const char *MissingDef = strstr(PCHPredef, Missing.c_str());
-      unsigned Offset = MissingDef - PCHPredef;
-      SourceLocation PCHMissingLoc
-        = SourceMgr.getLocForStartOfFile(PCHBufferID)
-            .getFileLocWithOffset(Offset);
-      Reader.Diag(PCHMissingLoc, diag::note_pch_macro_defined_as)
-        << MacroName;
+      llvm::StringRef::size_type Offset = PCHPredef.find(Missing);
+      assert(Offset != llvm::StringRef::npos && "Unable to find macro!");
+      SourceLocation PCHMissingLoc = SourceMgr.getLocForStartOfFile(PCHBufferID)
+        .getFileLocWithOffset(Offset);
+      Reader.Diag(PCHMissingLoc, diag::note_pch_macro_defined_as) << MacroName;
 
       ConflictingDefines = true;
       continue;
     }
 
-    // If the macro doesn't conflict, then we'll just pick up the
-    // macro definition from the PCH file. Warn the user that they
-    // made a mistake.
+    // If the macro doesn't conflict, then we'll just pick up the macro
+    // definition from the PCH file. Warn the user that they made a mistake.
     if (ConflictingDefines)
       continue; // Don't complain if there are already conflicting defs
 
@@ -271,10 +246,9 @@ bool PCHValidator::ReadPredefinesBuffer(const char *PCHPredef,
     }
 
     // Show the definition of this macro within the PCH file.
-    const char *MissingDef = strstr(PCHPredef, Missing.c_str());
-    unsigned Offset = MissingDef - PCHPredef;
-    SourceLocation PCHMissingLoc
-      = SourceMgr.getLocForStartOfFile(PCHBufferID)
+    llvm::StringRef::size_type Offset = PCHPredef.find(Missing);
+    assert(Offset != llvm::StringRef::npos && "Unable to find macro!");
+    SourceLocation PCHMissingLoc = SourceMgr.getLocForStartOfFile(PCHBufferID)
       .getFileLocWithOffset(Offset);
     Reader.Diag(PCHMissingLoc, diag::note_using_macro_def_from_pch);
   }
@@ -286,13 +260,13 @@ bool PCHValidator::ReadPredefinesBuffer(const char *PCHPredef,
   // parameters that were not present when building the PCH
   // file. Extra #defines are okay, so long as the identifiers being
   // defined were not used within the precompiled header.
-  std::vector<std::string> ExtraPredefines;
+  std::vector<llvm::StringRef> ExtraPredefines;
   std::set_difference(CmdLineLines.begin(), CmdLineLines.end(),
                       PCHLines.begin(), PCHLines.end(),
                       std::back_inserter(ExtraPredefines));
   for (unsigned I = 0, N = ExtraPredefines.size(); I != N; ++I) {
-    const std::string &Extra = ExtraPredefines[I];
-    if (!startsWith(Extra, "#define ") != 0) {
+    llvm::StringRef &Extra = ExtraPredefines[I];
+    if (!Extra.startswith("#define ")) {
       Reader.Diag(diag::warn_pch_compiler_options_mismatch);
       return true;
     }
@@ -304,16 +278,13 @@ bool PCHValidator::ReadPredefinesBuffer(const char *PCHPredef,
       = Extra.find_first_of("( \n\r", StartOfMacroName);
     assert(EndOfMacroName != std::string::npos &&
            "Couldn't find the end of the macro name");
-    std::string MacroName = Extra.substr(StartOfMacroName,
-                                         EndOfMacroName - StartOfMacroName);
+    llvm::StringRef MacroName = Extra.slice(StartOfMacroName, EndOfMacroName);
 
     // Check whether this name was used somewhere in the PCH file. If
     // so, defining it as a macro could change behavior, so we reject
     // the PCH file.
-    if (IdentifierInfo *II = Reader.get(MacroName.c_str(),
-                                 MacroName.c_str() + MacroName.size())) {
-      Reader.Diag(diag::warn_macro_name_used_in_pch)
-        << II;
+    if (IdentifierInfo *II = Reader.get(MacroName)) {
+      Reader.Diag(diag::warn_macro_name_used_in_pch) << II;
       return true;
     }
 
@@ -335,8 +306,6 @@ void PCHValidator::ReadCounter(unsigned Value) {
   PP.setCounterValue(Value);
 }
 
-
-
 //===----------------------------------------------------------------------===//
 // PCH reader implementation
 //===----------------------------------------------------------------------===//
@@ -345,7 +314,7 @@ PCHReader::PCHReader(Preprocessor &PP, ASTContext *Context,
                      const char *isysroot)
   : Listener(new PCHValidator(PP, *this)), SourceMgr(PP.getSourceManager()),
     FileMgr(PP.getFileManager()), Diags(PP.getDiagnostics()),
-    SemaObj(0), PP(&PP), Context(Context), Consumer(0),
+    SemaObj(0), PP(&PP), Context(Context), StatCache(0), Consumer(0),
     IdentifierTableData(0), IdentifierLookupTable(0),
     IdentifierOffsets(0),
     MethodPoolLookupTable(0), MethodPoolLookupTableData(0),
@@ -362,7 +331,7 @@ PCHReader::PCHReader(Preprocessor &PP, ASTContext *Context,
 PCHReader::PCHReader(SourceManager &SourceMgr, FileManager &FileMgr,
                      Diagnostic &Diags, const char *isysroot)
   : SourceMgr(SourceMgr), FileMgr(FileMgr), Diags(Diags),
-    SemaObj(0), PP(0), Context(0), Consumer(0),
+    SemaObj(0), PP(0), Context(0), StatCache(0), Consumer(0),
     IdentifierTableData(0), IdentifierLookupTable(0),
     IdentifierOffsets(0),
     MethodPoolLookupTable(0), MethodPoolLookupTableData(0),
@@ -383,7 +352,7 @@ Expr *PCHReader::ReadDeclExpr() {
 }
 
 Expr *PCHReader::ReadTypeExpr() {
-  return dyn_cast_or_null<Expr>(ReadStmt(Stream));
+  return dyn_cast_or_null<Expr>(ReadStmt(DeclsCursor));
 }
 
 
@@ -411,7 +380,7 @@ public:
     unsigned R = 5381;
     for (unsigned I = 0; I != N; ++I)
       if (IdentifierInfo *II = Sel.getIdentifierInfoForSlot(I))
-        R = clang::BernsteinHashPartial(II->getName(), II->getLength(), R);
+        R = llvm::HashString(II->getName(), R);
     return R;
   }
 
@@ -521,7 +490,7 @@ public:
   }
 
   static unsigned ComputeHash(const internal_key_type& a) {
-    return BernsteinHash(a.first, a.second);
+    return llvm::HashString(llvm::StringRef(a.first, a.second));
   }
 
   // This hopefully will just get inlined and removed by the optimizer.
@@ -649,11 +618,11 @@ bool PCHReader::Error(const char *Msg) {
 ///
 /// \returns true if there was a mismatch (in which case the PCH file
 /// should be ignored), or false otherwise.
-bool PCHReader::CheckPredefinesBuffer(const char *PCHPredef,
-                                      unsigned PCHPredefLen,
+bool PCHReader::CheckPredefinesBuffer(llvm::StringRef PCHPredef,
                                       FileID PCHBufferID) {
   if (Listener)
-    return Listener->ReadPredefinesBuffer(PCHPredef, PCHPredefLen, PCHBufferID,
+    return Listener->ReadPredefinesBuffer(PCHPredef, PCHBufferID,
+                                          ActualOriginalFileName,
                                           SuggestedPredefines);
   return false;
 }
@@ -731,7 +700,7 @@ class VISIBILITY_HIDDEN PCHStatLookupTrait {
   typedef PCHStatData data_type;
 
   static unsigned ComputeHash(const char *path) {
-    return BernsteinHash(path);
+    return llvm::HashString(path);
   }
 
   static internal_key_type GetInternalKey(const char *path) { return path; }
@@ -794,7 +763,7 @@ public:
     // If we don't get a hit in the PCH file just forward to 'stat'.
     if (I == Cache->end()) {
       ++NumStatMisses;
-      return ::stat(path, buf);
+      return StatSysCallCache::stat(path, buf);
     }
 
     ++NumStatHits;
@@ -1118,10 +1087,8 @@ void PCHReader::MaybeAddSystemRootToFilename(std::string &Filename) {
   if (!RelocatablePCH)
     return;
 
-  if (Filename.empty() || Filename[0] == '/' || Filename[0] == '<')
+  if (Filename.empty() || llvm::sys::Path(Filename).isAbsolute())
     return;
-
-  std::string FIXME = Filename;
 
   if (isysroot == 0) {
     // If no system root was given, default to '/'
@@ -1158,15 +1125,7 @@ PCHReader::ReadPCHBlock() {
 
     if (Code == llvm::bitc::ENTER_SUBBLOCK) {
       switch (Stream.ReadSubBlockID()) {
-      case pch::TYPES_BLOCK_ID: // Skip types block (lazily loaded)
-      default:  // Skip unknown content.
-        if (Stream.SkipBlock()) {
-          Error("malformed block record in PCH file");
-          return Failure;
-        }
-        break;
-
-      case pch::DECLS_BLOCK_ID:
+      case pch::DECLTYPES_BLOCK_ID:
         // We lazily load the decls block, but we want to set up the
         // DeclsCursor cursor to point into it.  Clone our current bitcode
         // cursor to it, enter the block and read the abbrevs in that block.
@@ -1174,7 +1133,7 @@ PCHReader::ReadPCHBlock() {
         DeclsCursor = Stream;
         if (Stream.SkipBlock() ||  // Skip with the main cursor.
             // Read the abbrevs.
-            ReadBlockAbbrevs(DeclsCursor, pch::DECLS_BLOCK_ID)) {
+            ReadBlockAbbrevs(DeclsCursor, pch::DECLTYPES_BLOCK_ID)) {
           Error("malformed block record in PCH file");
           return Failure;
         }
@@ -1352,13 +1311,16 @@ PCHReader::ReadPCHBlock() {
       }
       break;
 
-    case pch::STAT_CACHE:
-      FileMgr.setStatCache(
-                  new PCHStatCache((const unsigned char *)BlobStart + Record[0],
-                                   (const unsigned char *)BlobStart,
-                                   NumStatHits, NumStatMisses));
+    case pch::STAT_CACHE: {
+      PCHStatCache *MyStatCache = 
+        new PCHStatCache((const unsigned char *)BlobStart + Record[0],
+                         (const unsigned char *)BlobStart,
+                         NumStatHits, NumStatMisses);
+      FileMgr.addStatCache(MyStatCache);
+      StatCache = MyStatCache;
       break;
-
+    }
+        
     case pch::EXT_VECTOR_DECLS:
       if (!ExtVectorDecls.empty()) {
         Error("duplicate EXT_VECTOR_DECLS record in PCH file");
@@ -1368,7 +1330,8 @@ PCHReader::ReadPCHBlock() {
       break;
 
     case pch::ORIGINAL_FILE_NAME:
-      OriginalFileName.assign(BlobStart, BlobLen);
+      ActualOriginalFileName.assign(BlobStart, BlobLen);
+      OriginalFileName = ActualOriginalFileName;
       MaybeAddSystemRootToFilename(OriginalFileName);
       break;
 
@@ -1407,10 +1370,7 @@ PCHReader::PCHReadResult PCHReader::ReadPCH(const std::string &FileName) {
   //
   // FIXME: This shouldn't be here, we should just take a raw_ostream.
   std::string ErrStr;
-  if (FileName == "-")
-    Buffer.reset(llvm::MemoryBuffer::getSTDIN());
-  else
-    Buffer.reset(llvm::MemoryBuffer::getFile(FileName.c_str(), &ErrStr));
+  Buffer.reset(llvm::MemoryBuffer::getFileOrSTDIN(FileName, &ErrStr));
   if (!Buffer) {
     Error(ErrStr.c_str());
     return IgnorePCH;
@@ -1466,7 +1426,8 @@ PCHReader::PCHReadResult PCHReader::ReadPCH(const std::string &FileName) {
         SourceMgr.ClearPreallocatedSLocEntries();
 
         // Remove the stat cache.
-        FileMgr.setStatCache(0);
+        if (StatCache)
+          FileMgr.removeStatCache((PCHStatCache*)StatCache);
 
         return IgnorePCH;
       }
@@ -1481,7 +1442,7 @@ PCHReader::PCHReadResult PCHReader::ReadPCH(const std::string &FileName) {
   }
 
   // Check the predefines buffer.
-  if (CheckPredefinesBuffer(PCHPredefines, PCHPredefinesLen,
+  if (CheckPredefinesBuffer(llvm::StringRef(PCHPredefines, PCHPredefinesLen),
                             PCHPredefinesBufferID))
     return IgnorePCH;
 
@@ -1509,7 +1470,7 @@ PCHReader::PCHReadResult PCHReader::ReadPCH(const std::string &FileName) {
       IdentifierInfo *II = Identifiers[I];
       // Look in the on-disk hash table for an entry for
       PCHIdentifierLookupTrait Info(*this, II);
-      std::pair<const char*, unsigned> Key(II->getName(), II->getLength());
+      std::pair<const char*, unsigned> Key(II->getNameStart(), II->getLength());
       PCHIdentifierLookupTable::iterator Pos = IdTable->find(Key, &Info);
       if (Pos == IdTable->end())
         continue;
@@ -1593,6 +1554,11 @@ void PCHReader::InitializeContext(ASTContext &Ctx) {
   if (unsigned ObjCClassRedef
       = SpecialTypes[pch::SPECIAL_TYPE_OBJC_CLASS_REDEFINITION])
     Context->ObjCClassRedefinitionType = GetType(ObjCClassRedef);
+  if (unsigned String = SpecialTypes[pch::SPECIAL_TYPE_BLOCK_DESCRIPTOR])
+    Context->setBlockDescriptorType(GetType(String));
+  if (unsigned String
+      = SpecialTypes[pch::SPECIAL_TYPE_BLOCK_EXTENDED_DESCRIPTOR])
+    Context->setBlockDescriptorExtendedType(GetType(String));
 }
 
 /// \brief Retrieve the name of the original source file name
@@ -1739,6 +1705,7 @@ bool PCHReader::ParseLanguageOptions(
     PARSE_LANGOPT(NoInline);
     PARSE_LANGOPT(AccessControl);
     PARSE_LANGOPT(CharIsSigned);
+    PARSE_LANGOPT(ShortWChar);
     LangOpts.setGCMode((LangOptions::GCMode)Record[Idx]);
     ++Idx;
     LangOpts.setVisibilityMode((LangOptions::VisibilityMode)Record[Idx]);
@@ -1770,15 +1737,15 @@ void PCHReader::ReadComments(std::vector<SourceRange> &Comments) {
 QualType PCHReader::ReadTypeRecord(uint64_t Offset) {
   // Keep track of where we are in the stream, then jump back there
   // after reading this type.
-  SavedStreamPosition SavedPosition(Stream);
+  SavedStreamPosition SavedPosition(DeclsCursor);
 
   // Note that we are loading a type record.
   LoadingTypeOrDecl Loading(*this);
 
-  Stream.JumpToBit(Offset);
+  DeclsCursor.JumpToBit(Offset);
   RecordData Record;
-  unsigned Code = Stream.ReadCode();
-  switch ((pch::TypeCode)Stream.ReadRecord(Code, Record)) {
+  unsigned Code = DeclsCursor.ReadCode();
+  switch ((pch::TypeCode)DeclsCursor.ReadRecord(Code, Record)) {
   case pch::TYPE_EXT_QUAL: {
     assert(Record.size() == 2 &&
            "Incorrect encoding of extended qualifier type");
@@ -1837,30 +1804,6 @@ QualType PCHReader::ReadTypeRecord(uint64_t Offset) {
     llvm::APInt Size = ReadAPInt(Record, Idx);
     return Context->getConstantArrayType(ElementType, Size,
                                          ASM, IndexTypeQuals);
-  }
-
-  case pch::TYPE_CONSTANT_ARRAY_WITH_EXPR: {
-    QualType ElementType = GetType(Record[0]);
-    ArrayType::ArraySizeModifier ASM = (ArrayType::ArraySizeModifier)Record[1];
-    unsigned IndexTypeQuals = Record[2];
-    SourceLocation LBLoc = SourceLocation::getFromRawEncoding(Record[3]);
-    SourceLocation RBLoc = SourceLocation::getFromRawEncoding(Record[4]);
-    unsigned Idx = 5;
-    llvm::APInt Size = ReadAPInt(Record, Idx);
-    return Context->getConstantArrayWithExprType(ElementType,
-                                                 Size, ReadTypeExpr(),
-                                                 ASM, IndexTypeQuals,
-                                                 SourceRange(LBLoc, RBLoc));
-  }
-
-  case pch::TYPE_CONSTANT_ARRAY_WITHOUT_EXPR: {
-    QualType ElementType = GetType(Record[0]);
-    ArrayType::ArraySizeModifier ASM = (ArrayType::ArraySizeModifier)Record[1];
-    unsigned IndexTypeQuals = Record[2];
-    unsigned Idx = 3;
-    llvm::APInt Size = ReadAPInt(Record, Idx);
-    return Context->getConstantArrayWithoutExprType(ElementType, Size,
-                                                    ASM, IndexTypeQuals);
   }
 
   case pch::TYPE_INCOMPLETE_ARRAY: {
@@ -1987,20 +1930,190 @@ QualType PCHReader::ReadTypeRecord(uint64_t Offset) {
     return Context->getObjCObjectPointerType(OIT, Protos.data(), NumProtos);
   }
 
-  case pch::TYPE_OBJC_PROTOCOL_LIST: {
+  case pch::TYPE_SUBST_TEMPLATE_TYPE_PARM: {
     unsigned Idx = 0;
-    QualType OIT = GetType(Record[Idx++]);
-    unsigned NumProtos = Record[Idx++];
-    llvm::SmallVector<ObjCProtocolDecl*, 4> Protos;
-    for (unsigned I = 0; I != NumProtos; ++I)
-      Protos.push_back(cast<ObjCProtocolDecl>(GetDecl(Record[Idx++])));
-    return Context->getObjCProtocolListType(OIT, Protos.data(), NumProtos);
+    QualType Parm = GetType(Record[Idx++]);
+    QualType Replacement = GetType(Record[Idx++]);
+    return
+      Context->getSubstTemplateTypeParmType(cast<TemplateTypeParmType>(Parm),
+                                            Replacement);
   }
   }
   // Suppress a GCC warning
   return QualType();
 }
 
+namespace {
+
+class TypeLocReader : public TypeLocVisitor<TypeLocReader> {
+  PCHReader &Reader;
+  const PCHReader::RecordData &Record;
+  unsigned &Idx;
+
+public:
+  TypeLocReader(PCHReader &Reader, const PCHReader::RecordData &Record,
+                unsigned &Idx)
+    : Reader(Reader), Record(Record), Idx(Idx) { }
+
+  // We want compile-time assurance that we've enumerated all of
+  // these, so unfortunately we have to declare them first, then
+  // define them out-of-line.
+#define ABSTRACT_TYPELOC(CLASS, PARENT)
+#define TYPELOC(CLASS, PARENT) \
+  void Visit##CLASS##TypeLoc(CLASS##TypeLoc TyLoc);
+#include "clang/AST/TypeLocNodes.def"
+
+  void VisitFunctionTypeLoc(FunctionTypeLoc);
+  void VisitArrayTypeLoc(ArrayTypeLoc);
+};
+
+}
+
+void TypeLocReader::VisitQualifiedTypeLoc(QualifiedTypeLoc TL) {
+  // nothing to do
+}
+void TypeLocReader::VisitBuiltinTypeLoc(BuiltinTypeLoc TL) {
+  TL.setNameLoc(SourceLocation::getFromRawEncoding(Record[Idx++]));
+}
+void TypeLocReader::VisitFixedWidthIntTypeLoc(FixedWidthIntTypeLoc TL) {
+  TL.setNameLoc(SourceLocation::getFromRawEncoding(Record[Idx++]));
+}
+void TypeLocReader::VisitComplexTypeLoc(ComplexTypeLoc TL) {
+  TL.setNameLoc(SourceLocation::getFromRawEncoding(Record[Idx++]));
+}
+void TypeLocReader::VisitPointerTypeLoc(PointerTypeLoc TL) {
+  TL.setStarLoc(SourceLocation::getFromRawEncoding(Record[Idx++]));
+}
+void TypeLocReader::VisitBlockPointerTypeLoc(BlockPointerTypeLoc TL) {
+  TL.setCaretLoc(SourceLocation::getFromRawEncoding(Record[Idx++]));
+}
+void TypeLocReader::VisitLValueReferenceTypeLoc(LValueReferenceTypeLoc TL) {
+  TL.setAmpLoc(SourceLocation::getFromRawEncoding(Record[Idx++]));
+}
+void TypeLocReader::VisitRValueReferenceTypeLoc(RValueReferenceTypeLoc TL) {
+  TL.setAmpAmpLoc(SourceLocation::getFromRawEncoding(Record[Idx++]));
+}
+void TypeLocReader::VisitMemberPointerTypeLoc(MemberPointerTypeLoc TL) {
+  TL.setStarLoc(SourceLocation::getFromRawEncoding(Record[Idx++]));
+}
+void TypeLocReader::VisitArrayTypeLoc(ArrayTypeLoc TL) {
+  TL.setLBracketLoc(SourceLocation::getFromRawEncoding(Record[Idx++]));
+  TL.setRBracketLoc(SourceLocation::getFromRawEncoding(Record[Idx++]));
+  if (Record[Idx++])
+    TL.setSizeExpr(Reader.ReadDeclExpr());
+  else
+    TL.setSizeExpr(0);
+}
+void TypeLocReader::VisitConstantArrayTypeLoc(ConstantArrayTypeLoc TL) {
+  VisitArrayTypeLoc(TL);
+}
+void TypeLocReader::VisitIncompleteArrayTypeLoc(IncompleteArrayTypeLoc TL) {
+  VisitArrayTypeLoc(TL);
+}
+void TypeLocReader::VisitVariableArrayTypeLoc(VariableArrayTypeLoc TL) {
+  VisitArrayTypeLoc(TL);
+}
+void TypeLocReader::VisitDependentSizedArrayTypeLoc(
+                                            DependentSizedArrayTypeLoc TL) {
+  VisitArrayTypeLoc(TL);
+}
+void TypeLocReader::VisitDependentSizedExtVectorTypeLoc(
+                                        DependentSizedExtVectorTypeLoc TL) {
+  TL.setNameLoc(SourceLocation::getFromRawEncoding(Record[Idx++]));
+}
+void TypeLocReader::VisitVectorTypeLoc(VectorTypeLoc TL) {
+  TL.setNameLoc(SourceLocation::getFromRawEncoding(Record[Idx++]));
+}
+void TypeLocReader::VisitExtVectorTypeLoc(ExtVectorTypeLoc TL) {
+  TL.setNameLoc(SourceLocation::getFromRawEncoding(Record[Idx++]));
+}
+void TypeLocReader::VisitFunctionTypeLoc(FunctionTypeLoc TL) {
+  TL.setLParenLoc(SourceLocation::getFromRawEncoding(Record[Idx++]));
+  TL.setRParenLoc(SourceLocation::getFromRawEncoding(Record[Idx++]));
+  for (unsigned i = 0, e = TL.getNumArgs(); i != e; ++i) {
+    TL.setArg(i, cast_or_null<ParmVarDecl>(Reader.GetDecl(Record[Idx++])));
+  }
+}
+void TypeLocReader::VisitFunctionProtoTypeLoc(FunctionProtoTypeLoc TL) {
+  VisitFunctionTypeLoc(TL);
+}
+void TypeLocReader::VisitFunctionNoProtoTypeLoc(FunctionNoProtoTypeLoc TL) {
+  VisitFunctionTypeLoc(TL);
+}
+void TypeLocReader::VisitTypedefTypeLoc(TypedefTypeLoc TL) {
+  TL.setNameLoc(SourceLocation::getFromRawEncoding(Record[Idx++]));
+}
+void TypeLocReader::VisitTypeOfExprTypeLoc(TypeOfExprTypeLoc TL) {
+  TL.setNameLoc(SourceLocation::getFromRawEncoding(Record[Idx++]));
+}
+void TypeLocReader::VisitTypeOfTypeLoc(TypeOfTypeLoc TL) {
+  TL.setNameLoc(SourceLocation::getFromRawEncoding(Record[Idx++]));
+}
+void TypeLocReader::VisitDecltypeTypeLoc(DecltypeTypeLoc TL) {
+  TL.setNameLoc(SourceLocation::getFromRawEncoding(Record[Idx++]));
+}
+void TypeLocReader::VisitRecordTypeLoc(RecordTypeLoc TL) {
+  TL.setNameLoc(SourceLocation::getFromRawEncoding(Record[Idx++]));
+}
+void TypeLocReader::VisitEnumTypeLoc(EnumTypeLoc TL) {
+  TL.setNameLoc(SourceLocation::getFromRawEncoding(Record[Idx++]));
+}
+void TypeLocReader::VisitElaboratedTypeLoc(ElaboratedTypeLoc TL) {
+  TL.setNameLoc(SourceLocation::getFromRawEncoding(Record[Idx++]));
+}
+void TypeLocReader::VisitTemplateTypeParmTypeLoc(TemplateTypeParmTypeLoc TL) {
+  TL.setNameLoc(SourceLocation::getFromRawEncoding(Record[Idx++]));
+}
+void TypeLocReader::VisitSubstTemplateTypeParmTypeLoc(
+                                            SubstTemplateTypeParmTypeLoc TL) {
+  TL.setNameLoc(SourceLocation::getFromRawEncoding(Record[Idx++]));
+}
+void TypeLocReader::VisitTemplateSpecializationTypeLoc(
+                                           TemplateSpecializationTypeLoc TL) {
+  TL.setTemplateNameLoc(SourceLocation::getFromRawEncoding(Record[Idx++]));
+  TL.setLAngleLoc(SourceLocation::getFromRawEncoding(Record[Idx++]));
+  TL.setRAngleLoc(SourceLocation::getFromRawEncoding(Record[Idx++]));
+  for (unsigned i = 0, e = TL.getNumArgs(); i != e; ++i)
+    TL.setArgLocInfo(i,
+        Reader.GetTemplateArgumentLocInfo(TL.getTypePtr()->getArg(i).getKind(),
+                                          Record, Idx));
+}
+void TypeLocReader::VisitQualifiedNameTypeLoc(QualifiedNameTypeLoc TL) {
+  TL.setNameLoc(SourceLocation::getFromRawEncoding(Record[Idx++]));
+}
+void TypeLocReader::VisitTypenameTypeLoc(TypenameTypeLoc TL) {
+  TL.setNameLoc(SourceLocation::getFromRawEncoding(Record[Idx++]));
+}
+void TypeLocReader::VisitObjCInterfaceTypeLoc(ObjCInterfaceTypeLoc TL) {
+  TL.setNameLoc(SourceLocation::getFromRawEncoding(Record[Idx++]));
+  TL.setLAngleLoc(SourceLocation::getFromRawEncoding(Record[Idx++]));
+  TL.setRAngleLoc(SourceLocation::getFromRawEncoding(Record[Idx++]));
+  for (unsigned i = 0, e = TL.getNumProtocols(); i != e; ++i)
+    TL.setProtocolLoc(i, SourceLocation::getFromRawEncoding(Record[Idx++]));
+}
+void TypeLocReader::VisitObjCObjectPointerTypeLoc(ObjCObjectPointerTypeLoc TL) {
+  TL.setStarLoc(SourceLocation::getFromRawEncoding(Record[Idx++]));
+  TL.setLAngleLoc(SourceLocation::getFromRawEncoding(Record[Idx++]));
+  TL.setRAngleLoc(SourceLocation::getFromRawEncoding(Record[Idx++]));
+  TL.setHasBaseTypeAsWritten(Record[Idx++]);
+  TL.setHasProtocolsAsWritten(Record[Idx++]);
+  if (TL.hasProtocolsAsWritten())
+    for (unsigned i = 0, e = TL.getNumProtocols(); i != e; ++i)
+      TL.setProtocolLoc(i, SourceLocation::getFromRawEncoding(Record[Idx++]));
+}
+
+DeclaratorInfo *PCHReader::GetDeclaratorInfo(const RecordData &Record,
+                                             unsigned &Idx) {
+  QualType InfoTy = GetType(Record[Idx++]);
+  if (InfoTy.isNull())
+    return 0;
+
+  DeclaratorInfo *DInfo = getContext()->CreateDeclaratorInfo(InfoTy);
+  TypeLocReader TLR(*this, Record, Idx);
+  for (TypeLoc TL = DInfo->getTypeLoc(); !TL.isNull(); TL = TL.getNextTypeLoc())
+    TLR.Visit(TL);
+  return DInfo;
+}
 
 QualType PCHReader::GetType(pch::TypeID ID) {
   unsigned FastQuals = ID & Qualifiers::FastMask;
@@ -2054,6 +2167,33 @@ QualType PCHReader::GetType(pch::TypeID ID) {
     TypesLoaded[Index] = ReadTypeRecord(TypeOffsets[Index]);
 
   return TypesLoaded[Index].withFastQualifiers(FastQuals);
+}
+
+TemplateArgumentLocInfo
+PCHReader::GetTemplateArgumentLocInfo(TemplateArgument::ArgKind Kind,
+                                      const RecordData &Record,
+                                      unsigned &Index) {
+  switch (Kind) {
+  case TemplateArgument::Expression:
+    return ReadDeclExpr();
+  case TemplateArgument::Type:
+    return GetDeclaratorInfo(Record, Index);
+  case TemplateArgument::Template: {
+    SourceLocation 
+      QualStart = SourceLocation::getFromRawEncoding(Record[Index++]),
+      QualEnd = SourceLocation::getFromRawEncoding(Record[Index++]),
+      TemplateNameLoc = SourceLocation::getFromRawEncoding(Record[Index++]);
+    return TemplateArgumentLocInfo(SourceRange(QualStart, QualEnd),
+                                   TemplateNameLoc);
+  }
+  case TemplateArgument::Null:
+  case TemplateArgument::Integral:
+  case TemplateArgument::Declaration:
+  case TemplateArgument::Pack:
+    return TemplateArgumentLocInfo();
+  }
+  llvm::llvm_unreachable("unexpected template argument loc");
+  return TemplateArgumentLocInfo();
 }
 
 Decl *PCHReader::GetDecl(pch::DeclID ID) {
@@ -2374,7 +2514,10 @@ IdentifierInfo *PCHReader::DecodeIdentifierInfo(unsigned ID) {
     // All of the strings in the PCH file are preceded by a 16-bit
     // length. Extract that 16-bit length to avoid having to execute
     // strlen().
-    const char *StrLenPtr = Str - 2;
+    // NOTE: 'StrLenPtr' is an 'unsigned char*' so that we load bytes as
+    //  unsigned integers.  This is important to avoid integer overflow when
+    //  we cast them to 'unsigned'.
+    const unsigned char *StrLenPtr = (const unsigned char*) Str - 2;
     unsigned StrLen = (((unsigned) StrLenPtr[0])
                        | (((unsigned) StrLenPtr[1]) << 8)) - 1;
     IdentifiersLoaded[ID - 1]

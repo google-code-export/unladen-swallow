@@ -40,6 +40,9 @@ PyAPI_FUNC(void) PyLlvm_WaitForJit(void);
 PyAPI_FUNC(Py_CompileResult) PyLlvm_JitInBackground(PyCodeObject *code,
                                                     int new_opt_level,
                                                     Py_ShouldBlock block);
+PyAPI_FUNC(Py_CompileResult) PyLlvm_CodeToOptimizedIr(PyCodeObject *code,
+                                                      int new_opt_level);
+
 #ifdef __cplusplus
 }
 
@@ -97,6 +100,11 @@ public:
     // shutdown get an exception.
     Py_CompileResult JitInBackground(PyCodeObject *code, int new_opt_level,
                                      Py_ShouldBlock block);
+
+    // Compile the code object in the background thread for the purposes of
+    // reading the optimized LLVM IR.  This avoids clearing out the IR after
+    // the compilation.
+    Py_CompileResult CodeToOptimizedIr(PyCodeObject *code, int new_opt_level);
 
     // Deallocate this function object in the background thread.  This takes
     // ownership of the object.
@@ -179,6 +187,9 @@ private:
     // jobs.  This method takes ownership of the job.  The caller must hold the
     // GIL.
     void RunJobAndApply(PyJitJob *job);
+
+    // Helper method that handles running CompileJobs and CompileToIrJobs.
+    Py_CompileResult RunCompileJob(PyJitJob *job, Py_ShouldBlock block);
 };
 
 #endif /* __cplusplus */

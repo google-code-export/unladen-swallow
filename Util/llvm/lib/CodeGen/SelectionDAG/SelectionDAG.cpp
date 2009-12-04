@@ -30,6 +30,7 @@
 #include "llvm/Target/TargetLowering.h"
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/Target/TargetInstrInfo.h"
+#include "llvm/Target/TargetIntrinsicInfo.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -459,6 +460,11 @@ static void AddNodeIDCustom(FoldingSetNodeID &ID, const SDNode *N) {
       ID.AddInteger(SVN->getMaskElt(i));
     break;
   }
+  case ISD::TargetBlockAddress:
+  case ISD::BlockAddress: {
+    ID.AddPointer(cast<BlockAddressSDNode>(N));
+    break;
+  }
   } // end switch (N->getOpcode())
 }
 
@@ -830,6 +836,18 @@ void SelectionDAG::clear() {
   EntryNode.UseList = 0;
   AllNodes.push_back(&EntryNode);
   Root = getEntryNode();
+}
+
+SDValue SelectionDAG::getSExtOrTrunc(SDValue Op, DebugLoc DL, EVT VT) {
+  return VT.bitsGT(Op.getValueType()) ?
+    getNode(ISD::SIGN_EXTEND, DL, VT, Op) :
+    getNode(ISD::TRUNCATE, DL, VT, Op);
+}
+
+SDValue SelectionDAG::getZExtOrTrunc(SDValue Op, DebugLoc DL, EVT VT) {
+  return VT.bitsGT(Op.getValueType()) ?
+    getNode(ISD::ZERO_EXTEND, DL, VT, Op) :
+    getNode(ISD::TRUNCATE, DL, VT, Op);
 }
 
 SDValue SelectionDAG::getZeroExtendInReg(SDValue Op, DebugLoc DL, EVT VT) {
@@ -1252,11 +1270,12 @@ SDValue SelectionDAG::getConvertRndSat(EVT VT, DebugLoc dl,
     return Val;
 
   FoldingSetNodeID ID;
+  SDValue Ops[] = { Val, DTy, STy, Rnd, Sat };
+  AddNodeIDNode(ID, ISD::CONVERT_RNDSAT, getVTList(VT), &Ops[0], 5);
   void* IP = 0;
   if (SDNode *E = CSEMap.FindNodeOrInsertPos(ID, IP))
     return SDValue(E, 0);
   CvtRndSatSDNode *N = NodeAllocator.Allocate<CvtRndSatSDNode>();
-  SDValue Ops[] = { Val, DTy, STy, Rnd, Sat };
   new (N) CvtRndSatSDNode(VT, dl, Ops, 5, Code);
   CSEMap.InsertNode(N, IP);
   AllNodes.push_back(N);
@@ -1304,6 +1323,23 @@ SDValue SelectionDAG::getLabel(unsigned Opcode, DebugLoc dl,
   return SDValue(N, 0);
 }
 
+SDValue SelectionDAG::getBlockAddress(BlockAddress *BA, DebugLoc DL,
+                                      bool isTarget) {
+  unsigned Opc = isTarget ? ISD::TargetBlockAddress : ISD::BlockAddress;
+
+  FoldingSetNodeID ID;
+  AddNodeIDNode(ID, Opc, getVTList(TLI.getPointerTy()), 0, 0);
+  ID.AddPointer(BA);
+  void *IP = 0;
+  if (SDNode *E = CSEMap.FindNodeOrInsertPos(ID, IP))
+    return SDValue(E, 0);
+  SDNode *N = NodeAllocator.Allocate<BlockAddressSDNode>();
+  new (N) BlockAddressSDNode(Opc, DL, TLI.getPointerTy(), BA);
+  CSEMap.InsertNode(N, IP);
+  AllNodes.push_back(N);
+  return SDValue(N, 0);
+}
+
 SDValue SelectionDAG::getSrcValue(const Value *V) {
   assert((!V || isa<PointerType>(V->getType())) &&
          "SrcValue is not a pointer?");
@@ -1343,7 +1379,7 @@ SDValue SelectionDAG::CreateStackTemporary(EVT VT, unsigned minAlign) {
   unsigned StackAlign =
   std::max((unsigned)TLI.getTargetData()->getPrefTypeAlignment(Ty), minAlign);
 
-  int FrameIdx = FrameInfo->CreateStackObject(ByteSize, StackAlign);
+  int FrameIdx = FrameInfo->CreateStackObject(ByteSize, StackAlign, false);
   return getFrameIndex(FrameIdx, TLI.getPointerTy());
 }
 
@@ -1359,7 +1395,7 @@ SDValue SelectionDAG::CreateStackTemporary(EVT VT1, EVT VT2) {
                             TD->getPrefTypeAlignment(Ty2));
 
   MachineFrameInfo *FrameInfo = getMachineFunction().getFrameInfo();
-  int FrameIdx = FrameInfo->CreateStackObject(Bytes, Align);
+  int FrameIdx = FrameInfo->CreateStackObject(Bytes, Align, false);
   return getFrameIndex(FrameIdx, TLI.getPointerTy());
 }
 
@@ -4588,7 +4624,7 @@ SDNode *SelectionDAG::MorphNodeTo(SDNode *N, unsigned Opc,
       N->InitOperands(new SDUse[NumOps], Ops, NumOps);
       N->OperandsNeedDelete = true;
     } else
-      MN->InitOperands(MN->OperandList, Ops, NumOps);
+      N->InitOperands(N->OperandList, Ops, NumOps);
   }
 
   // Delete any nodes that are still dead after adding the uses for the
@@ -4612,115 +4648,126 @@ SDNode *SelectionDAG::MorphNodeTo(SDNode *N, unsigned Opc,
 /// Note that getMachineNode returns the resultant node.  If there is already a
 /// node of the specified opcode and operands, it returns that node instead of
 /// the current one.
-SDNode *SelectionDAG::getMachineNode(unsigned Opcode, DebugLoc dl, EVT VT) {
+MachineSDNode *
+SelectionDAG::getMachineNode(unsigned Opcode, DebugLoc dl, EVT VT) {
   SDVTList VTs = getVTList(VT);
   return getMachineNode(Opcode, dl, VTs, 0, 0);
 }
 
-SDNode *SelectionDAG::getMachineNode(unsigned Opcode, DebugLoc dl, EVT VT,
-                                     SDValue Op1) {
+MachineSDNode *
+SelectionDAG::getMachineNode(unsigned Opcode, DebugLoc dl, EVT VT, SDValue Op1) {
   SDVTList VTs = getVTList(VT);
   SDValue Ops[] = { Op1 };
   return getMachineNode(Opcode, dl, VTs, Ops, array_lengthof(Ops));
 }
 
-SDNode *SelectionDAG::getMachineNode(unsigned Opcode, DebugLoc dl, EVT VT,
-                                     SDValue Op1, SDValue Op2) {
+MachineSDNode *
+SelectionDAG::getMachineNode(unsigned Opcode, DebugLoc dl, EVT VT,
+                             SDValue Op1, SDValue Op2) {
   SDVTList VTs = getVTList(VT);
   SDValue Ops[] = { Op1, Op2 };
   return getMachineNode(Opcode, dl, VTs, Ops, array_lengthof(Ops));
 }
 
-SDNode *SelectionDAG::getMachineNode(unsigned Opcode, DebugLoc dl, EVT VT,
-                                     SDValue Op1, SDValue Op2,
-                                     SDValue Op3) {
+MachineSDNode *
+SelectionDAG::getMachineNode(unsigned Opcode, DebugLoc dl, EVT VT,
+                             SDValue Op1, SDValue Op2, SDValue Op3) {
   SDVTList VTs = getVTList(VT);
   SDValue Ops[] = { Op1, Op2, Op3 };
   return getMachineNode(Opcode, dl, VTs, Ops, array_lengthof(Ops));
 }
 
-SDNode *SelectionDAG::getMachineNode(unsigned Opcode, DebugLoc dl, EVT VT,
-                                     const SDValue *Ops, unsigned NumOps) {
+MachineSDNode *
+SelectionDAG::getMachineNode(unsigned Opcode, DebugLoc dl, EVT VT,
+                             const SDValue *Ops, unsigned NumOps) {
   SDVTList VTs = getVTList(VT);
   return getMachineNode(Opcode, dl, VTs, Ops, NumOps);
 }
 
-SDNode *SelectionDAG::getMachineNode(unsigned Opcode, DebugLoc dl,
-                                     EVT VT1, EVT VT2) {
+MachineSDNode *
+SelectionDAG::getMachineNode(unsigned Opcode, DebugLoc dl, EVT VT1, EVT VT2) {
   SDVTList VTs = getVTList(VT1, VT2);
   return getMachineNode(Opcode, dl, VTs, 0, 0);
 }
 
-SDNode *SelectionDAG::getMachineNode(unsigned Opcode, DebugLoc dl, EVT VT1,
-                                     EVT VT2, SDValue Op1) {
+MachineSDNode *
+SelectionDAG::getMachineNode(unsigned Opcode, DebugLoc dl,
+                             EVT VT1, EVT VT2, SDValue Op1) {
   SDVTList VTs = getVTList(VT1, VT2);
   SDValue Ops[] = { Op1 };
   return getMachineNode(Opcode, dl, VTs, Ops, array_lengthof(Ops));
 }
 
-SDNode *SelectionDAG::getMachineNode(unsigned Opcode, DebugLoc dl, EVT VT1,
-                                     EVT VT2, SDValue Op1,
-                                     SDValue Op2) {
+MachineSDNode *
+SelectionDAG::getMachineNode(unsigned Opcode, DebugLoc dl,
+                             EVT VT1, EVT VT2, SDValue Op1, SDValue Op2) {
   SDVTList VTs = getVTList(VT1, VT2);
   SDValue Ops[] = { Op1, Op2 };
   return getMachineNode(Opcode, dl, VTs, Ops, array_lengthof(Ops));
 }
 
-SDNode *SelectionDAG::getMachineNode(unsigned Opcode, DebugLoc dl, EVT VT1,
-                                     EVT VT2, SDValue Op1,
-                                     SDValue Op2, SDValue Op3) {
+MachineSDNode *
+SelectionDAG::getMachineNode(unsigned Opcode, DebugLoc dl,
+                             EVT VT1, EVT VT2, SDValue Op1,
+                             SDValue Op2, SDValue Op3) {
   SDVTList VTs = getVTList(VT1, VT2);
   SDValue Ops[] = { Op1, Op2, Op3 };
   return getMachineNode(Opcode, dl, VTs, Ops, array_lengthof(Ops));
 }
 
-SDNode *SelectionDAG::getMachineNode(unsigned Opcode, DebugLoc dl,
-                                     EVT VT1, EVT VT2,
-                                     const SDValue *Ops, unsigned NumOps) {
+MachineSDNode *
+SelectionDAG::getMachineNode(unsigned Opcode, DebugLoc dl,
+                             EVT VT1, EVT VT2,
+                             const SDValue *Ops, unsigned NumOps) {
   SDVTList VTs = getVTList(VT1, VT2);
   return getMachineNode(Opcode, dl, VTs, Ops, NumOps);
 }
 
-SDNode *SelectionDAG::getMachineNode(unsigned Opcode, DebugLoc dl,
-                                     EVT VT1, EVT VT2, EVT VT3,
-                                     SDValue Op1, SDValue Op2) {
+MachineSDNode *
+SelectionDAG::getMachineNode(unsigned Opcode, DebugLoc dl,
+                             EVT VT1, EVT VT2, EVT VT3,
+                             SDValue Op1, SDValue Op2) {
   SDVTList VTs = getVTList(VT1, VT2, VT3);
   SDValue Ops[] = { Op1, Op2 };
   return getMachineNode(Opcode, dl, VTs, Ops, array_lengthof(Ops));
 }
 
-SDNode *SelectionDAG::getMachineNode(unsigned Opcode, DebugLoc dl,
-                                     EVT VT1, EVT VT2, EVT VT3,
-                                     SDValue Op1, SDValue Op2,
-                                     SDValue Op3) {
+MachineSDNode *
+SelectionDAG::getMachineNode(unsigned Opcode, DebugLoc dl,
+                             EVT VT1, EVT VT2, EVT VT3,
+                             SDValue Op1, SDValue Op2, SDValue Op3) {
   SDVTList VTs = getVTList(VT1, VT2, VT3);
   SDValue Ops[] = { Op1, Op2, Op3 };
   return getMachineNode(Opcode, dl, VTs, Ops, array_lengthof(Ops));
 }
 
-SDNode *SelectionDAG::getMachineNode(unsigned Opcode, DebugLoc dl,
-                                     EVT VT1, EVT VT2, EVT VT3,
-                                     const SDValue *Ops, unsigned NumOps) {
+MachineSDNode *
+SelectionDAG::getMachineNode(unsigned Opcode, DebugLoc dl,
+                             EVT VT1, EVT VT2, EVT VT3,
+                             const SDValue *Ops, unsigned NumOps) {
   SDVTList VTs = getVTList(VT1, VT2, VT3);
   return getMachineNode(Opcode, dl, VTs, Ops, NumOps);
 }
 
-SDNode *SelectionDAG::getMachineNode(unsigned Opcode, DebugLoc dl, EVT VT1,
-                                     EVT VT2, EVT VT3, EVT VT4,
-                                     const SDValue *Ops, unsigned NumOps) {
+MachineSDNode *
+SelectionDAG::getMachineNode(unsigned Opcode, DebugLoc dl, EVT VT1,
+                             EVT VT2, EVT VT3, EVT VT4,
+                             const SDValue *Ops, unsigned NumOps) {
   SDVTList VTs = getVTList(VT1, VT2, VT3, VT4);
   return getMachineNode(Opcode, dl, VTs, Ops, NumOps);
 }
 
-SDNode *SelectionDAG::getMachineNode(unsigned Opcode, DebugLoc dl,
-                                     const std::vector<EVT> &ResultTys,
-                                     const SDValue *Ops, unsigned NumOps) {
+MachineSDNode *
+SelectionDAG::getMachineNode(unsigned Opcode, DebugLoc dl,
+                             const std::vector<EVT> &ResultTys,
+                             const SDValue *Ops, unsigned NumOps) {
   SDVTList VTs = getVTList(&ResultTys[0], ResultTys.size());
   return getMachineNode(Opcode, dl, VTs, Ops, NumOps);
 }
 
-SDNode *SelectionDAG::getMachineNode(unsigned Opcode, DebugLoc DL, SDVTList VTs,
-                                     const SDValue *Ops, unsigned NumOps) {
+MachineSDNode *
+SelectionDAG::getMachineNode(unsigned Opcode, DebugLoc DL, SDVTList VTs,
+                             const SDValue *Ops, unsigned NumOps) {
   bool DoCSE = VTs.VTs[VTs.NumVTs-1] != MVT::Flag;
   MachineSDNode *N;
   void *IP;
@@ -4730,7 +4777,7 @@ SDNode *SelectionDAG::getMachineNode(unsigned Opcode, DebugLoc DL, SDVTList VTs,
     AddNodeIDNode(ID, ~Opcode, VTs, Ops, NumOps);
     IP = 0;
     if (SDNode *E = CSEMap.FindNodeOrInsertPos(ID, IP))
-      return E;
+      return cast<MachineSDNode>(E);
   }
 
   // Allocate a new MachineSDNode.
@@ -4767,6 +4814,17 @@ SelectionDAG::getTargetExtractSubreg(int SRIdx, DebugLoc DL, EVT VT,
   SDNode *Subreg = getMachineNode(TargetInstrInfo::EXTRACT_SUBREG, DL,
                                   VT, Operand, SRIdxVal);
   return SDValue(Subreg, 0);
+}
+
+/// getTargetInsertSubreg - A convenience function for creating
+/// TargetInstrInfo::INSERT_SUBREG nodes.
+SDValue
+SelectionDAG::getTargetInsertSubreg(int SRIdx, DebugLoc DL, EVT VT,
+                                    SDValue Operand, SDValue Subreg) {
+  SDValue SRIdxVal = getTargetConstant(SRIdx, MVT::i32);
+  SDNode *Result = getMachineNode(TargetInstrInfo::INSERT_SUBREG, DL,
+                                  VT, Operand, Subreg, SRIdxVal);
+  return SDValue(Result, 0);
 }
 
 /// getNodeIfExists - Get the specified node if it's already available, or
@@ -5272,31 +5330,26 @@ bool SDValue::reachesChainWithoutSideEffects(SDValue Dest,
   return false;
 }
 
-
-static void findPredecessor(SDNode *N, const SDNode *P, bool &found,
-                            SmallPtrSet<SDNode *, 32> &Visited) {
-  if (found || !Visited.insert(N))
-    return;
-
-  for (unsigned i = 0, e = N->getNumOperands(); !found && i != e; ++i) {
-    SDNode *Op = N->getOperand(i).getNode();
-    if (Op == P) {
-      found = true;
-      return;
-    }
-    findPredecessor(Op, P, found, Visited);
-  }
-}
-
 /// isPredecessorOf - Return true if this node is a predecessor of N. This node
-/// is either an operand of N or it can be reached by recursively traversing
-/// up the operands.
+/// is either an operand of N or it can be reached by traversing up the operands.
 /// NOTE: this is an expensive method. Use it carefully.
 bool SDNode::isPredecessorOf(SDNode *N) const {
   SmallPtrSet<SDNode *, 32> Visited;
-  bool found = false;
-  findPredecessor(N, this, found, Visited);
-  return found;
+  SmallVector<SDNode *, 16> Worklist;
+  Worklist.push_back(N);
+
+  do {
+    N = Worklist.pop_back_val();
+    for (unsigned i = 0, e = N->getNumOperands(); i != e; ++i) {
+      SDNode *Op = N->getOperand(i).getNode();
+      if (Op == this)
+        return true;
+      if (Visited.insert(Op))
+        Worklist.push_back(Op);
+    }
+  } while (!Worklist.empty());
+
+  return false;
 }
 
 uint64_t SDNode::getConstantOperandVal(unsigned Num) const {
@@ -5370,14 +5423,17 @@ std::string SDNode::getOperationName(const SelectionDAG *G) const {
   case ISD::EH_RETURN: return "EH_RETURN";
   case ISD::ConstantPool:  return "ConstantPool";
   case ISD::ExternalSymbol: return "ExternalSymbol";
-  case ISD::INTRINSIC_WO_CHAIN: {
-    unsigned IID = cast<ConstantSDNode>(getOperand(0))->getZExtValue();
-    return Intrinsic::getName((Intrinsic::ID)IID);
-  }
+  case ISD::BlockAddress:  return "BlockAddress";
+  case ISD::INTRINSIC_WO_CHAIN:
   case ISD::INTRINSIC_VOID:
   case ISD::INTRINSIC_W_CHAIN: {
-    unsigned IID = cast<ConstantSDNode>(getOperand(1))->getZExtValue();
-    return Intrinsic::getName((Intrinsic::ID)IID);
+    unsigned OpNo = getOpcode() == ISD::INTRINSIC_WO_CHAIN ? 0 : 1;
+    unsigned IID = cast<ConstantSDNode>(getOperand(OpNo))->getZExtValue();
+    if (IID < Intrinsic::num_intrinsics)
+      return Intrinsic::getName((Intrinsic::ID)IID);
+    else if (const TargetIntrinsicInfo *TII = G->getTarget().getIntrinsicInfo())
+      return TII->getName(IID);
+    llvm_unreachable("Invalid intrinsic ID");
   }
 
   case ISD::BUILD_VECTOR:   return "BUILD_VECTOR";
@@ -5389,6 +5445,7 @@ std::string SDNode::getOperationName(const SelectionDAG *G) const {
   case ISD::TargetJumpTable:  return "TargetJumpTable";
   case ISD::TargetConstantPool:  return "TargetConstantPool";
   case ISD::TargetExternalSymbol: return "TargetExternalSymbol";
+  case ISD::TargetBlockAddress: return "TargetBlockAddress";
 
   case ISD::CopyToReg:     return "CopyToReg";
   case ISD::CopyFromReg:   return "CopyFromReg";
@@ -5698,9 +5755,9 @@ void SDNode::print_details(raw_ostream &OS, const SelectionDAG *G) const {
   } else if (const RegisterSDNode *R = dyn_cast<RegisterSDNode>(this)) {
     if (G && R->getReg() &&
         TargetRegisterInfo::isPhysicalRegister(R->getReg())) {
-      OS << " " << G->getTarget().getRegisterInfo()->getName(R->getReg());
+      OS << " %" << G->getTarget().getRegisterInfo()->getName(R->getReg());
     } else {
-      OS << " #" << R->getReg();
+      OS << " %reg" << R->getReg();
     }
   } else if (const ExternalSymbolSDNode *ES =
              dyn_cast<ExternalSymbolSDNode>(this)) {
@@ -5716,7 +5773,7 @@ void SDNode::print_details(raw_ostream &OS, const SelectionDAG *G) const {
     OS << ":" << N->getVT().getEVTString();
   }
   else if (const LoadSDNode *LD = dyn_cast<LoadSDNode>(this)) {
-    OS << " <" << *LD->getMemOperand();
+    OS << "<" << *LD->getMemOperand();
 
     bool doExt = true;
     switch (LD->getExtensionType()) {
@@ -5734,7 +5791,7 @@ void SDNode::print_details(raw_ostream &OS, const SelectionDAG *G) const {
 
     OS << ">";
   } else if (const StoreSDNode *ST = dyn_cast<StoreSDNode>(this)) {
-    OS << " <" << *ST->getMemOperand();
+    OS << "<" << *ST->getMemOperand();
 
     if (ST->isTruncatingStore())
       OS << ", trunc to " << ST->getMemoryVT().getEVTString();
@@ -5745,15 +5802,21 @@ void SDNode::print_details(raw_ostream &OS, const SelectionDAG *G) const {
     
     OS << ">";
   } else if (const MemSDNode* M = dyn_cast<MemSDNode>(this)) {
-    OS << " <" << *M->getMemOperand() << ">";
+    OS << "<" << *M->getMemOperand() << ">";
+  } else if (const BlockAddressSDNode *BA =
+               dyn_cast<BlockAddressSDNode>(this)) {
+    OS << "<";
+    WriteAsOperand(OS, BA->getBlockAddress()->getFunction(), false);
+    OS << ", ";
+    WriteAsOperand(OS, BA->getBlockAddress()->getBasicBlock(), false);
+    OS << ">";
   }
 }
 
 void SDNode::print(raw_ostream &OS, const SelectionDAG *G) const {
   print_types(OS, G);
-  OS << " ";
   for (unsigned i = 0, e = getNumOperands(); i != e; ++i) {
-    if (i) OS << ", ";
+    if (i) OS << ", "; else OS << " ";
     OS << (void*)getOperand(i).getNode();
     if (unsigned RN = getOperand(i).getResNo())
       OS << ":" << RN;
@@ -5853,7 +5916,8 @@ bool BuildVectorSDNode::isConstantSplat(APInt &SplatValue,
                                         APInt &SplatUndef,
                                         unsigned &SplatBitSize,
                                         bool &HasAnyUndefs,
-                                        unsigned MinSplatBits) {
+                                        unsigned MinSplatBits,
+                                        bool isBigEndian) {
   EVT VT = getValueType(0);
   assert(VT.isVector() && "Expected a vector type");
   unsigned sz = VT.getSizeInBits();
@@ -5870,12 +5934,14 @@ bool BuildVectorSDNode::isConstantSplat(APInt &SplatValue,
   unsigned int nOps = getNumOperands();
   assert(nOps > 0 && "isConstantSplat has 0-size build vector");
   unsigned EltBitSize = VT.getVectorElementType().getSizeInBits();
-  for (unsigned i = 0; i < nOps; ++i) {
+
+  for (unsigned j = 0; j < nOps; ++j) {
+    unsigned i = isBigEndian ? nOps-1-j : j;
     SDValue OpVal = getOperand(i);
-    unsigned BitPos = i * EltBitSize;
+    unsigned BitPos = j * EltBitSize;
 
     if (OpVal.getOpcode() == ISD::UNDEF)
-      SplatUndef |= APInt::getBitsSet(sz, BitPos, BitPos +EltBitSize);
+      SplatUndef |= APInt::getBitsSet(sz, BitPos, BitPos + EltBitSize);
     else if (ConstantSDNode *CN = dyn_cast<ConstantSDNode>(OpVal))
       SplatValue |= (APInt(CN->getAPIntValue()).zextOrTrunc(EltBitSize).
                      zextOrTrunc(sz) << BitPos);

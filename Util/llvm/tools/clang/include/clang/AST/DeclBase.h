@@ -79,9 +79,11 @@ public:
   /// namespaces, labels, tags, members and ordinary
   /// identifiers. These are meant as bitmasks, so that searches in
   /// C++ can look into the "tag" namespace during ordinary lookup. We
-  /// use additional namespaces for Objective-C entities.  We also
-  /// put C++ friend declarations (of previously-undeclared entities) in
-  /// shadow namespaces.
+  /// use additional namespaces for Objective-C entities.  We also put
+  /// C++ friend declarations (of previously-undeclared entities) in
+  /// shadow namespaces, and 'using' declarations (as opposed to their
+  /// implicit shadow declarations) can be found in their own
+  /// namespace.
   enum IdentifierNamespace {
     IDNS_Label = 0x1,
     IDNS_Tag = 0x2,
@@ -91,7 +93,8 @@ public:
     IDNS_ObjCImplementation = 0x20,
     IDNS_ObjCCategoryImpl = 0x40,
     IDNS_OrdinaryFriend = 0x80,
-    IDNS_TagFriend = 0x100
+    IDNS_TagFriend = 0x100,
+    IDNS_Using = 0x200
   };
 
   /// ObjCDeclQualifier - Qualifier used on types in method declarations
@@ -166,6 +169,15 @@ private:
   bool Used : 1;
 
 protected:
+  /// Access - Used by C++ decls for the access specifier.
+  // NOTE: VC++ treats enums as signed, avoid using the AccessSpecifier enum
+  unsigned Access : 2;
+  friend class CXXClassMemberWrapper;
+  
+  // PCHLevel - the "level" of precompiled header/AST file from which this
+  // declaration was built.
+  unsigned PCHLevel : 2;
+  
   /// IdentifierNamespace - This specifies what IDNS_* namespace this lives in.
   unsigned IdentifierNamespace : 16;
 
@@ -177,16 +189,13 @@ private:
 #endif
 
 protected:
-  /// Access - Used by C++ decls for the access specifier.
-  // NOTE: VC++ treats enums as signed, avoid using the AccessSpecifier enum
-  unsigned Access : 2;
-  friend class CXXClassMemberWrapper;
 
   Decl(Kind DK, DeclContext *DC, SourceLocation L)
     : NextDeclInContext(0), DeclCtx(DC),
       Loc(L), DeclKind(DK), InvalidDecl(0),
       HasAttrs(false), Implicit(false), Used(false),
-      IdentifierNamespace(getIdentifierNamespaceForKind(DK)), Access(AS_none) {
+      Access(AS_none), PCHLevel(0),
+      IdentifierNamespace(getIdentifierNamespaceForKind(DK)) {
     if (Decl::CollectingStats()) addDeclKind(DK);
   }
 
@@ -274,6 +283,26 @@ public:
   bool isUsed() const { return Used; }
   void setUsed(bool U = true) { Used = U; }
 
+  /// \brief Retrieve the level of precompiled header from which this
+  /// declaration was generated.
+  ///
+  /// The PCH level of a declaration describes where the declaration originated
+  /// from. A PCH level of 0 indicates that the declaration was not from a 
+  /// precompiled header. A PCH level of 1 indicates that the declaration was
+  /// from a top-level precompiled header; 2 indicates that the declaration 
+  /// comes from a precompiled header on which the top-level precompiled header
+  /// depends, and so on. 
+  unsigned getPCHLevel() const { return PCHLevel; }
+
+  /// \brief The maximum PCH level that any declaration may have.
+  static const unsigned MaxPCHLevel = 3;
+  
+  /// \brief Set the PCH level of this declaration.
+  void setPCHLevel(unsigned Level) { 
+    assert(Level < MaxPCHLevel && "PCH level exceeds the maximum");
+    PCHLevel = Level;
+  }
+  
   unsigned getIdentifierNamespace() const {
     return IdentifierNamespace;
   }

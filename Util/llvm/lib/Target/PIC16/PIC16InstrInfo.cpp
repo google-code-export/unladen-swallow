@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "PIC16.h"
+#include "PIC16ABINames.h"
 #include "PIC16InstrInfo.h"
 #include "PIC16TargetMachine.h"
 #include "PIC16GenInstrInfo.inc"
@@ -212,4 +213,26 @@ InsertBranch(MachineBasicBlock &MBB, MachineBasicBlock *TBB,
   // For the time being no instruction is being generated therefore
   // returning NULL.
   return 0;
+}
+
+bool PIC16InstrInfo::AnalyzeBranch(MachineBasicBlock &MBB,
+                                   MachineBasicBlock *&TBB,
+                                   MachineBasicBlock *&FBB,
+                                   SmallVectorImpl<MachineOperand> &Cond,
+                                   bool AllowModify) const {
+  MachineBasicBlock::iterator I = MBB.end();
+  if (I == MBB.begin())
+    return true;
+
+  // Get the terminator instruction.
+  --I;
+  // Handle unconditional branches. If the unconditional branch's target is
+  // successor basic block then remove the unconditional branch. 
+  if (I->getOpcode() == PIC16::br_uncond  && AllowModify) {
+    if (MBB.isLayoutSuccessor(I->getOperand(0).getMBB())) {
+      TBB = 0;
+      I->eraseFromParent();
+    }
+  }
+  return true;
 }

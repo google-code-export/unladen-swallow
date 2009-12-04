@@ -13,6 +13,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Sema.h"
+#include "Lookup.h"
 #include "clang/AST/Expr.h"
 using namespace clang;
 
@@ -179,13 +180,10 @@ void Sema::ActOnPragmaUnused(const Token *Identifiers, unsigned NumIdentifiers,
   for (unsigned i = 0; i < NumIdentifiers; ++i) {
     const Token &Tok = Identifiers[i];
     IdentifierInfo *Name = Tok.getIdentifierInfo();
-    const LookupResult &Lookup = LookupParsedName(curScope, NULL, Name,
-                                                  LookupOrdinaryName,
-                                                  false, true,
-                                                  Tok.getLocation());
-    // FIXME: Handle Lookup.isAmbiguous?
+    LookupResult Lookup(*this, Name, Tok.getLocation(), LookupOrdinaryName);
+    LookupParsedName(Lookup, curScope, NULL, true);
 
-    NamedDecl *ND = Lookup.getAsDecl();
+    NamedDecl *ND = Lookup.getAsSingleDecl(Context);
 
     if (!ND) {
       Diag(PragmaLoc, diag::warn_pragma_unused_undeclared_var)

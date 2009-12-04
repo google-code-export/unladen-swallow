@@ -10,6 +10,7 @@ add_clang_library(clangCodeGen
   CGCall.cpp
   CGDebugInfo.cpp
   CGDecl.cpp
+  CGException.cpp
   CGExpr.cpp
   CGExprAgg.cpp
   CGExprComplex.cpp
@@ -19,7 +20,9 @@ add_clang_library(clangCodeGen
   CGObjCGNU.cpp
   CGObjCMac.cpp
   CGRecordLayoutBuilder.cpp
+  CGRtti.cpp
   CGStmt.cpp
+  CGVtable.cpp
   CodeGenFunction.cpp
   CodeGenModule.cpp
   CodeGenTypes.cpp

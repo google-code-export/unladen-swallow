@@ -357,9 +357,9 @@ def STWFI : PseudoInstXCore<(outs), (ins GRRegs:$src, MEMii:$addr),
                             "${:comment} STWFI $src, $addr",
                             [(store GRRegs:$src, ADDRspii:$addr)]>;
 
-// SELECT_CC_* - Used to implement the SELECT_CC DAG operation.  Expanded by the
-// scheduler into a branch sequence.
-let usesCustomDAGSchedInserter = 1 in {
+// SELECT_CC_* - Used to implement the SELECT_CC DAG operation.  Expanded after
+// instruction selection into a branch sequence.
+let usesCustomInserter = 1 in {
   def SELECT_CC : PseudoInstXCore<(outs GRRegs:$dst),
                               (ins GRRegs:$cond, GRRegs:$T, GRRegs:$F),
                               "${:comment} SELECT_CC PSEUDO!",
@@ -617,7 +617,7 @@ defm EXTSP : FU6_LU6_np<"extsp">;
 let mayStore = 1 in
 defm ENTSP : FU6_LU6_np<"entsp">;
 
-let isReturn = 1, isTerminator = 1, mayLoad = 1 in {
+let isReturn = 1, isTerminator = 1, mayLoad = 1, isBarrier = 1 in {
 defm RETSP : FU6_LU6<"retsp", XCoreRetsp>;
 }
 }
@@ -678,6 +678,12 @@ def LDAP_lu10 : _FLU10<
                   (ins i32imm:$addr),
                   "ldap r11, $addr",
                   [(set R11, (pcrelwrapper tglobaladdr:$addr))]>;
+
+let Defs = [R11], isReMaterializable = 1 in
+def LDAP_lu10_ba : _FLU10<(outs),
+                          (ins i32imm:$addr),
+                          "ldap r11, $addr",
+                          [(set R11, (pcrelwrapper tblockaddress:$addr))]>;
 
 let isCall=1,
 // All calls clobber the the link register and the non-callee-saved registers:
@@ -974,6 +980,22 @@ def : Pat<(mul GRRegs:$src, -3),
 // ashr X, 32 is equivalent to ashr X, 31 on the XCore.
 def : Pat<(sra GRRegs:$src, 31),
           (ASHR_l2rus GRRegs:$src, 32)>;
+
+def : Pat<(brcond (setlt GRRegs:$lhs, 0), bb:$dst),
+          (BRFT_lru6 (ASHR_l2rus GRRegs:$lhs, 32), bb:$dst)>;
+
+// setge X, 0 is canonicalized to setgt X, -1
+def : Pat<(brcond (setgt GRRegs:$lhs, -1), bb:$dst),
+          (BRFF_lru6 (ASHR_l2rus GRRegs:$lhs, 32), bb:$dst)>;
+
+def : Pat<(select (setlt GRRegs:$lhs, 0), GRRegs:$T, GRRegs:$F),
+          (SELECT_CC (ASHR_l2rus GRRegs:$lhs, 32), GRRegs:$T, GRRegs:$F)>;
+
+def : Pat<(select (setgt GRRegs:$lhs, -1), GRRegs:$T, GRRegs:$F),
+          (SELECT_CC (ASHR_l2rus GRRegs:$lhs, 32), GRRegs:$F, GRRegs:$T)>;
+
+def : Pat<(setgt GRRegs:$lhs, -1),
+          (EQ_2rus (ASHR_l2rus GRRegs:$lhs, 32), 0)>;
 
 def : Pat<(sra (shl GRRegs:$src, immBpwSubBitp:$imm), immBpwSubBitp:$imm),
           (SEXT_rus GRRegs:$src, (bpwsub_xform immBpwSubBitp:$imm))>;

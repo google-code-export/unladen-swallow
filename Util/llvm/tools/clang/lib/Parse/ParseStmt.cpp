@@ -938,13 +938,13 @@ Parser::OwningStmtResult Parser::ParseForStatement() {
       Diag(Tok, diag::ext_c99_variable_decl_in_for_loop);
 
     SourceLocation DeclStart = Tok.getLocation(), DeclEnd;
-    DeclGroupPtrTy DG = ParseSimpleDeclaration(Declarator::ForContext, DeclEnd,
-                                               false);
+    DeclGroupPtrTy DG = ParseSimpleDeclaration(Declarator::ForContext, DeclEnd);
     FirstPart = Actions.ActOnDeclStmt(DG, DeclStart, Tok.getLocation());
 
     if (Tok.is(tok::semi)) {  // for (int x = 4;
       ConsumeToken();
     } else if ((ForEach = isTokIdentifier_in())) {
+      Actions.ActOnForEachDeclStmt(DG);
       // ObjC: for (id x in expr)
       ConsumeToken(); // consume 'in'
       SecondPart = ParseExpression();
@@ -1256,6 +1256,8 @@ Parser::OwningStmtResult Parser::ParseAsmStatement(bool &msAsm) {
 ///         asm-string-literal '(' expression ')'
 ///         '[' identifier ']' asm-string-literal '(' expression ')'
 ///
+//
+// FIXME: Avoid unnecessary std::string trashing.
 bool Parser::ParseAsmOperandsOpt(llvm::SmallVectorImpl<std::string> &Names,
                                  llvm::SmallVectorImpl<ExprTy*> &Constraints,
                                  llvm::SmallVectorImpl<ExprTy*> &Exprs) {
@@ -1281,7 +1283,7 @@ bool Parser::ParseAsmOperandsOpt(llvm::SmallVectorImpl<std::string> &Names,
       IdentifierInfo *II = Tok.getIdentifierInfo();
       ConsumeToken();
 
-      Names.push_back(std::string(II->getName(), II->getLength()));
+      Names.push_back(II->getName());
       MatchRHSPunctuation(tok::r_square, Loc);
     } else
       Names.push_back(std::string());

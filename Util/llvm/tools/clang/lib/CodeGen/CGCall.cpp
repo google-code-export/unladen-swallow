@@ -19,7 +19,7 @@
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclObjC.h"
-#include "clang/Frontend/CompileOptions.h"
+#include "clang/CodeGen/CodeGenOptions.h"
 #include "llvm/Attributes.h"
 #include "llvm/Support/CallSite.h"
 #include "llvm/Target/TargetData.h"
@@ -441,15 +441,12 @@ void CodeGenModule::ConstructAttributeList(const CGFunctionInfo &FI,
       RetAttrs |= llvm::Attribute::NoAlias;
   }
 
-  if (CompileOpts.DisableRedZone)
+  if (CodeGenOpts.OptimizeSize)
+    FuncAttrs |= llvm::Attribute::OptimizeForSize;
+  if (CodeGenOpts.DisableRedZone)
     FuncAttrs |= llvm::Attribute::NoRedZone;
-  if (CompileOpts.NoImplicitFloat)
+  if (CodeGenOpts.NoImplicitFloat)
     FuncAttrs |= llvm::Attribute::NoImplicitFloat;
-
-  if (Features.getStackProtectorMode() == LangOptions::SSPOn)
-    FuncAttrs |= llvm::Attribute::StackProtect;
-  else if (Features.getStackProtectorMode() == LangOptions::SSPReq)
-    FuncAttrs |= llvm::Attribute::StackProtectReq;
 
   QualType RetTy = FI.getReturnType();
   unsigned Index = 1;
@@ -639,9 +636,8 @@ void CodeGenFunction::EmitFunctionProlog(const CGFunctionInfo &FI,
       // If this structure was expanded into multiple arguments then
       // we need to create a temporary and reconstruct it from the
       // arguments.
-      std::string Name = Arg->getNameAsString();
       llvm::Value *Temp = CreateTempAlloca(ConvertTypeForMem(Ty),
-                                           (Name + ".addr").c_str());
+                                           Arg->getName() + ".addr");
       // FIXME: What are the right qualifiers here?
       llvm::Function::arg_iterator End =
         ExpandTypeFromArgs(Ty, LValue::MakeAddr(Temp, Qualifiers()), AI);
@@ -650,7 +646,7 @@ void CodeGenFunction::EmitFunctionProlog(const CGFunctionInfo &FI,
       // Name the arguments used in expansion and increment AI.
       unsigned Index = 0;
       for (; AI != End; ++AI, ++Index)
-        AI->setName(Name + "." + llvm::Twine(Index));
+        AI->setName(Arg->getName() + "." + llvm::Twine(Index));
       continue;
     }
 

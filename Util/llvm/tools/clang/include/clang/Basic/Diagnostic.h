@@ -15,6 +15,8 @@
 #define LLVM_CLANG_DIAGNOSTIC_H
 
 #include "clang/Basic/SourceLocation.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/Support/type_traits.h"
 #include <string>
 #include <vector>
 #include <cassert>
@@ -24,11 +26,13 @@ namespace llvm {
 }
 
 namespace clang {
+  class DeclContext;
   class DiagnosticBuilder;
   class DiagnosticClient;
   class IdentifierInfo;
   class LangOptions;
   class PartialDiagnostic;
+  class Preprocessor;
   class SourceRange;
 
   // Import the diagnostic enums themselves.
@@ -41,7 +45,7 @@ namespace clang {
       DIAG_START_PARSE    = DIAG_START_LEX      +  300,
       DIAG_START_AST      = DIAG_START_PARSE    +  300,
       DIAG_START_SEMA     = DIAG_START_AST      +  100,
-      DIAG_START_ANALYSIS = DIAG_START_SEMA     + 1000,
+      DIAG_START_ANALYSIS = DIAG_START_SEMA     + 1100,
       DIAG_UPPER_LIMIT    = DIAG_START_ANALYSIS +  100
     };
 
@@ -102,10 +106,14 @@ public:
   /// modification is known.
   CodeModificationHint() : RemoveRange(), InsertionLoc() { }
 
+  bool isNull() const {
+    return !RemoveRange.isValid() && !InsertionLoc.isValid();
+  }
+  
   /// \brief Create a code modification hint that inserts the given
   /// code string at a specific location.
   static CodeModificationHint CreateInsertion(SourceLocation InsertionLoc,
-                                              const std::string &Code) {
+                                              llvm::StringRef Code) {
     CodeModificationHint Hint;
     Hint.InsertionLoc = InsertionLoc;
     Hint.CodeToInsert = Code;
@@ -123,7 +131,7 @@ public:
   /// \brief Create a code modification hint that replaces the given
   /// source range with the given code string.
   static CodeModificationHint CreateReplacement(SourceRange RemoveRange,
-                                                const std::string &Code) {
+                                                llvm::StringRef Code) {
     CodeModificationHint Hint;
     Hint.RemoveRange = RemoveRange;
     Hint.InsertionLoc = RemoveRange.getBegin();
@@ -158,8 +166,13 @@ public:
     ak_qualtype,        // QualType
     ak_declarationname, // DeclarationName
     ak_nameddecl,       // NamedDecl *
-    ak_nestednamespec   // NestedNameSpecifier *
+    ak_nestednamespec,  // NestedNameSpecifier *
+    ak_declcontext      // DeclContext *
   };
+  
+  /// ArgumentValue - This typedef represents on argument value, which is a
+  /// union discriminated by ArgumentKind, with a value.
+  typedef std::pair<ArgumentKind, intptr_t> ArgumentValue;
 
 private:
   unsigned char AllExtensionsSilenced; // Used by __extension__
@@ -199,10 +212,17 @@ private:
   /// ArgToStringFn - A function pointer that converts an opaque diagnostic
   /// argument to a strings.  This takes the modifiers and argument that was
   /// present in the diagnostic.
+  ///
+  /// The PrevArgs array (whose length is NumPrevArgs) indicates the previous
+  /// arguments formatted for this diagnostic.  Implementations of this function
+  /// can use this information to avoid redundancy across arguments.
+  ///
   /// This is a hack to avoid a layering violation between libbasic and libsema.
   typedef void (*ArgToStringFnTy)(ArgumentKind Kind, intptr_t Val,
                                   const char *Modifier, unsigned ModifierLen,
                                   const char *Argument, unsigned ArgumentLen,
+                                  const ArgumentValue *PrevArgs,
+                                  unsigned NumPrevArgs,
                                   llvm::SmallVectorImpl<char> &Output,
                                   void *Cookie);
   void *ArgToStringCookie;
@@ -215,8 +235,8 @@ public:
   //  Diagnostic characterization methods, used by a client to customize how
   //
 
-  DiagnosticClient *getClient() { return Client; };
-  const DiagnosticClient *getClient() const { return Client; };
+  DiagnosticClient *getClient() { return Client; }
+  const DiagnosticClient *getClient() const { return Client; }
 
 
   /// pushMappings - Copies the current DiagMappings and pushes the new copy
@@ -307,9 +327,10 @@ public:
   void ConvertArgToString(ArgumentKind Kind, intptr_t Val,
                           const char *Modifier, unsigned ModLen,
                           const char *Argument, unsigned ArgLen,
+                          const ArgumentValue *PrevArgs, unsigned NumPrevArgs,
                           llvm::SmallVectorImpl<char> &Output) const {
-    ArgToStringFn(Kind, Val, Modifier, ModLen, Argument, ArgLen, Output,
-                  ArgToStringCookie);
+    ArgToStringFn(Kind, Val, Modifier, ModLen, Argument, ArgLen,
+                  PrevArgs, NumPrevArgs, Output, ArgToStringCookie);
   }
 
   void SetArgToStringFn(ArgToStringFnTy Fn, void *Cookie) {
@@ -366,6 +387,7 @@ public:
   /// @c Pos represents the source location associated with the diagnostic,
   /// which can be an invalid location if no position information is available.
   inline DiagnosticBuilder Report(FullSourceLoc Pos, unsigned DiagID);
+  inline DiagnosticBuilder Report(unsigned DiagID);
 
   /// \brief Clear out the current diagnostic.
   void Clear() { CurDiagID = ~0U; }
@@ -543,7 +565,7 @@ public:
   /// return Diag(...);
   operator bool() const { return true; }
 
-  void AddString(const std::string &S) const {
+  void AddString(llvm::StringRef S) const {
     assert(NumArgs < Diagnostic::MaxArguments &&
            "Too many arguments to diagnostic!");
     if (DiagObj) {
@@ -570,6 +592,9 @@ public:
   }
 
   void AddCodeModificationHint(const CodeModificationHint &Hint) const {
+    if (Hint.isNull())
+      return;
+    
     assert(NumCodeModificationHints < Diagnostic::MaxCodeModificationHints &&
            "Too many code modification hints!");
     if (DiagObj)
@@ -578,7 +603,7 @@ public:
 };
 
 inline const DiagnosticBuilder &operator<<(const DiagnosticBuilder &DB,
-                                           const std::string &S) {
+                                           llvm::StringRef S) {
   DB.AddString(S);
   return DB;
 }
@@ -613,6 +638,20 @@ inline const DiagnosticBuilder &operator<<(const DiagnosticBuilder &DB,
   return DB;
 }
 
+// Adds a DeclContext to the diagnostic. The enable_if template magic is here
+// so that we only match those arguments that are (statically) DeclContexts;
+// other arguments that derive from DeclContext (e.g., RecordDecls) will not
+// match.
+template<typename T>
+inline
+typename llvm::enable_if<llvm::is_same<T, DeclContext>, 
+                         const DiagnosticBuilder &>::type
+operator<<(const DiagnosticBuilder &DB, T *DC) {
+  DB.AddTaggedVal(reinterpret_cast<intptr_t>(DC),
+                  Diagnostic::ak_declcontext);
+  return DB;
+}
+  
 inline const DiagnosticBuilder &operator<<(const DiagnosticBuilder &DB,
                                            const SourceRange &R) {
   DB.AddSourceRange(R);
@@ -633,6 +672,9 @@ inline DiagnosticBuilder Diagnostic::Report(FullSourceLoc Loc, unsigned DiagID){
   CurDiagLoc = Loc;
   CurDiagID = DiagID;
   return DiagnosticBuilder(this);
+}
+inline DiagnosticBuilder Diagnostic::Report(unsigned DiagID) {
+  return Report(FullSourceLoc(), DiagID);
 }
 
 //===----------------------------------------------------------------------===//
@@ -739,17 +781,29 @@ class DiagnosticClient {
 public:
   virtual ~DiagnosticClient();
 
-  /// setLangOptions - This is set by clients of diagnostics when they know the
-  /// language parameters of the diagnostics that may be sent through.  Note
-  /// that this can change over time if a DiagClient has multiple languages sent
-  /// through it.  It may also be set to null (e.g. when processing command line
-  /// options).
-  virtual void setLangOptions(const LangOptions *LO) {}
+  /// BeginSourceFile - Callback to inform the diagnostic client that processing
+  /// of a source file is beginning.
+  ///
+  /// Note that diagnostics may be emitted outside the processing of a source
+  /// file, for example during the parsing of command line options. However,
+  /// diagnostics with source range information are required to only be emitted
+  /// in between BeginSourceFile() and EndSourceFile().
+  ///
+  /// \arg LO - The language options for the source file being processed.
+  /// \arg PP - The preprocessor object being used for the source; this optional
+  /// and may not be present, for example when processing AST source files.
+  virtual void BeginSourceFile(const LangOptions &LangOpts,
+                               const Preprocessor *PP = 0) {}
+
+  /// EndSourceFile - Callback to inform the diagnostic client that processing
+  /// of a source file has ended. The diagnostic client should assume that any
+  /// objects made available via \see BeginSourceFile() are inaccessible.
+  virtual void EndSourceFile() {}
 
   /// IncludeInDiagnosticCounts - This method (whose default implementation
-  ///  returns true) indicates whether the diagnostics handled by this
-  ///  DiagnosticClient should be included in the number of diagnostics
-  ///  reported by Diagnostic.
+  /// returns true) indicates whether the diagnostics handled by this
+  /// DiagnosticClient should be included in the number of diagnostics reported
+  /// by Diagnostic.
   virtual bool IncludeInDiagnosticCounts() const;
 
   /// HandleDiagnostic - Handle this diagnostic, reporting it to the user or

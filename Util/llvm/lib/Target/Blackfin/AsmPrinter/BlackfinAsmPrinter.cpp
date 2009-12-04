@@ -31,14 +31,14 @@
 #include "llvm/Target/TargetRegistry.h"
 #include "llvm/Support/Mangler.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FormattedStream.h"
-
 using namespace llvm;
 
 STATISTIC(EmittedInsts, "Number of machine instrs printed");
 
 namespace {
-  class VISIBILITY_HIDDEN BlackfinAsmPrinter : public AsmPrinter {
+  class BlackfinAsmPrinter : public AsmPrinter {
   public:
     BlackfinAsmPrinter(formatted_raw_ostream &O, TargetMachine &TM,
                        const MCAsmInfo *MAI, bool V)
@@ -143,7 +143,7 @@ bool BlackfinAsmPrinter::runOnMachineFunction(MachineFunction &MF) {
       processDebugLoc(II, true);
 
       printInstruction(II);
-      if (VerboseAsm && !II->getDebugLoc().isUnknown())
+      if (VerboseAsm)
         EmitComments(*II);
       O << '\n';
       

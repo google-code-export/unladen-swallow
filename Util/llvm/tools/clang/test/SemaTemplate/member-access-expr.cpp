@@ -75,3 +75,33 @@ void test_destruct(X2 *x2p, int *ip) {
   destruct(ip);
   destruct_intptr<int>(ip);
 }
+
+// PR5220
+class X3 {
+protected:
+  template <int> float* &f0();
+  template <int> const float* &f0() const;
+  void f1() {
+    (void)static_cast<float*>(f0<0>());
+  }
+  void f1() const{
+    (void)f0<0>();
+  }
+};
+
+// Fun with template instantiation and conversions
+struct X4 {
+  int& member();
+  float& member() const;
+};
+
+template<typename T>
+struct X5 {
+  void f(T* ptr) { int& ir = ptr->member(); }
+  void g(T* ptr) { float& fr = ptr->member(); }
+};
+
+void test_X5(X5<X4> x5, X5<const X4> x5c, X4 *xp, const X4 *cxp) {
+  x5.f(xp);
+  x5c.g(cxp);
+}

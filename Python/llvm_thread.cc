@@ -168,9 +168,10 @@ struct PauseJob : public PyJitJob {
     }
 };
 
-// This job compiles a code object into LLVM IR, optimizes it, and generates
-// native code.
-struct CompileJob : public PyJitJob {
+// This job just compiles a code object to LLVM IR and optimizes it.  It does
+// not generate native code.  This is used mainly for getting the string
+// representation of the optimized code after the IR has been thrown away.
+struct CompileToIrJob : public PyJitJob {
     // The code object that we are compiling.  If this pointer is NULL, we do
     // nothing.
     PyCodeObject *code_;
@@ -179,9 +180,6 @@ struct CompileJob : public PyJitJob {
     // already on the code object.  After compilation, this is the wrapper that
     // was the result of compilation.
     _LlvmFunction *llvm_function_;
-
-    // This is a function pointer to the native code.
-    PyEvalFrameFunction native_function_;
 
     // This is the old optimization level that was on the code object.  We don't
     // read it from the code object, because that might cause a data race.
@@ -201,18 +199,17 @@ struct CompileJob : public PyJitJob {
     // queue.
 #endif  // Py_WITH_INSTRUMENTATION
 
-    CompileJob(PyCodeObject *code, _LlvmFunction *llvm_func,
-               PyEvalFrameFunction native_func, int old_level, int new_level)
+    CompileToIrJob(PyCodeObject *code, _LlvmFunction *llvm_func,
+                   int old_level, int new_level)
         : PyJitJob(), code_(code), llvm_function_(llvm_func),
-          native_function_(native_func), old_opt_level_(old_level),
-          new_opt_level_(new_level) {
+          old_opt_level_(old_level), new_opt_level_(new_level) {
         Py_INCREF(this->code_);
     }
 
     // Decref the code object for this job if there is one.  This requires that
     // the caller be holding the GIL, so the compilation thread cannot delete
     // jobs.
-    virtual ~CompileJob() {
+    virtual ~CompileToIrJob() {
         PyEval_AssertLockHeld();
         Py_XDECREF(this->code_);
     }
@@ -247,14 +244,6 @@ struct CompileJob : public PyJitJob {
             }
         }
 
-        // JIT the IR to native code.
-        // TODO: Deal with recompiling native code.
-        PY_LOG_TSC_EVENT(JIT_START);
-        this->native_function_ = _LlvmFunction_Jit(llvm_data,
-                                                   this->llvm_function_);
-        PY_LOG_TSC_EVENT(JIT_END);
-        assert(this->native_function_ &&
-               "Native code generation failed!");
         return JOB_OK;
     }
 
@@ -269,9 +258,46 @@ struct CompileJob : public PyJitJob {
     virtual void ApplyImpl() {
         PyCodeObject *code = this->code_;
         code->co_being_compiled = 0;
-        code->co_use_llvm = (this->native_function_ != NULL);
         code->co_optimization = this->new_opt_level_;
         code->co_llvm_function = this->llvm_function_;
+    }
+};
+
+// This job compiles a code object into LLVM IR, optimizes it, and generates
+// native code.
+struct CompileJob : public CompileToIrJob {
+    // This is a function pointer to the native code.
+    PyEvalFrameFunction native_function_;
+
+    CompileJob(PyCodeObject *code, _LlvmFunction *llvm_func,
+               PyEvalFrameFunction native_func, int old_level, int new_level)
+        : CompileToIrJob(code, llvm_func, old_level, new_level),
+          native_function_(native_func) { }
+
+    // Compile the code.
+    virtual JobResult Run(PyGlobalLlvmData *llvm_data) {
+        // Compile the code to IR.
+        JobResult result = CompileToIrJob::Run(llvm_data);
+        if (result != JOB_OK)
+            return result;
+
+        // JIT the IR to native code.
+        // TODO: Deal with recompiling native code.
+        PY_LOG_TSC_EVENT(JIT_START);
+        this->native_function_ = _LlvmFunction_Jit(llvm_data,
+                                                   this->llvm_function_);
+        PY_LOG_TSC_EVENT(JIT_END);
+        assert(this->native_function_ &&
+               "Native code generation failed!");
+        return JOB_OK;
+    }
+
+    // Update the code object to use the results of the compilation.
+    virtual void ApplyImpl() {
+        CompileToIrJob::ApplyImpl();
+
+        PyCodeObject *code = this->code_;
+        code->co_use_llvm = (this->native_function_ != NULL);
         code->co_native_function = this->native_function_;
     }
 };
@@ -292,17 +318,13 @@ struct FreeJob : public PyJitJob {
 
     virtual JobResult Run(PyGlobalLlvmData *llvm_data) {
         assert(this->llvm_function_ && "Asked to deallocate NULL function!");
-        llvm::Function *function = static_cast<llvm::Function *>(
-                this->llvm_function_->lf_function);
+        llvm::Function *function = this->llvm_function_->lf_function;
+        // Clear the AssertingVH to avoid crashing when we delete the function.
+        this->llvm_function_->lf_function = NULL;
         // Allow global optimizations to destroy the function.
         function->setLinkage(llvm::GlobalValue::InternalLinkage);
         if (function->use_empty()) {
             // Delete the function if it's already unused.
-            // Free the machine code for the function first, or LLVM will try to
-            // reuse it later.  This is probably a bug in LLVM. TODO(twouters):
-            // fix the bug in LLVM and remove this workaround.
-            llvm::ExecutionEngine *engine = llvm_data->getExecutionEngine();
-            engine->freeMachineCodeForFunction(function);
             function->eraseFromParent();
         }
         delete this->llvm_function_;
@@ -519,13 +541,8 @@ PyLlvmCompileThread::WaitForJobs()
 }
 
 Py_CompileResult
-PyLlvmCompileThread::JitInBackground(PyCodeObject *code, int new_opt_level,
-                                     Py_ShouldBlock block)
+PyLlvmCompileThread::RunCompileJob(PyJitJob *job, Py_ShouldBlock block)
 {
-    CompileJob *job = new CompileJob(code, code->co_llvm_function,
-                                     code->co_native_function,
-                                     code->co_optimization, new_opt_level);
-
 #ifdef WITH_BACKGROUND_COMPILATION
     if (block == PY_BLOCK) {
         // If we're going to block, then we want to properly report the
@@ -570,6 +587,24 @@ PyLlvmCompileThread::JitInBackground(PyCodeObject *code, int new_opt_level,
         return PY_COMPILE_ERROR;
     }
 #endif // WITH_BACKGROUND_COMPILATION
+}
+
+Py_CompileResult
+PyLlvmCompileThread::JitInBackground(PyCodeObject *code, int new_opt_level,
+                                     Py_ShouldBlock block)
+{
+    return this->RunCompileJob(new CompileJob(code, code->co_llvm_function,
+                                              code->co_native_function,
+                                              code->co_optimization,
+                                              new_opt_level), block);
+}
+
+Py_CompileResult
+PyLlvmCompileThread::CodeToOptimizedIr(PyCodeObject *code, int new_opt_level)
+{
+    return this->RunCompileJob(new CompileToIrJob(code, code->co_llvm_function,
+                                                  code->co_optimization,
+                                                  new_opt_level), PY_BLOCK);
 }
 
 void
@@ -692,6 +727,14 @@ extern "C" {
     {
         return PyGlobalLlvmData::Get()->getCompileThread()->JitInBackground(
                 code, new_opt_level, block);
+    }
+
+    Py_CompileResult
+    PyLlvm_CodeToOptimizedIr(PyCodeObject *code, int new_opt_level)
+    {
+        PyLlvmCompileThread *thread =
+            PyGlobalLlvmData::Get()->getCompileThread();
+        return thread->CodeToOptimizedIr(code, new_opt_level);
     }
 
     void

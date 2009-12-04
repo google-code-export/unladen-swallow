@@ -473,17 +473,18 @@ void StmtPrinter::VisitExpr(Expr *Node) {
 }
 
 void StmtPrinter::VisitDeclRefExpr(DeclRefExpr *Node) {
+  if (NestedNameSpecifier *Qualifier = Node->getQualifier())
+    Qualifier->print(OS, Policy);
   OS << Node->getDecl()->getNameAsString();
+  if (Node->hasExplicitTemplateArgumentList())
+    OS << TemplateSpecializationType::PrintTemplateArgumentList(
+                                                    Node->getTemplateArgs(),
+                                                    Node->getNumTemplateArgs(),
+                                                    Policy);  
 }
 
-void StmtPrinter::VisitQualifiedDeclRefExpr(QualifiedDeclRefExpr *Node) {
-  NamedDecl *D = Node->getDecl();
-
-  Node->getQualifier()->print(OS, Policy);
-  OS << D->getNameAsString();
-}
-
-void StmtPrinter::VisitUnresolvedDeclRefExpr(UnresolvedDeclRefExpr *Node) {
+void StmtPrinter::VisitDependentScopeDeclRefExpr(
+                                           DependentScopeDeclRefExpr *Node) {
   Node->getQualifier()->print(OS, Policy);
   OS << Node->getDeclName().getAsString();
 }
@@ -1146,7 +1147,8 @@ StmtPrinter::VisitCXXUnresolvedConstructExpr(
   OS << ")";
 }
 
-void StmtPrinter::VisitCXXUnresolvedMemberExpr(CXXUnresolvedMemberExpr *Node) {
+void StmtPrinter::VisitCXXDependentScopeMemberExpr(
+                                         CXXDependentScopeMemberExpr *Node) {
   PrintExpr(Node->getBase());
   OS << (Node->isArrow() ? "->" : ".");
   if (NestedNameSpecifier *Qualifier = Node->getQualifier())
@@ -1289,7 +1291,7 @@ void Stmt::printPretty(llvm::raw_ostream &OS, ASTContext& Context,
     return;
   }
 
-  if (Policy.Dump) {
+  if (Policy.Dump && &Context) {
     dump(Context.getSourceManager());
     return;
   }

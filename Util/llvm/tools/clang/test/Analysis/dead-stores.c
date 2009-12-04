@@ -1,8 +1,8 @@
-// RUN: clang-cc -analyze -warn-dead-stores -verify %s &&
-// RUN: clang-cc -analyze -checker-cfref -analyzer-store=basic -analyzer-constraints=basic -warn-dead-stores -verify %s &&
-// RUN: clang-cc -analyze -checker-cfref -analyzer-store=basic -analyzer-constraints=range -warn-dead-stores -verify %s &&
-// RUN: clang-cc -analyze -checker-cfref -analyzer-store=region -analyzer-constraints=basic -warn-dead-stores -verify %s &&
-// RUN: clang-cc -analyze -checker-cfref -analyzer-store=region -analyzer-constraints=range -warn-dead-stores -verify %s
+// RUN: clang-cc -analyze -analyzer-experimental-internal-checks -warn-dead-stores -verify %s
+// RUN: clang-cc -analyze -analyzer-experimental-internal-checks -checker-cfref -analyzer-store=basic -analyzer-constraints=basic -warn-dead-stores -verify %s
+// RUN: clang-cc -analyze -analyzer-experimental-internal-checks -checker-cfref -analyzer-store=basic -analyzer-constraints=range -warn-dead-stores -verify %s
+// RUN: clang-cc -analyze -analyzer-experimental-internal-checks -checker-cfref -analyzer-store=region -analyzer-constraints=basic -warn-dead-stores -verify %s
+// RUN: clang-cc -analyze -analyzer-experimental-internal-checks -checker-cfref -analyzer-store=region -analyzer-constraints=range -warn-dead-stores -verify %s
 
 void f1() {
   int k, y;
@@ -57,7 +57,7 @@ int f7(int *p) {
 
 int f8(int *p) {
   extern int *baz();
-  if (p = baz()) // expected-warning{{Although the value}}
+  if ((p = baz())) // expected-warning{{Although the value}}
     return 1;
   return 0;
 }

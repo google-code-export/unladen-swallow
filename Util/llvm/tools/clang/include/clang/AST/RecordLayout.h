@@ -14,7 +14,9 @@
 #ifndef LLVM_CLANG_AST_LAYOUTINFO_H
 #define LLVM_CLANG_AST_LAYOUTINFO_H
 
-#include "llvm/Support/DataTypes.h"
+#include "llvm/System/DataTypes.h"
+#include "llvm/ADT/DenseMap.h"
+#include "clang/AST/DeclCXX.h"
 
 namespace clang {
   class ASTContext;

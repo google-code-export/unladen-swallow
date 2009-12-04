@@ -43,14 +43,18 @@ macro(add_clang_library name)
   if( LLVM_COMMON_DEPENDS )
     add_dependencies( ${name} ${LLVM_COMMON_DEPENDS} )
   endif( LLVM_COMMON_DEPENDS )
-  if( LLVM_LINK_COMPONENTS )
-    llvm_config(${name} ${LLVM_LINK_COMPONENTS})
-  endif( LLVM_LINK_COMPONENTS )
   if( LLVM_USED_LIBS )
     foreach(lib ${LLVM_USED_LIBS})
       target_link_libraries( ${name} ${lib} )
     endforeach(lib)
   endif( LLVM_USED_LIBS )
+  if( LLVM_LINK_COMPONENTS )
+    llvm_config(${name} ${LLVM_LINK_COMPONENTS})
+  endif( LLVM_LINK_COMPONENTS )
+  get_system_libs(llvm_system_libs)
+  if( llvm_system_libs )
+    target_link_libraries(${name} ${llvm_system_libs})
+  endif( llvm_system_libs )
   add_dependencies(${name} ClangDiagnosticCommon)
   if(MSVC)
     get_target_property(cflag ${name} COMPILE_FLAGS)
@@ -61,7 +65,7 @@ macro(add_clang_library name)
     set_target_properties(${name} PROPERTIES COMPILE_FLAGS ${cflag})
   endif(MSVC)
   install(TARGETS ${name}
-    LIBRARY DESTINATION lib
+    LIBRARY DESTINATION lib${LLVM_LIBDIR_SUFFIX}
     ARCHIVE DESTINATION lib${LLVM_LIBDIR_SUFFIX})
 endmacro(add_clang_library)
 
@@ -79,12 +83,21 @@ include_directories(
   ${CMAKE_CURRENT_BINARY_DIR}/include
   )
 
-install(DIRECTORY include
-  DESTINATION .
+install(DIRECTORY include/
+  DESTINATION include
+  FILES_MATCHING
+  PATTERN "*.def"
+  PATTERN "*.h"
+  PATTERN "*.td"
   PATTERN ".svn" EXCLUDE
   )
 
 add_definitions( -D_GNU_SOURCE )
+
+option(CLANG_BUILD_EXAMPLES "Build CLANG example programs." OFF)
+if(CLANG_BUILD_EXAMPLES)
+  add_subdirectory(examples)
+endif ()
 
 add_subdirectory(include)
 add_subdirectory(lib)

@@ -124,6 +124,7 @@ def err_expected_asm_operand : Error<
   "expected string literal or '[' for asm operand">;
 def err_expected_selector_for_method : Error<
   "expected selector for Objective-C method">;
+def err_expected_property_name : Error<"expected property name">;
 
 def err_unexpected_at : Error<"unexpected '@' in program">;
 
@@ -163,9 +164,6 @@ def err_use_of_tag_name_without_tag : Error<
   "use of tagged type %0 without '%1' tag">;
 def err_expected_ident_in_using : Error<
   "expected an identifier in using directive">;
-def err_using_decl_can_not_refer_to_template_spec : Error<
-  "using declaration can not refer to template specialization">;
-
 
 /// Objective-C parser diagnostics
 def err_objc_no_attributes_on_category : Error<
@@ -201,6 +199,11 @@ def warn_expected_implementation : Warning<
   "@end must appear in an @implementation context">;
 def error_property_ivar_decl : Error<
   "property synthesize requires specification of an ivar">;
+def err_synthesized_property_name : Error<
+  "expected a property name in @synthesize">;
+def warn_semicolon_before_method_body : Warning<
+  "semicolon before method body is ignored">,
+  InGroup<DiagGroup<"semicolon-before-method-body">>, DefaultIgnore;
 
 def err_expected_field_designator : Error<
   "expected a field designator, such as '.field = 4'">;
@@ -210,7 +213,8 @@ def err_declaration_does_not_declare_param : Error<
 def err_no_matching_param : Error<"parameter named %0 is missing">;
 
 /// C++ parser diagnostics
-def err_expected_unqualified_id : Error<"expected unqualified-id">;
+def err_expected_unqualified_id : Error<
+  "expected %select{identifier|unqualified-id}0">;
 def err_func_def_no_params : Error<
   "function definition does not declare parameters">;
 def err_expected_lparen_after_type : Error<
@@ -226,7 +230,9 @@ def ext_ellipsis_exception_spec : Extension<
 def err_expected_catch : Error<"expected catch">;
 def err_expected_lbrace_or_comma : Error<"expected '{' or ','">;
 def err_using_namespace_in_class : Error<
-  "'using namespace' in class not allowed">;
+  "'using namespace' is not allowed in classes">;
+def err_ident_in_pseudo_dtor_not_a_type : Error<
+  "identifier %0 in pseudo-destructor expression does not name a type">;
 
 // C++ derived classes
 def err_dup_virtual : Error<"duplicate 'virtual' in base specifier">;
@@ -276,14 +282,21 @@ def err_typename_refers_to_non_type_template : Error<
   "typename specifier refers to a non-template">;
 def err_expected_type_name_after_typename : Error<
   "expected an identifier or template-id after '::'">;
+def err_explicit_spec_non_template : Error<
+  "explicit %select{specialization|instantiation}0 of non-template "
+  "%select{class|struct|union}1 %2">;
 
 def err_variadic_templates : Error<
   "variadic templates are only allowed in C++0x">;
   
+def err_default_template_template_parameter_not_template : Error<
+  "default template argument for a template template parameter must be a class "
+  "template">;
+  
 // C++ declarations
 def err_friend_decl_defines_class : Error<
   "cannot define a type in a friend declaration">;
-
+  
 // Language specific pragmas
 // - Generic warnings
 def warn_pragma_expected_lparen : Warning<
