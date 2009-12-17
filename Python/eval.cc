@@ -33,7 +33,9 @@
 #include <ctype.h>
 #include <set>
 
+#ifdef WITH_LLVM
 using llvm::errs;
+#endif
 
 
 // Make a call to stop the call overhead timer before going through to
@@ -246,9 +248,6 @@ static llvm::ManagedStatic<BailCountStats> bail_count_stats;
 typedef PyObject *(*callproc)(PyObject *, PyObject *, PyObject *);
 
 /* Forward declarations */
-#ifdef WITH_LLVM
-static int mark_called_and_maybe_compile(PyCodeObject *co, PyFrameObject *f);
-#endif
 static PyObject * fast_function(PyObject *, PyObject ***, int, int, int);
 static PyObject * do_call(PyObject *, PyObject ***, int, int);
 static PyObject * ext_do_call(PyObject *, PyObject ***, int, int, int);
@@ -257,11 +256,15 @@ static PyObject * update_keyword_args(PyObject *, int, PyObject ***,
 static PyObject * update_star_args(int, int, PyObject *, PyObject ***);
 static PyObject * load_args(PyObject ***, int);
 
+#ifdef WITH_LLVM
+static int mark_called_and_maybe_compile(PyCodeObject *co, PyFrameObject *f);
+
 /* Record data for use in generating optimized machine code. */
 static void record_type(PyCodeObject *, int, int, int, PyObject *);
 static void record_func(PyCodeObject *, int, int, int, PyObject *);
 static void record_object(PyCodeObject *, int, int, int, PyObject *);
 static void inc_feedback_counter(PyCodeObject *, int, int, int);
+#endif  /* WITH_LLVM */
 
 int _Py_TracingPossible = 0;
 int _Py_ProfilingPossible = 0;
@@ -4623,10 +4626,10 @@ ext_call_fail:
 	return result;
 }
 
+#ifdef WITH_LLVM
 void inc_feedback_counter(PyCodeObject *co, int expected_opcode,
 			  int opcode_index, int counter_id)
 {
-#ifdef WITH_LLVM
 #ifndef NDEBUG
 	unsigned char actual_opcode =
 		PyString_AS_STRING(co->co_code)[opcode_index];
@@ -4638,14 +4641,12 @@ void inc_feedback_counter(PyCodeObject *co, int expected_opcode,
 		co->co_runtime_feedback->GetOrCreateFeedbackEntry(
 			opcode_index, 0);
 	feedback.IncCounter(counter_id);
-#endif  /* WITH_LLVM */
 }
 
 // Records func into the feedback array.
 void record_func(PyCodeObject *co, int expected_opcode,
                  int opcode_index, int arg_index, PyObject *func)
 {
-#ifdef WITH_LLVM
 #ifndef NDEBUG
 	unsigned char actual_opcode =
 		PyString_AS_STRING(co->co_code)[opcode_index];
@@ -4657,7 +4658,6 @@ void record_func(PyCodeObject *co, int expected_opcode,
 		co->co_runtime_feedback->GetOrCreateFeedbackEntry(
 			opcode_index, arg_index);
 	feedback.AddFuncSeen(func);
-#endif  /* WITH_LLVM */
 }
 
 // Records obj into the feedback array. Only use this on long-lived objects,
@@ -4665,7 +4665,6 @@ void record_func(PyCodeObject *co, int expected_opcode,
 void record_object(PyCodeObject *co, int expected_opcode,
 		   int opcode_index, int arg_index, PyObject *obj)
 {
-#ifdef WITH_LLVM
 #ifndef NDEBUG
 	unsigned char actual_opcode =
 		PyString_AS_STRING(co->co_code)[opcode_index];
@@ -4677,7 +4676,6 @@ void record_object(PyCodeObject *co, int expected_opcode,
 		co->co_runtime_feedback->GetOrCreateFeedbackEntry(
 			opcode_index, arg_index);
 	feedback.AddObjectSeen(obj);
-#endif  /* WITH_LLVM */
 }
 
 // Records the type of obj into the feedback array.
@@ -4689,6 +4687,7 @@ void record_type(PyCodeObject *co, int expected_opcode,
 	PyObject *type = (PyObject *)Py_TYPE(obj);
 	record_object(co, expected_opcode, opcode_index, arg_index, type);
 }
+#endif  /* WITH_LLVM */
 
 
 /* Extract a slice index from a PyInt or PyLong or an object with the

@@ -108,11 +108,13 @@ PyType_Modified(PyTypeObject *type)
 			PyList_SET_ITEM(listeners, i, NULL);
 			Py_DECREF(weakref);
 
+#ifdef WITH_LLVM
 			if (code != Py_None) {
 				assert(PyCode_Check(code));
 				_PyCode_InvalidateMachineCode(
                                     (PyCodeObject*)code);
 			}
+#endif  /* WITH_LLVM */
 			Py_DECREF(code);
 		}
 		Py_DECREF(listeners);

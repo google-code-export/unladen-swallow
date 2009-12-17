@@ -187,7 +187,11 @@ LIBRARY=	@LIBRARY@
 LDLIBRARY=      @LDLIBRARY@
 BLDLIBRARY=     @BLDLIBRARY@
 DLLLIBRARY=	@DLLLIBRARY@
+ifneq (@BUILD_LLVM@, disabled)
 BCLIBRARY=	Modules/libpython$(VERSION).bc
+else
+BCLIBRARY=
+endif
 LDLIBRARYDIR=   @LDLIBRARYDIR@
 INSTSONAME=	@INSTSONAME@
 
@@ -1089,7 +1093,9 @@ libainstall:	all
 			echo Skip install of $(LIBRARY) - use make frameworkinstall; \
 		fi; \
 	fi
-	$(INSTALL_DATA) $(BCLIBRARY) $(DESTSHARED)
+	@if test @BUILD_LLVM@ != disabled ; then \
+		$(INSTALL_DATA) $(BCLIBRARY) $(DESTSHARED); \
+	fi
 	$(INSTALL_DATA) Modules/config.c $(DESTDIR)$(LIBPL)/config.c
 	$(INSTALL_DATA) Modules/python.o $(DESTDIR)$(LIBPL)/python.o
 	$(INSTALL_DATA) $(srcdir)/Modules/config.c.in $(DESTDIR)$(LIBPL)/config.c.in
