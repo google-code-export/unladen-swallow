@@ -2014,7 +2014,7 @@ LlvmFunctionBuilder::CALL_FUNCTION_fast(int oparg,
     }
 
     // Only optimize monomorphic callsites.
-    llvm::SmallVector<FunctionRecord*, 3> fdo_data;
+    llvm::SmallVector<PyMethodDef*, 3> fdo_data;
     feedback->GetSeenFuncsInto(fdo_data);
     if (fdo_data.size() != 1) {
 #ifdef Py_WITH_INSTRUMENTATION
@@ -2027,13 +2027,13 @@ LlvmFunctionBuilder::CALL_FUNCTION_fast(int oparg,
         return;
     }
 
-    FunctionRecord *func_record = fdo_data[0];
+    PyMethodDef *func_record = fdo_data[0];
 
     // Only optimize calls to C functions with a known number of parameters,
     // where the number of arguments we have is in that range.
-    int flags = func_record->flags;
-    int min_arity = func_record->min_arity;
-    int max_arity = func_record->max_arity;
+    int flags = func_record->ml_flags;
+    int min_arity = func_record->ml_min_arity;
+    int max_arity = func_record->ml_max_arity;
     int num_args = oparg & 0xff;
     if (!(flags & METH_ARG_RANGE &&
                 min_arity <= num_args && num_args <= max_arity)) {
@@ -2043,7 +2043,7 @@ LlvmFunctionBuilder::CALL_FUNCTION_fast(int oparg,
     }
     assert(num_args <= PY_MAX_ARITY);
 
-    PyCFunction cfunc_ptr = func_record->func;
+    PyCFunction cfunc_ptr = func_record->ml_meth;
 
     // Expose the C function pointer to LLVM. This is what will actually get
     // called.
@@ -2051,7 +2051,7 @@ LlvmFunctionBuilder::CALL_FUNCTION_fast(int oparg,
         this->llvm_data_->constant_mirror().GetGlobalForCFunction(
             cfunc_ptr,
             max_arity,
-            func_record->name);
+            func_record->ml_name);
 
     BasicBlock *not_profiling =
         this->CreateBasicBlock("CALL_FUNCTION_not_profiling");

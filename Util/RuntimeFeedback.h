@@ -39,22 +39,6 @@ template<typename, unsigned> class SmallVector;
 // PY_FDO_JUMP_FALSE - PY_FDO_JUMP_NON_BOOLEAN).
 enum { PY_FDO_JUMP_TRUE = 0, PY_FDO_JUMP_FALSE, PY_FDO_JUMP_NON_BOOLEAN };
 
-// We copy data out of PyCFunctionObjects, rather than INCREFing them like we do
-// objects. We do this to avoid inflating the refcounts for bound methods, which
-// may result in delaying or preventing the deallocation of the bound invocant;
-// this is especially problematic for files.
-class FunctionRecord {
-public:
-    FunctionRecord(const PyObject *func);
-    FunctionRecord(const FunctionRecord &record);
-
-    PyCFunction func;
-    int flags;
-    short min_arity;
-    short max_arity;
-    std::string name;
-};
-
 class PyLimitedFeedback {
 public:
     PyLimitedFeedback();
@@ -71,8 +55,8 @@ public:
 
     // Record that a given function was called.
     void AddFuncSeen(PyObject *obj);
-    // Clears result and fills it with the set of observed FunctionRecords.
-    void GetSeenFuncsInto(llvm::SmallVector<FunctionRecord*, 3> &result) const;
+    // Clears result and fills it with the set of observed PyMethodDefs.
+    void GetSeenFuncsInto(llvm::SmallVector<PyMethodDef*, 3> &result) const;
     bool FuncsOverflowed() const {
         return GetFlagBit(SAW_MORE_THAN_THREE_OBJS_BIT);
     }
@@ -117,7 +101,7 @@ private:
     //
     // The pointers in this array start out NULL and are filled from
     // the lowest index as we see new objects. We store either PyObject *s (when
-    // operating in object mode) or FunctionRecord *s (in function mode).
+    // operating in object mode) or PyMethodDef *s (in function mode).
     llvm::PointerIntPair<void*, /*bits used from bottom of pointer=*/2>
         data_[NUM_POINTERS];
 
@@ -150,7 +134,7 @@ public:
     // Record that a given function was called.
     void AddFuncSeen(PyObject *obj);
     // Clears result and fills it with the set of seen function objects.
-    void GetSeenFuncsInto(llvm::SmallVector<FunctionRecord*, 3> &result) const;
+    void GetSeenFuncsInto(llvm::SmallVector<PyMethodDef*, 3> &result) const;
     bool FuncsOverflowed() const { return false; }
 
     void IncCounter(unsigned counter_id);
@@ -164,7 +148,7 @@ public:
 
 private:
     // Assume three pointers in the set to start with. We store either
-    // PyObject *s (when in object mode) or FunctionRecord *s (when in function
+    // PyObject *s (when in object mode) or PyMethodDef *s (when in function
     // mode).
     typedef llvm::SmallPtrSet<void*, 3> ObjSet;
 
