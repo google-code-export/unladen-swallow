@@ -514,20 +514,38 @@ extern int fdatasync(int);
 #if __FreeBSD_version > 500039
 #include <ctype.h>
 #include <wctype.h>
+/* If the source file #includes <cctype> before "Python.h" then
+ * these macros will not be defined at this point and we
+ * should not define them either.
+ */
+#ifdef isalnum
 #undef isalnum
 #define isalnum(c) iswalnum(btowc(c))
+#endif
+#ifdef isalpha
 #undef isalpha
 #define isalpha(c) iswalpha(btowc(c))
+#endif
+#ifdef islower
 #undef islower
 #define islower(c) iswlower(btowc(c))
+#endif
+#ifdef isspace
 #undef isspace
 #define isspace(c) iswspace(btowc(c))
+#endif
+#ifdef isupper
 #undef isupper
 #define isupper(c) iswupper(btowc(c))
+#endif
+#ifdef tolower
 #undef tolower
 #define tolower(c) towlower(btowc(c))
+#endif
+#ifdef toupper
 #undef toupper
 #define toupper(c) towupper(btowc(c))
+#endif
 #endif
 #endif
 
