@@ -93,12 +93,15 @@ llvm_clear_feedback(PyObject *self, PyObject *obj)
         code = (PyCodeObject *)func->func_code;
     }
     else if (PyMethod_Check(obj)) {
-        PyFunctionObject *func =
-            (PyFunctionObject *)((PyMethodObject *)obj)->im_func;
-        code = (PyCodeObject *)func->func_code;
+        // Methods contain other callable objects, including, potentially other
+        // methods.
+        return llvm_clear_feedback(self, ((PyMethodObject *)obj)->im_func);
     }
     else if (PyCode_Check(obj)) {
         code = (PyCodeObject *)obj;
+    }
+    else if (PyCFunction_Check(obj)) {  // No feedback; this is a no-op.
+        Py_RETURN_NONE;
     }
     else {
         PyErr_Format(PyExc_TypeError,
