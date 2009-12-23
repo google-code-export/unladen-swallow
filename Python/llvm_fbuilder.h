@@ -677,7 +677,6 @@ private:
     llvm::BasicBlock *GetExceptionBlock() const;
 
     PyGlobalLlvmData *const llvm_data_;
-    PyLlvmCompileThread *const compile_thread_;
     // The code object is used for looking up peripheral information
     // about the function.  It's not used to examine the bytecode
     // string.

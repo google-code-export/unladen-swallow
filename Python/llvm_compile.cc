@@ -195,6 +195,8 @@ extern "C" _LlvmFunction *
 _PyCode_ToLlvmIr(PyCodeObject *code, PyLlvmError *err,
                  PyGlobalLlvmData *llvm_data)
 {
+    PyGilGuard locked(llvm_data->getCompileThread()->getThreadState());
+
     if (!PyCode_Check(code)) {
         err->SetError(PyExc_TypeError, "Expected code object");
         return NULL;
@@ -421,16 +423,10 @@ _PyCode_ToLlvmIr(PyCodeObject *code, PyLlvmError *err,
         return NULL;
     }
 
-    // Hold the GIL while checking and mutating this state.
-    {
-        PyThreadState *tstate =
-            llvm_data->getCompileThread()->getThreadState();
-        PyGilGuard locked(tstate);
-        // Now that we know that there were no errors, register invalidation
-        // callbacks for the code object.
-        if (fbuilder.FinishFunction() < 0) {
-            return NULL;
-        }
+    // Now that we know that there were no errors, register invalidation
+    // callbacks for the code object.
+    if (fbuilder.FinishFunction() < 0) {
+      return NULL;
     }
 
     // Make sure the function survives global optimizations.

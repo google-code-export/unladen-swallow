@@ -10,7 +10,6 @@
 
 #include "Util/ConstantMirror.h"
 #include "Util/EventTimer.h"
-#include "Util/PyGilGuard.h"
 #include "Util/PyTypeBuilder.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -204,7 +203,6 @@ LlvmFunctionBuilder::LlvmFunctionBuilder(
     PyGlobalLlvmData *llvm_data, PyCodeObject *code_object)
     : uses_delete_fast(false),
       llvm_data_(llvm_data),
-      compile_thread_(this->llvm_data_->getCompileThread()),
       code_object_(code_object),
       context_(this->llvm_data_->context()),
       module_(this->llvm_data_->module()),
@@ -1227,9 +1225,6 @@ LlvmFunctionBuilder::LookupGlobal(int name_index)
     PyObject *name = PyTuple_GET_ITEM(code->co_names, name_index);
     PyObject *obj;
 
-    // Hold the GIL while we access the code object and do the dict lookup.
-    PyGilGuard locked(this->compile_thread_->getThreadState());
-
     // We have to do the NULL-check on these dicts since they could have been
     // deleted while we were on the queue.
     if (code->co_assumed_globals == NULL) {
@@ -1404,9 +1399,6 @@ LlvmFunctionBuilder::LOAD_ATTR_safe(int names_index)
 bool
 LlvmFunctionBuilder::LOAD_ATTR_fast(int names_index)
 {
-    // Hold the GIL while we do this stuff.
-    PyGilGuard locked(this->compile_thread_->getThreadState());
-
     PyObject *name =
         PyTuple_GET_ITEM(this->code_object_->co_names, names_index);
     AttributeAccessor accessor(this, name, ATTR_ACCESS_LOAD);
@@ -1477,9 +1469,6 @@ LlvmFunctionBuilder::STORE_ATTR_safe(int names_index)
 bool
 LlvmFunctionBuilder::STORE_ATTR_fast(int names_index)
 {
-    // Hold the GIL while we do this stuff.
-    PyGilGuard locked(this->compile_thread_->getThreadState());
-
     PyObject *name =
         PyTuple_GET_ITEM(this->code_object_->co_names, names_index);
     AttributeAccessor accessor(this, name, ATTR_ACCESS_STORE);
@@ -2231,15 +2220,10 @@ LlvmFunctionBuilder::CALL_FUNCTION_safe(int oparg)
 void
 LlvmFunctionBuilder::CALL_FUNCTION(int oparg)
 {
-    {
-        // Guard uses of the feedback, which can be modified from the foreground,
-        // with the GIL.
-        PyGilGuard locked(this->compile_thread_->getThreadState());
-        const PyRuntimeFeedback *feedback = this->GetFeedback();
-        if (feedback != NULL && !feedback->FuncsOverflowed()) {
-            this->CALL_FUNCTION_fast(oparg, feedback);
-            return;
-        }
+    const PyRuntimeFeedback *feedback = this->GetFeedback();
+    if (feedback != NULL && !feedback->FuncsOverflowed()) {
+        this->CALL_FUNCTION_fast(oparg, feedback);
+        return;
     }
     this->CALL_FUNCTION_safe(oparg);
 }
