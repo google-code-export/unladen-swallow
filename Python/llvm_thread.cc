@@ -221,26 +221,23 @@ struct CompileToIrJob : public PyJitJob {
 #endif
 
         // Create the IR.
-        // TODO(rnk): Once we start clearing out function bodies, we'll need to
-        // unconditionally regenerate and reoptimize the IR.
         if (this->llvm_function_ == NULL) {
             PY_LOG_TSC_EVENT(LLVM_COMPILE_START);
-            // TODO(rnk): This will read feedback data from the code object
-            // which has a potential race.
             this->llvm_function_ = _PyCode_ToLlvmIr(this->code_, this->err_,
                                                     llvm_data);
             PY_LOG_TSC_EVENT(LLVM_COMPILE_END);
             if (this->llvm_function_ == NULL) {
                 return JOB_ERROR;
             }
-        }
 
-        // Optimize the IR.
-        if (this->old_opt_level_ < this->new_opt_level_) {
-            if (PyGlobalLlvmData_Optimize(llvm_data, this->llvm_function_,
-                                          this->new_opt_level_) < 0) {
-                this->err_->SetError(PyExc_SystemError, "Optimization failed");
-                return JOB_ERROR;
+            // Optimize the IR.
+            if (this->old_opt_level_ < this->new_opt_level_) {
+                if (PyGlobalLlvmData_Optimize(llvm_data, this->llvm_function_,
+                                              this->new_opt_level_) < 0) {
+                    this->err_->SetError(PyExc_SystemError,
+                                         "Optimization failed");
+                    return JOB_ERROR;
+                }
             }
         }
 

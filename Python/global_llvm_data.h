@@ -13,24 +13,26 @@
 #include "Python/global_llvm_data_fwd.h"
 #include "llvm_thread.h"
 
-#include "Util/ConstantMirror.h"
-
 #include "llvm/LLVMContext.h"
 #include "llvm/PassManager.h"
-#include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/OwningPtr.h"
+#include "llvm/ADT/StringMap.h"
+#include "llvm/Support/ValueHandle.h"
 
 #include <string>
 
 namespace llvm {
 class DIFactory;
 class ExecutionEngine;
+class GlobalValue;
 class GlobalVariable;
 class Module;
 class ModuleProvider;
 class Value;
-class WeakVH;
 }
+
+class PyConstantMirror;
 
 struct PyGlobalLlvmData {
 public:
@@ -105,6 +107,10 @@ private:
 
     // Cached data in module_.  The WeakVH should only hold GlobalVariables.
     llvm::StringMap<llvm::WeakVH> constant_strings_;
+
+    // All the GlobalValues that are backed by the stdlib bitcode file.  We're
+    // not allowed to delete these.
+    llvm::DenseSet<llvm::AssertingVH<const llvm::GlobalValue> > bitcode_gvs_;
 
     llvm::OwningPtr<PyConstantMirror> constant_mirror_;
 

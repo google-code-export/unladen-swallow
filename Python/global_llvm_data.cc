@@ -1,8 +1,12 @@
 /* Note: this file is not compiled if configured with --without-llvm. */
 #include "Python.h"
 
+#include "osdefs.h"
+#undef MAXPATHLEN  /* Conflicts with definition in LLVM's config.h */
 #include "Python/global_llvm_data.h"
 #include "Include/llvm_thread.h"
+#include "Util/ConstantMirror.h"
+#include "Util/DeadGlobalElim.h"
 #include "Util/PyAliasAnalysis.h"
 #include "Util/SingleFunctionInliner.h"
 #include "Util/Stats.h"
@@ -26,7 +30,6 @@
 #include "llvm/System/Path.h"
 #include "llvm/Target/TargetData.h"
 #include "llvm/Target/TargetSelect.h"
-#include "llvm/Transforms/IPO.h"
 #include "llvm/Transforms/Scalar.h"
 
 using llvm::FunctionPassManager;
@@ -53,8 +56,18 @@ PyGlobalLlvmData::Get()
 #define STRINGIFY(X) STRINGIFY2(X)
 #define STRINGIFY2(X) #X
 // The basename of the bitcode file holding the standard library.
+#ifdef MS_WINDOWS
+#ifdef Py_DEBUG
+#define LIBPYTHON_BC "python" STRINGIFY(PY_MAJOR_VERSION) \
+    STRINGIFY(PY_MINOR_VERSION) "_d.bc"
+#else
+#define LIBPYTHON_BC "python" STRINGIFY(PY_MAJOR_VERSION) \
+    STRINGIFY(PY_MINOR_VERSION) ".bc"
+#endif
+#else
 #define LIBPYTHON_BC "libpython" STRINGIFY(PY_MAJOR_VERSION) "." \
     STRINGIFY(PY_MINOR_VERSION) ".bc"
+#endif
 
 // Searches for the bitcode file holding the Python standard library.
 // If one is found, returns its contents in a MemoryBuffer.  If not,
@@ -64,7 +77,8 @@ find_stdlib_bc()
 {
     llvm::sys::Path path;
     llvm::SmallVector<StringRef, 8> sys_path;
-    StringRef(Py_GetPath()).split(sys_path, ":");
+    const char delim[] = { DELIM, '\0' };
+    StringRef(Py_GetPath()).split(sys_path, delim);
     for (ssize_t i = 0, size = sys_path.size(); i < size; ++i) {
         StringRef elem = sys_path[i];
         path = elem;
@@ -90,12 +104,7 @@ PyGlobalLlvmData::PyGlobalLlvmData()
     if (this->module_provider_ == NULL) {
       Py_FatalError(error.c_str());
     }
-    // TODO(jyasskin): Change this to getModule once we avoid the crash
-    // in BitcodeReader::ParseFunctionBody.  http://llvm.org/PR5663
-    this->module_ = this->module_provider_->materializeModule(&error);
-    if (this->module_ == NULL) {
-      Py_FatalError(error.c_str());
-    }
+    this->module_ = this->module_provider_->getModule();
 
     if (Py_GenerateDebugInfoFlag) {
       this->debug_info_.reset(new llvm::DIFactory(*module_));
@@ -128,12 +137,27 @@ PyGlobalLlvmData::PyGlobalLlvmData()
     this->InstallInitialModule();
 
     this->InitializeOptimizations();
-    this->gc_.add(llvm::createGlobalDCEPass());
+    this->gc_.add(PyCreateDeadGlobalElimPass(&this->bitcode_gvs_));
+}
+
+template<typename Iterator>
+static void insert_gvs(
+    llvm::DenseSet<llvm::AssertingVH<const llvm::GlobalValue> > &set,
+    Iterator first, Iterator last) {
+    for (; first != last; ++first) {
+        set.insert(&*first);
+    }
 }
 
 void
 PyGlobalLlvmData::InstallInitialModule()
 {
+    insert_gvs(bitcode_gvs_, this->module_->begin(), this->module_->end());
+    insert_gvs(bitcode_gvs_, this->module_->global_begin(),
+               this->module_->global_end());
+    insert_gvs(bitcode_gvs_, this->module_->alias_begin(),
+               this->module_->alias_end());
+
     for (llvm::Module::iterator it = this->module_->begin();
          it != this->module_->end(); ++it) {
         if (it->getName().find("_PyLlvm_Fast") == 0) {
@@ -169,7 +193,7 @@ PyGlobalLlvmData::InitializeOptimizations()
     optimizations_[2] = O2;
     O2->add(new llvm::TargetData(*engine_->getTargetData()));
     O2->add(llvm::createCFGSimplificationPass());
-    O2->add(PyCreateSingleFunctionInliningPass());
+    O2->add(PyCreateSingleFunctionInliningPass(this->module_provider_));
     O2->add(llvm::createJumpThreadingPass());
     O2->add(llvm::createPromoteMemoryToRegisterPass());
     O2->add(llvm::createInstructionCombiningPass());
@@ -210,7 +234,7 @@ PyGlobalLlvmData::InitializeOptimizations()
     optO3->add(createCFGSimplificationPass());      // Clean up after IPCP & DAE
     //optO3->add(createPruneEHPass());               // Remove dead EH info
     //optO3->add(createFunctionAttrsPass());         // Deduce function attrs
-    optO3->add(PyCreateSingleFunctionInliningPass());
+    optO3->add(PyCreateSingleFunctionInliningPass(this->module_provider_));
     //optO3->add(createFunctionInliningPass());      // Inline small functions
     //optO3->add(createArgumentPromotionPass());  // Scalarize uninlined fn args
     optO3->add(createSimplifyLibCallsPass());    // Library Call Optimizations
@@ -256,6 +280,7 @@ PyGlobalLlvmData::InitializeOptimizations()
 
 PyGlobalLlvmData::~PyGlobalLlvmData()
 {
+    this->bitcode_gvs_.clear();  // Stop asserting values aren't destroyed.
     this->constant_mirror_->python_shutting_down_ = true;
     for (size_t i = 0; i < this->optimizations_.size(); ++i) {
         delete this->optimizations_[i];

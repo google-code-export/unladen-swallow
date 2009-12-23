@@ -33,6 +33,10 @@
 #include <ctype.h>
 #include <set>
 
+#ifdef WITH_LLVM
+using llvm::errs;
+#endif
+
 
 // Make a call to stop the call overhead timer before going through to
 // PyObject_Call.
@@ -72,19 +76,19 @@ compare_hotness(const PyCodeObject *first, const PyCodeObject *second)
 
 HotnessTracker::~HotnessTracker()
 {
-	printf("\n%zd code objects deemed hot\n", this->hot_code_.size());
+	errs() << "\nCode objects deemed hot (n=" << this->hot_code_.size()
+	       << ")\n";
 
-	printf("Code hotness metric:\n");
+	errs() << "Function -> hotness metric:\n";
 	std::vector<PyCodeObject*> to_sort(this->hot_code_.begin(),
 					   this->hot_code_.end());
 	std::sort(to_sort.begin(), to_sort.end(), compare_hotness);
 	for (std::vector<PyCodeObject*>::iterator co = to_sort.begin();
 	     co != to_sort.end(); ++co) {
-		printf("%s:%d (%s)\t%ld\n",
-			PyString_AsString((*co)->co_filename),
-			(*co)->co_firstlineno,
-			PyString_AsString((*co)->co_name),
-			(*co)->co_hotness);
+		errs() << PyString_AsString((*co)->co_filename)
+		       << ":" << (*co)->co_firstlineno << " "
+		       << "(" << PyString_AsString((*co)->co_name) << ")"
+		       << " -> " << (*co)->co_hotness << "\n";
 	}
 }
 
@@ -96,20 +100,21 @@ static llvm::ManagedStatic<HotnessTracker> hot_code;
 class FatalBailTracker {
 public:
 	~FatalBailTracker() {
-		printf("\nCode objects that failed fatal guards:\n");
-		printf("\tfile:line (funcname) bail hotness -> final hotness\n");
+		errs() << "\nCode objects that failed fatal guards:\n";
+		errs() << "\tfile:line (funcname) bail hotness"
+		       << " -> final hotness\n";
 
 		for (TrackerData::const_iterator it = this->code_.begin();
 				it != this->code_.end(); ++it) {
 			PyCodeObject *code = it->first;
 			if (code->co_hotness == it->second)
 				continue;
-			printf("\t%s:%d (%s)\t%ld -> %ld\n",
-				PyString_AsString(code->co_filename),
-				code->co_firstlineno,
-				PyString_AsString(code->co_name),
-				it->second,
-				code->co_hotness);
+			errs() << "\t"
+			       << PyString_AsString(code->co_name) << ":"
+			       << code->co_firstlineno << " "
+			       << "(" << PyString_AsString(code->co_name) << ")"
+			       << "\t" << it->second << " -> "
+			       << code->co_hotness << "\n";
 		}
 	}
 
@@ -166,18 +171,20 @@ public:
 	                   fatal_guard_fail_(0), guard_fail_(0) {};
 
 	~BailCountStats() {
-		printf("\nBailed to the interpreter %ld times\n", this->total_);
-		printf("TRACE_ON_ENTRY: %ld\n", this->trace_on_entry_);
-		printf("LINE_TRACE: %ld\n", this->line_trace_);
-		printf("BACKEDGE_TRACE: %ld\n", this->backedge_trace_);
-		printf("CALL_PROFILE: %ld\n", this->call_profile_);
-		printf("FATAL_GUARD_FAIL: %ld\n", this->fatal_guard_fail_);
-		printf("GUARD_FAIL: %ld\n", this->guard_fail_);
+		errs() << "\nBailed to the interpreter " << this->total_
+		       << " times\n";
+		errs() << "TRACE_ON_ENTRY: " << this->trace_on_entry_ << "\n";
+		errs() << "LINE_TRACE: " << this->line_trace_ << "\n";
+		errs() << "BACKEDGE_TRACE:" << this->backedge_trace_ << "\n";
+		errs() << "CALL_PROFILE: " << this->call_profile_ << "\n";
+		errs() << "FATAL_GUARD_FAIL: " << this->fatal_guard_fail_
+		       << "\n";
+		errs() << "GUARD_FAIL: " << this->guard_fail_ << "\n";
 
-		printf("\n%zd bail sites:\n", this->bail_sites_.size());
+		errs() << "\n" << this->bail_sites_.size() << " bail sites:\n";
 		for (BailData::iterator i = this->bail_sites_.begin(),
 		     end = this->bail_sites_.end(); i != end; ++i) {
-			llvm::outs() << "    " << *i << "\n";
+			errs() << "    " << *i << "\n";
 		}
 	}
 
@@ -241,9 +248,6 @@ static llvm::ManagedStatic<BailCountStats> bail_count_stats;
 typedef PyObject *(*callproc)(PyObject *, PyObject *, PyObject *);
 
 /* Forward declarations */
-#ifdef WITH_LLVM
-static int mark_called_and_maybe_compile(PyCodeObject *co, PyFrameObject *f);
-#endif
 static PyObject * fast_function(PyObject *, PyObject ***, int, int, int);
 static PyObject * do_call(PyObject *, PyObject ***, int, int);
 static PyObject * ext_do_call(PyObject *, PyObject ***, int, int, int);
@@ -252,11 +256,15 @@ static PyObject * update_keyword_args(PyObject *, int, PyObject ***,
 static PyObject * update_star_args(int, int, PyObject *, PyObject ***);
 static PyObject * load_args(PyObject ***, int);
 
+#ifdef WITH_LLVM
+static int mark_called_and_maybe_compile(PyCodeObject *co, PyFrameObject *f);
+
 /* Record data for use in generating optimized machine code. */
 static void record_type(PyCodeObject *, int, int, int, PyObject *);
 static void record_func(PyCodeObject *, int, int, int, PyObject *);
 static void record_object(PyCodeObject *, int, int, int, PyObject *);
 static void inc_feedback_counter(PyCodeObject *, int, int, int);
+#endif  /* WITH_LLVM */
 
 int _Py_TracingPossible = 0;
 int _Py_ProfilingPossible = 0;
@@ -4633,10 +4641,10 @@ ext_call_fail:
 	return result;
 }
 
+#ifdef WITH_LLVM
 void inc_feedback_counter(PyCodeObject *co, int expected_opcode,
 			  int opcode_index, int counter_id)
 {
-#ifdef WITH_LLVM
 #ifndef NDEBUG
 	unsigned char actual_opcode =
 		PyString_AS_STRING(co->co_code)[opcode_index];
@@ -4648,14 +4656,12 @@ void inc_feedback_counter(PyCodeObject *co, int expected_opcode,
 		co->co_runtime_feedback->GetOrCreateFeedbackEntry(
 			opcode_index, 0);
 	feedback.IncCounter(counter_id);
-#endif  /* WITH_LLVM */
 }
 
 // Records func into the feedback array.
 void record_func(PyCodeObject *co, int expected_opcode,
                  int opcode_index, int arg_index, PyObject *func)
 {
-#ifdef WITH_LLVM
 #ifndef NDEBUG
 	unsigned char actual_opcode =
 		PyString_AS_STRING(co->co_code)[opcode_index];
@@ -4667,7 +4673,6 @@ void record_func(PyCodeObject *co, int expected_opcode,
 		co->co_runtime_feedback->GetOrCreateFeedbackEntry(
 			opcode_index, arg_index);
 	feedback.AddFuncSeen(func);
-#endif  /* WITH_LLVM */
 }
 
 // Records obj into the feedback array. Only use this on long-lived objects,
@@ -4675,7 +4680,6 @@ void record_func(PyCodeObject *co, int expected_opcode,
 void record_object(PyCodeObject *co, int expected_opcode,
 		   int opcode_index, int arg_index, PyObject *obj)
 {
-#ifdef WITH_LLVM
 #ifndef NDEBUG
 	unsigned char actual_opcode =
 		PyString_AS_STRING(co->co_code)[opcode_index];
@@ -4687,7 +4691,6 @@ void record_object(PyCodeObject *co, int expected_opcode,
 		co->co_runtime_feedback->GetOrCreateFeedbackEntry(
 			opcode_index, arg_index);
 	feedback.AddObjectSeen(obj);
-#endif  /* WITH_LLVM */
 }
 
 // Records the type of obj into the feedback array.
@@ -4699,6 +4702,7 @@ void record_type(PyCodeObject *co, int expected_opcode,
 	PyObject *type = (PyObject *)Py_TYPE(obj);
 	record_object(co, expected_opcode, opcode_index, arg_index, type);
 }
+#endif  /* WITH_LLVM */
 
 
 /* Extract a slice index from a PyInt or PyLong or an object with the

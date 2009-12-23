@@ -14,34 +14,10 @@ using llvm::SmallPtrSet;
 using llvm::SmallVector;
 
 
-FunctionRecord::FunctionRecord(const PyObject *func)
-{
-    this->func = PyCFunction_GET_FUNCTION(func);
-    this->flags = PyCFunction_GET_FLAGS(func);
-    this->name = PyCFunction_GET_METHODDEF(func)->ml_name;
-    this->min_arity = -1;
-    this->max_arity = -1;
-
-    if (this->flags & METH_ARG_RANGE) {
-        this->min_arity = PyCFunction_GET_MIN_ARITY(func);
-        this->max_arity = PyCFunction_GET_MAX_ARITY(func);
-    }
-}
-
-FunctionRecord::FunctionRecord(const FunctionRecord &record)
-{
-    this->func = record.func;
-    this->flags = record.flags;
-    this->name = record.name;
-    this->min_arity = record.min_arity;
-    this->max_arity = record.max_arity;
-}
-
-
 static bool
-is_duplicate_method(PyObject *a, FunctionRecord *b)
+is_duplicate_method(PyObject *a, PyMethodDef *b)
 {
-    return PyCFunction_Check(a) && PyCFunction_GET_FUNCTION(a) == b->func;
+    return PyCFunction_Check(a) && PyCFunction_GET_FUNCTION(a) == b->ml_meth;
 }
 
 PyLimitedFeedback::PyLimitedFeedback()
@@ -55,13 +31,6 @@ PyLimitedFeedback::PyLimitedFeedback(const PyLimitedFeedback &src)
             PyObject *value = (PyObject *)src.data_[i].getPointer();
             Py_XINCREF(value);
             this->data_[i] = src.data_[i];
-        }
-        else if (src.InFuncMode() && src.data_[i].getPointer() != NULL) {
-            FunctionRecord *src_record =
-                    (FunctionRecord *)src.data_[i].getPointer();
-            FunctionRecord *new_record = new FunctionRecord(*src_record);
-            this->data_[i].setInt(src.data_[i].getInt());
-            this->data_[i].setPointer(new_record);
         }
         else {
             this->data_[i] = src.data_[i];
@@ -141,13 +110,10 @@ void
 PyLimitedFeedback::Clear()
 {
     bool object_mode = this->InObjectMode();
-    bool func_mode = this->InFuncMode();
 
     for (int i = 0; i < PyLimitedFeedback::NUM_POINTERS; ++i) {
         if (object_mode)
             Py_XDECREF((PyObject *)this->data_[i].getPointer());
-        else if (func_mode)
-            delete (FunctionRecord *)this->data_[i].getPointer();
         this->data_[i].setPointer(NULL);
         this->data_[i].setInt(0);
     }
@@ -211,10 +177,9 @@ PyLimitedFeedback::AddFuncSeen(PyObject *obj)
         return;
 
     for (int i = 0; i < PyLimitedFeedback::NUM_POINTERS; ++i) {
-        FunctionRecord *value = (FunctionRecord *)this->data_[i].getPointer();
+        PyMethodDef *value = (PyMethodDef *)this->data_[i].getPointer();
         if (value == NULL) {
-            FunctionRecord *record = new FunctionRecord(obj);
-            this->data_[i].setPointer((void *)record);
+            this->data_[i].setPointer((void *)PyCFunction_GET_METHODDEF(obj));
             return;
         }
         // Deal with the fact that "for x in y: l.append(x)" results in 
@@ -228,7 +193,7 @@ PyLimitedFeedback::AddFuncSeen(PyObject *obj)
 
 void
 PyLimitedFeedback::GetSeenFuncsInto(
-    SmallVector<FunctionRecord*, 3> &result) const
+    SmallVector<PyMethodDef*, 3> &result) const
 {
     assert(this->InFuncMode());
 
@@ -238,7 +203,7 @@ PyLimitedFeedback::GetSeenFuncsInto(
         result.push_back(NULL);
     }
     for (int i = 0; i < PyLimitedFeedback::NUM_POINTERS; ++i) {
-        FunctionRecord *value = (FunctionRecord *)this->data_[i].getPointer();
+        PyMethodDef *value = (PyMethodDef *)this->data_[i].getPointer();
         if (value == NULL)
             return;
         result.push_back(value);
@@ -262,9 +227,6 @@ PyFullFeedback::PyFullFeedback(const PyFullFeedback &src)
         void *obj = *it;
         if (src.usage_ == ObjectMode) {
             Py_XINCREF((PyObject *)obj);
-        }
-        else if (src.usage_ == FuncMode) {
-            obj = new FunctionRecord(*static_cast<const FunctionRecord*>(*it));
         }
         this->data_.insert(obj);
     }
@@ -298,9 +260,6 @@ PyFullFeedback::Clear()
             end = this->data_.end(); it != end; ++it) {
         if (this->usage_ == ObjectMode) {
             Py_XDECREF((PyObject *)*it);
-        }
-        else if (this->usage_ == FuncMode) {
-            delete (FunctionRecord *)*it;
         }
     }
     this->data_.clear();
@@ -355,25 +314,24 @@ PyFullFeedback::AddFuncSeen(PyObject *obj)
         // multiple method objects for l.append.
         for (ObjSet::const_iterator it = this->data_.begin(),
                 end = this->data_.end(); it != end; ++it) {
-            if (is_duplicate_method(obj, (FunctionRecord *)*it))
+            if (is_duplicate_method(obj, (PyMethodDef *)*it))
                 return;
         }
 
-        FunctionRecord *record = new FunctionRecord(obj);
-        this->data_.insert((void *)record);
+        this->data_.insert((void *)PyCFunction_GET_METHODDEF(obj));
     }
 }
 
 void
 PyFullFeedback::GetSeenFuncsInto(
-    SmallVector<FunctionRecord*, /*in-object elems=*/3> &result) const
+    SmallVector<PyMethodDef*, /*in-object elems=*/3> &result) const
 {
     assert(this->InFuncMode());
 
     result.clear();
     for (ObjSet::const_iterator it = this->data_.begin(),
             end = this->data_.end(); it != end; ++it) {
-        result.push_back((FunctionRecord *)*it);
+        result.push_back((PyMethodDef *)*it);
     }
 }
 

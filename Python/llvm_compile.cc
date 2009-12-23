@@ -426,10 +426,10 @@ _PyCode_ToLlvmIr(PyCodeObject *code, PyLlvmError *err,
         PyThreadState *tstate =
             llvm_data->getCompileThread()->getThreadState();
         PyGilGuard locked(tstate);
-        /* If the code object doesn't need the LOAD_GLOBAL optimization, it
-         * should not care whether the globals/builtins change. */
-        if (!fbuilder.UsesLoadGlobalOpt()) {
-            _PyCode_UnwatchGlobals(code);
+        // Now that we know that there were no errors, register invalidation
+        // callbacks for the code object.
+        if (fbuilder.FinishFunction() < 0) {
+            return NULL;
         }
     }
 
