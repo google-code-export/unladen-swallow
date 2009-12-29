@@ -10,6 +10,7 @@ except ImportError:
     raise test_support.TestSkipped("not built against LLVM")
 
 import __builtin__
+import contextlib
 import functools
 import gc
 import sys
@@ -26,6 +27,16 @@ del _foo
 
 JIT_SPIN_COUNT = _llvm.get_hotness_threshold() / 10 + 1000
 JIT_OPT_LEVEL = sys.flags.optimize if sys.flags.optimize > 2 else 2
+
+
+@contextlib.contextmanager
+def set_jit_control(new_level):
+    orig_level = _llvm.get_jit_control()
+    _llvm.set_jit_control(new_level)
+    try:
+        yield
+    finally:
+        _llvm.set_jit_control(orig_level)
 
 
 def at_each_optimization_level(func):
@@ -125,8 +136,9 @@ class GeneralCompilationTests(ExtraAssertsTestCase, LlvmTestCase):
     def test_co_llvm(self):
         def f():
             return 1 + 2
-        for _ in xrange(JIT_SPIN_COUNT):
-            f()
+        with set_jit_control('whenhot'):
+            for _ in xrange(JIT_SPIN_COUNT):
+                f()
         str_co_llvm = str(f.__code__.co_llvm)
         # After code objects are compiled to machine code, the IR form
         # is mostly cleared out. However, we want to be able to print
