@@ -3729,11 +3729,16 @@ else
         LLVM_PATH=$with_llvm
         AC_CHECK_FILE("$LLVM_PATH/bin/clang",
             [], [echo "Did not find clang in the expected path"; exit 1])
-        AC_CHECK_FILE("$LLVM_PATH/bin/llc",
-            [], [echo "Did not find llc in the expected path"; exit 1])
+        AC_CHECK_FILE("$LLVM_PATH/bin/opt",
+            [], [echo "Did not find opt in the expected path"; exit 1])
+        AC_CHECK_FILE("$LLVM_PATH/bin/llvm-link",
+            [], [echo "Did not find llvm-link in the expected path"; exit 1])
+        AC_CHECK_FILE("$LLVM_PATH/bin/llvm-dis",
+            [], [echo "Did not find llvm-dis in the expected path"; exit 1])
+        AC_CHECK_FILE("$LLVM_PATH/bin/llvm-config",
+            [], [echo "Did not find llvm-config in the expected path"; exit 1])
         echo "Using preinstalled LLVM: $LLVM_PATH"
         BUILD_LLVM=0
-        LLVM_INC_DIR="$LLVM_PATH/include"
     fi
     AC_DEFINE(WITH_LLVM, 1,
         [Use LLVM for code generation. This makes things fast.])
@@ -3762,13 +3767,11 @@ then
         ac_configure_args="$ac_configure_args --enable-optimized --disable-assertions --enable-debug-symbols"
         LLVM_PATH="$LLVM_BASE/Release+Debug-Asserts"
     fi
-    LLVM_INC_DIR="$LLVM_BASE/include"
     echo "Will build LLVM in $LLVM_BASE"
     AC_CONFIG_SUBDIRS([Util/llvm])
 fi
 AC_SUBST(BUILD_LLVM)
 AC_SUBST(LLVM_PATH)
-AC_SUBST(LLVM_INC_DIR)
 
 # Check for --with-instrumentation
 AC_MSG_CHECKING(for --with-instrumentation)
