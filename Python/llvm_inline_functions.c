@@ -1,7 +1,7 @@
 /* This file defines several functions that we want to be able to
    inline into the LLVM IR we generate.  We compile it with clang and
    llc to produce a C++ function that inserts these definitions into a
-   module. 
+   module.
 
    PyGlobalLlvmData::InstallInitialModule() will apply LLVM's fastcc calling
    convention to all functions defined in this module that start with
@@ -307,6 +307,261 @@ _PyLlvm_Object_GenericSetAttr(PyObject *obj, PyObject *value,
                  type->tp_name, PyString_AS_STRING(name));
     return -1;
 }
+
+/* Optimized BINARY_OP functions for several datatypes */
+PyObject * __attribute__((always_inline))
+_PyLlvm_BinAdd_Int(PyObject *v, PyObject *w)
+{
+    long a, b, i;
+
+    if (!(PyInt_CheckExact(v) && PyInt_CheckExact(w)))
+        return NULL;
+
+    a = PyInt_AS_LONG(v);
+    b = PyInt_AS_LONG(w);
+
+    i = a + b;
+
+    if ((i^a) < 0 && (i^b) < 0)
+        return NULL;
+
+    return PyInt_FromLong(i);
+}
+
+PyObject * __attribute__((always_inline))
+_PyLlvm_BinSub_Int(PyObject *v, PyObject *w)
+{
+    long a, b, i;
+
+    if (!(PyInt_CheckExact(v) && PyInt_CheckExact(w)))
+        return NULL;
+
+    a = PyInt_AS_LONG(v);
+    b = PyInt_AS_LONG(w);
+
+    i = a - b;
+
+    if ((i^a) < 0 && (i^~b) < 0)
+        return NULL;
+
+    return PyInt_FromLong(i);
+}
+
+PyObject * __attribute__((always_inline))
+_PyLlvm_BinMult_Int(PyObject *v, PyObject *w)
+{
+    long a, b, i;
+    double di;
+
+    if (!(PyInt_CheckExact(v) && PyInt_CheckExact(w)))
+        return NULL;
+
+    a = PyInt_AS_LONG(v);
+    b = PyInt_AS_LONG(w);
+
+    i = a * b;
+    di = (double)a * (double)b;
+
+    if ((double)i != di)
+        return NULL;
+
+    return PyInt_FromLong(i);
+}
+
+#define UNARY_NEG_WOULD_OVERFLOW(x) \
+    ((x) < 0 && (unsigned long)(x) == 0-(unsigned long)(x))
+
+
+PyObject * __attribute__((always_inline))
+_PyLlvm_BinDiv_Int(PyObject *v, PyObject *w)
+{
+    long xdivy, xmody, x, y;
+
+    if (!(PyInt_CheckExact(v) && PyInt_CheckExact(w)))
+        return NULL;
+
+    x = PyInt_AS_LONG(v);
+    y = PyInt_AS_LONG(w);
+
+    if (y == 0)
+        return NULL;
+
+    /* (-sys.maxint-1)/-1 is the only overflow case. */
+    if (y == -1 && UNARY_NEG_WOULD_OVERFLOW(x))
+        return NULL;
+
+    xdivy = x / y;
+    xmody = x - xdivy * y;
+    /* If the signs of x and y differ, and the remainder is non-0,
+    * C89 doesn't define whether xdivy is now the floor or the
+    * ceiling of the infinitely precise quotient.  We want the floor,
+    * and we have it iff the remainder's sign matches y's.
+    */
+    if (xmody && ((y ^ xmody) < 0) /* i.e. and signs differ */) {
+        xmody += y;
+        --xdivy;
+        assert(xmody && ((y ^ xmody) >= 0));
+    }
+
+    return PyInt_FromLong(xdivy);
+}
+
+PyObject * __attribute__((always_inline))
+_PyLlvm_BinMod_Int(PyObject *v, PyObject *w)
+{
+    long xdivy, xmody, x, y;
+
+    if (!(PyInt_CheckExact(v) && PyInt_CheckExact(w)))
+        return NULL;
+
+    x = PyInt_AS_LONG(v);
+    y = PyInt_AS_LONG(w);
+
+    if (y == 0)
+        return NULL;
+
+    /* (-sys.maxint-1)/-1 is the only overflow case. */
+    if (y == -1 && UNARY_NEG_WOULD_OVERFLOW(x))
+        return NULL;
+
+    xdivy = x / y;
+    xmody = x - xdivy * y;
+    /* If the signs of x and y differ, and the remainder is non-0,
+    * C89 doesn't define whether xdivy is now the floor or the
+    * ceiling of the infinitely precise quotient.  We want the floor,
+    * and we have it iff the remainder's sign matches y's.
+    */
+    if (xmody && ((y ^ xmody) < 0) /* i.e. and signs differ */) {
+        xmody += y;
+        --xdivy;
+        assert(xmody && ((y ^ xmody) >= 0));
+    }
+
+    return PyInt_FromLong(xmody);
+}
+
+PyObject * __attribute__((always_inline))
+_PyLlvm_BinAdd_Float(PyObject *v, PyObject *w)
+{
+    double a, b, i;
+
+    if (!(PyFloat_CheckExact(v) && PyFloat_CheckExact(w)))
+        return NULL;
+
+    a = PyFloat_AS_DOUBLE(v);
+    b = PyFloat_AS_DOUBLE(w);
+    PyFPE_START_PROTECT("add", return 0)
+    i = a + b;
+    PyFPE_END_PROTECT(i)
+    return PyFloat_FromDouble(i);
+
+}
+
+PyObject * __attribute__((always_inline))
+_PyLlvm_BinSub_Float(PyObject *v, PyObject *w)
+{
+    double a, b, i;
+
+    if (!(PyFloat_CheckExact(v) && PyFloat_CheckExact(w)))
+        return NULL;
+
+    a = PyFloat_AS_DOUBLE(v);
+    b = PyFloat_AS_DOUBLE(w);
+    PyFPE_START_PROTECT("subtract", return 0)
+    i = a - b;
+    PyFPE_END_PROTECT(i)
+    return PyFloat_FromDouble(i);
+}
+
+PyObject * __attribute__((always_inline))
+_PyLlvm_BinMult_Float(PyObject *v, PyObject *w)
+{
+    double a, b, i;
+
+    if (!(PyFloat_CheckExact(v) && PyFloat_CheckExact(w)))
+        return NULL;
+
+    a = PyFloat_AS_DOUBLE(v);
+    b = PyFloat_AS_DOUBLE(w);
+    PyFPE_START_PROTECT("multiply", return 0)
+    i = a * b;
+    PyFPE_END_PROTECT(i)
+    return PyFloat_FromDouble(i);
+}
+
+PyObject * __attribute__((always_inline))
+_PyLlvm_BinDiv_Float(PyObject *v, PyObject *w)
+{
+    double a, b, i;
+
+    if (!(PyFloat_CheckExact(v) && PyFloat_CheckExact(w)))
+        return NULL;
+
+    a = PyFloat_AS_DOUBLE(v);
+    b = PyFloat_AS_DOUBLE(w);
+
+#ifdef Py_NAN
+    if (b == 0.0)
+        return NULL;
+#endif
+
+    PyFPE_START_PROTECT("divide", return 0)
+    i = a / b;
+    PyFPE_END_PROTECT(i)
+    return PyFloat_FromDouble(i);
+}
+
+/* Work directly on the list data structure */
+PyObject * __attribute__((always_inline))
+_PyLlvm_BinSubscr_List(PyObject *v, PyObject *w)
+{
+    Py_ssize_t i;
+    if (!(PyList_CheckExact(v) && PyInt_CheckExact(w)))
+        return NULL;
+
+    i = PyInt_AsSsize_t(w);
+
+    if (i < 0) {
+        Py_ssize_t l = Py_SIZE(v);
+        if (l < 0)
+            return NULL;
+        i += l;
+    }
+    if (i < 0 || i >= Py_SIZE(v)) {
+        return NULL;
+    }
+    Py_INCREF(((PyListObject *)v)->ob_item[i]);
+    return ((PyListObject *)v)->ob_item[i];
+}
+
+int __attribute__((always_inline))
+_PyLlvm_StoreSubscr_List(PyObject *o, PyObject *key, PyObject *value)
+{
+    Py_ssize_t i;
+    PyObject *old_value;
+    if (!(PyList_CheckExact(o) && PyInt_CheckExact(key)))
+        return -1;
+
+    i = PyInt_AsSsize_t(key);
+
+    if (i < 0) {
+        Py_ssize_t l = Py_SIZE(o);
+        if (l < 0)
+            return -1;
+        i += l;
+    }
+
+    if (i < 0 || i >= Py_SIZE(o)) {
+        return -1;
+    }
+
+    Py_INCREF(value);
+    old_value = ((PyListObject *)o)->ob_item[i];
+    ((PyListObject *)o)->ob_item[i] = value;
+    Py_DECREF(old_value);
+    return 0;
+}
+
 
 /* Define a global using PyTupleObject so we can look it up from
    TypeBuilder<PyTupleObject>. */

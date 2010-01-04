@@ -11,6 +11,7 @@
 #include "Util/EventTimer.h"
 #include "Util/PyTypeBuilder.h"
 
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/BasicBlock.h"
@@ -109,6 +110,28 @@ public:
 
 static llvm::ManagedStatic<CondBranchStats> cond_branch_stats;
 
+class BinaryOpStats {
+public:
+    ~BinaryOpStats() {
+        errs() << "\nBinary operator inlining:\n";
+        errs() << "Total binops: " << this->total << "\n";
+        errs() << "Optimized binops: " << this->optimized << "\n";
+        errs() << "Unpredictable binops: " << this->unpredictable << "\n";
+        errs() << "Omitted binops: " << this->omitted << "\n";
+    }
+
+    // Total number of binary opcodes compiled.
+    unsigned total;
+    // Number of opcodes inlined.
+    unsigned optimized;
+    // Number of opcodes with unpredictable types.
+    unsigned unpredictable;
+    // Number of opcodes without inline-able functions.
+    unsigned omitted;
+};
+
+static llvm::ManagedStatic<BinaryOpStats> binary_operator_stats;
+
 class AccessAttrStats {
 public:
     ~AccessAttrStats() {
@@ -159,12 +182,89 @@ static llvm::ManagedStatic<AccessAttrStats> access_attr_stats;
 
 #define CF_INC_STATS(field) call_function_stats->field++
 #define COND_BRANCH_INC_STATS(field) cond_branch_stats->field++
+#define BINOP_INC_STATS(field) binary_operator_stats->field++
 #define ACCESS_ATTR_INC_STATS(field) access_attr_stats->field++
 #else
 #define CF_INC_STATS(field)
 #define COND_BRANCH_INC_STATS(field)
+#define BINOP_INC_STATS(field)
 #define ACCESS_ATTR_INC_STATS(field)
 #endif  /* Py_WITH_INSTRUMENTATION */
+
+namespace {
+
+// A struct to associate functions and types with optimized functions
+// for inlining. This supports inlining of binary operator implementations that
+// have been compiled with Clang.
+struct InlineOperatorEntry {
+    const char *binop;
+    const PyTypeObject *lhs_type;
+    const PyTypeObject *rhs_type;
+};
+
+}  // anonymous namespace
+
+
+namespace llvm {
+
+template<>
+struct DenseMapInfo<InlineOperatorEntry> {
+    typedef DenseMapInfo<const char *> ConstCharStarInfo;
+    typedef DenseMapInfo<const PyTypeObject *> PyTypeObjectInfo;
+
+    static inline InlineOperatorEntry getEmptyKey() {
+        InlineOperatorEntry e;
+        e.binop = ConstCharStarInfo::getEmptyKey();
+        e.lhs_type = e.rhs_type = PyTypeObjectInfo::getEmptyKey();
+        return e;
+    }
+
+    static inline InlineOperatorEntry getTombstoneKey() {
+        InlineOperatorEntry e;
+        e.binop = ConstCharStarInfo::getTombstoneKey();
+        e.lhs_type = e.rhs_type = PyTypeObjectInfo::getEmptyKey();
+        return e;
+    }
+
+    static unsigned getHashValue(const InlineOperatorEntry& Val) {
+        // From http://burtleburtle.net/bob/hash/doobs.html.
+        uint64_t key =
+            (uint64_t)PyTypeObjectInfo::getHashValue(Val.lhs_type) << 32
+          | (uint64_t)PyTypeObjectInfo::getHashValue(Val.rhs_type);
+        key += ~(key << 32);
+        key ^= (key >> 22);
+        key += ~(key << 13);
+        key ^= (key >> 8);
+        key += (key << 3);
+        key ^= (key >> 15);
+        key += ~(key << 27);
+        key ^= (key >> 31);
+
+        key = key | (uint64_t)ConstCharStarInfo::getHashValue(Val.binop) << 32;
+        key += ~(key << 32);
+        key ^= (key >> 22);
+        key += ~(key << 13);
+        key ^= (key >> 8);
+        key += (key << 3);
+        key ^= (key >> 15);
+        key += ~(key << 27);
+        key ^= (key >> 31);
+
+        return (unsigned)key;
+    }
+
+    static bool isPod() { return true; }
+
+    static bool isEqual(const InlineOperatorEntry& LHS,
+                        const InlineOperatorEntry& RHS) {
+        return LHS.binop == RHS.binop &&
+               LHS.lhs_type == RHS.lhs_type &&
+               LHS.rhs_type == RHS.rhs_type;
+    }
+};
+
+}  // namespace llvm
+
 
 namespace py {
 
@@ -1153,6 +1253,24 @@ LlvmFunctionBuilder::SetDebugStopPoint(int line_number)
     }
 }
 
+const PyTypeObject *
+LlvmFunctionBuilder::GetTypeFeedback(unsigned arg_index) const
+{
+    const PyRuntimeFeedback *feedback = this->GetFeedback(arg_index);
+    if (feedback == NULL || feedback->ObjectsOverflowed())
+        return NULL;
+
+    llvm::SmallVector<PyObject*, 3> types;
+    feedback->GetSeenObjectsInto(types);
+    if (types.size() != 1)
+        return NULL;
+
+    if (!PyType_CheckExact(types[0]))
+        return NULL;
+
+    return (PyTypeObject*)types[0];
+}
+
 void
 LlvmFunctionBuilder::LOAD_CONST(int index)
 {
@@ -1403,7 +1521,7 @@ LlvmFunctionBuilder::LOAD_ATTR_fast(int names_index)
         obj_v,
         accessor.guard_type_v_,
         accessor.name_v_,
-        accessor.dictoffset_v_, 
+        accessor.dictoffset_v_,
         accessor.descr_v_,
         descr_get_v,
         accessor.is_data_descr_v_
@@ -2983,21 +3101,73 @@ LlvmFunctionBuilder::RAISE_VARARGS_THREE()
     this->DoRaise(exc_type, exc_inst, exc_tb);
 }
 
+#define INT_OBJ_OBJ_OBJ int(PyObject*, PyObject*, PyObject*)
+
 void
-LlvmFunctionBuilder::STORE_SUBSCR()
+LlvmFunctionBuilder::STORE_SUBSCR_list_int()
+{
+    BasicBlock *success = this->CreateBasicBlock("STORE_SUBSCR_success");
+    BasicBlock *bailpoint = this->CreateBasicBlock("STORE_SUBSCR_bail");
+
+    Value *key = this->Pop();
+    Value *obj = this->Pop();
+    Value *value = this->Pop();
+    Function *setitem =
+        this->GetGlobalFunction<INT_OBJ_OBJ_OBJ>("_PyLlvm_StoreSubscr_List");
+
+    Value *result = this->CreateCall(setitem, obj, key, value,
+                                     "STORE_SUBSCR_result");
+    this->builder_.CreateCondBr(this->IsNonZero(result), bailpoint, success);
+
+    this->builder_.SetInsertPoint(bailpoint);
+    this->Push(value);
+    this->Push(obj);
+    this->Push(key);
+    this->CreateBailPoint(_PYFRAME_GUARD_FAIL);
+
+    this->builder_.SetInsertPoint(success);
+    this->DecRef(value);
+    this->DecRef(obj);
+    this->DecRef(key);
+}
+
+void
+LlvmFunctionBuilder::STORE_SUBSCR_safe()
 {
     // Performing obj[key] = val
     Value *key = this->Pop();
     Value *obj = this->Pop();
     Value *value = this->Pop();
-    Function *setitem = this->GetGlobalFunction<
-          int(PyObject *, PyObject *, PyObject *)>("PyObject_SetItem");
+    Function *setitem =
+        this->GetGlobalFunction<INT_OBJ_OBJ_OBJ>("PyObject_SetItem");
     Value *result = this->CreateCall(setitem, obj, key, value,
-                                               "STORE_SUBSCR_result");
+                                     "STORE_SUBSCR_result");
     this->DecRef(value);
     this->DecRef(obj);
     this->DecRef(key);
     this->PropagateExceptionOnNonZero(result);
+}
+
+#undef INT_OBJ_OBJ_OBJ
+
+void
+LlvmFunctionBuilder::STORE_SUBSCR()
+{
+    BINOP_INC_STATS(total);
+
+    const PyTypeObject *lhs_type = this->GetTypeFeedback(0);
+    const PyTypeObject *rhs_type = this->GetTypeFeedback(1);
+
+    if (lhs_type == &PyList_Type && rhs_type == &PyInt_Type) {
+        BINOP_INC_STATS(optimized);
+        this->STORE_SUBSCR_list_int();
+        return;
+    }
+    else {
+        BINOP_INC_STATS(unpredictable);
+        this->STORE_SUBSCR_safe();
+        return;
+    }
 }
 
 void
@@ -3018,6 +3188,9 @@ LlvmFunctionBuilder::DELETE_SUBSCR()
 void
 LlvmFunctionBuilder::GenericBinOp(const char *apifunc)
 {
+    BINOP_INC_STATS(total);
+    BINOP_INC_STATS(omitted);
+
     Value *rhs = this->Pop();
     Value *lhs = this->Pop();
     Function *op =
@@ -3029,26 +3202,145 @@ LlvmFunctionBuilder::GenericBinOp(const char *apifunc)
     this->Push(result);
 }
 
-#define BINOP_METH(OPCODE, APIFUNC) 		\
-void						\
+
+// Static mapping of binop name -> inlinable LLVM function.
+class OptimizedBinOps {
+public:
+    // Map default binary operations and type information to optimized versions.
+    typedef llvm::DenseMap<InlineOperatorEntry, const char*> InlinableBinopMap;
+    typedef InlinableBinopMap::const_iterator const_iterator;
+
+    OptimizedBinOps() {
+#define INLINABLE_BINOP(OP, LHS, RHS, OPT) { \
+        InlineOperatorEntry e; \
+        e.binop = #OP; \
+        e.lhs_type = &LHS; e.rhs_type = &RHS; \
+        this->optimized_operations_[e] = #OPT; \
+    }
+
+    // Int specializations.
+    INLINABLE_BINOP(PyNumber_Add, PyInt_Type, PyInt_Type,
+                    _PyLlvm_BinAdd_Int);
+    INLINABLE_BINOP(PyNumber_Subtract, PyInt_Type, PyInt_Type,
+                    _PyLlvm_BinSub_Int);
+    INLINABLE_BINOP(PyNumber_Multiply, PyInt_Type, PyInt_Type,
+                    _PyLlvm_BinMult_Int);
+    INLINABLE_BINOP(PyNumber_Divide, PyInt_Type, PyInt_Type,
+                    _PyLlvm_BinDiv_Int);
+    INLINABLE_BINOP(PyNumber_Remainder, PyInt_Type, PyInt_Type,
+                    _PyLlvm_BinMod_Int);
+
+    // Float specializations
+    INLINABLE_BINOP(PyNumber_Add, PyFloat_Type, PyFloat_Type,
+                    _PyLlvm_BinAdd_Float);
+    INLINABLE_BINOP(PyNumber_Subtract, PyFloat_Type, PyFloat_Type,
+                    _PyLlvm_BinSub_Float);
+    INLINABLE_BINOP(PyNumber_Multiply, PyFloat_Type, PyFloat_Type,
+                    _PyLlvm_BinMult_Float);
+    INLINABLE_BINOP(PyNumber_Divide, PyFloat_Type, PyFloat_Type,
+                    _PyLlvm_BinDiv_Float);
+
+    // List specializations
+    INLINABLE_BINOP(PyObject_GetItem, PyList_Type, PyInt_Type,
+                    _PyLlvm_BinSubscr_List);
+#undef INLINABLE_BINOP
+    }
+
+    const_iterator find(InlinableBinopMap::key_type key) const {
+        return this->optimized_operations_.find(key);
+    }
+
+    const_iterator end() const {
+        return this->optimized_operations_.end();
+    }
+
+private:
+    InlinableBinopMap optimized_operations_;
+};
+
+static llvm::ManagedStatic<OptimizedBinOps> optimized_binops;
+
+void
+LlvmFunctionBuilder::OptimizedBinOp(const char *apifunc)
+{
+    BINOP_INC_STATS(total);
+
+    const PyTypeObject *lhs_type = this->GetTypeFeedback(0);
+    const PyTypeObject *rhs_type = this->GetTypeFeedback(1);
+    if (lhs_type == NULL || rhs_type == NULL) {
+        BINOP_INC_STATS(unpredictable);
+        this->GenericBinOp(apifunc);
+        return;
+    }
+
+    InlineOperatorEntry e;
+    e.binop = apifunc;
+    e.lhs_type = lhs_type;
+    e.rhs_type = rhs_type;
+
+    OptimizedBinOps::const_iterator iter = optimized_binops->find(e);
+    if (iter == optimized_binops->end()) {
+        BINOP_INC_STATS(unpredictable);
+        this->GenericBinOp(apifunc);
+        return;
+    }
+
+    BINOP_INC_STATS(optimized);
+    BasicBlock *success = this->CreateBasicBlock("BINOP_OPT_success");
+    BasicBlock *bailpoint = this->CreateBasicBlock("BINOP_OPT_bail");
+
+    Value *rhs = this->Pop();
+    Value *lhs = this->Pop();
+
+    // This strategy of bailing may duplicate the work (once in the inlined
+    // version, once again in the eval loop). This is generally (in a Halting
+    // Problem kind of way) unsafe, but works since we're dealing with a known
+    // subset of all possible types where we control the semantics of __add__, 
+    // etc.
+    Function *op =
+        this->GetGlobalFunction<PyObject*(PyObject*, PyObject*)>(iter->second);
+    Value *result = this->CreateCall(op, lhs, rhs, "binop_result");
+    this->builder_.CreateCondBr(this->IsNull(result), bailpoint, success);
+
+    this->builder_.SetInsertPoint(bailpoint);
+    this->Push(lhs);
+    this->Push(rhs);
+    this->CreateBailPoint(_PYFRAME_GUARD_FAIL);
+
+    this->builder_.SetInsertPoint(success);
+    this->DecRef(lhs);
+    this->DecRef(rhs);
+    this->Push(result);
+}
+
+#define BINOP_METH(OPCODE, APIFUNC) 	\
+void						            \
 LlvmFunctionBuilder::OPCODE()			\
-{						\
+{	                                    \
     this->GenericBinOp(#APIFUNC);		\
 }
 
-BINOP_METH(BINARY_ADD, PyNumber_Add)
-BINOP_METH(BINARY_SUBTRACT, PyNumber_Subtract)
-BINOP_METH(BINARY_MULTIPLY, PyNumber_Multiply)
+#define BINOP_OPT(OPCODE, APIFUNC)      \
+void                                    \
+LlvmFunctionBuilder::OPCODE()           \
+{                                       \
+    this->OptimizedBinOp(#APIFUNC);     \
+}
+
+BINOP_OPT(BINARY_ADD, PyNumber_Add)
+BINOP_OPT(BINARY_SUBTRACT, PyNumber_Subtract)
+BINOP_OPT(BINARY_MULTIPLY, PyNumber_Multiply)
+BINOP_OPT(BINARY_DIVIDE, PyNumber_Divide)
+BINOP_OPT(BINARY_MODULO, PyNumber_Remainder)
+BINOP_OPT(BINARY_SUBSCR, PyObject_GetItem)
+
 BINOP_METH(BINARY_TRUE_DIVIDE, PyNumber_TrueDivide)
-BINOP_METH(BINARY_DIVIDE, PyNumber_Divide)
-BINOP_METH(BINARY_MODULO, PyNumber_Remainder)
 BINOP_METH(BINARY_LSHIFT, PyNumber_Lshift)
 BINOP_METH(BINARY_RSHIFT, PyNumber_Rshift)
 BINOP_METH(BINARY_OR, PyNumber_Or)
 BINOP_METH(BINARY_XOR, PyNumber_Xor)
 BINOP_METH(BINARY_AND, PyNumber_And)
 BINOP_METH(BINARY_FLOOR_DIVIDE, PyNumber_FloorDivide)
-BINOP_METH(BINARY_SUBSCR, PyObject_GetItem)
 
 BINOP_METH(INPLACE_ADD, PyNumber_InPlaceAdd)
 BINOP_METH(INPLACE_SUBTRACT, PyNumber_InPlaceSubtract)
@@ -3064,6 +3356,7 @@ BINOP_METH(INPLACE_AND, PyNumber_InPlaceAnd)
 BINOP_METH(INPLACE_FLOOR_DIVIDE, PyNumber_InPlaceFloorDivide)
 
 #undef BINOP_METH
+#undef BINOP_OPT
 
 // PyNumber_Power() and PyNumber_InPlacePower() take three arguments, the
 // third should be Py_None when calling from BINARY_POWER/INPLACE_POWER.

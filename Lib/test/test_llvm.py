@@ -2684,7 +2684,6 @@ def foo(trigger):
         self.assertRaises(TypeError, foo, 5)
         self.assertContains("@sum", str(foo.__code__.co_llvm))
 
-
     def test_fast_calls_same_method_different_invocant(self):
         # For all strings, x.join will resolve to the same C function, so
         # it should use the fast version of CALL_FUNCTION that calls the
@@ -2700,6 +2699,208 @@ def foo(trigger):
         # A new, unknown-to-the-feedback-system instance should reuse the
         # same function, just with a different invocant.
         self.assertEqual(foo("b"), "cbd")
+
+    def test_inconsistent_binop_training(self):
+        # Force some polymorphism into this function, then make sure we don't
+        # do any inlining of multiplication.
+        mul = compile_for_llvm("mul", "def mul(a, b): return a * b",
+                               optimization_level=None)
+
+        for _ in xrange(JIT_SPIN_COUNT):
+            mul(3, 4)
+            mul(3.0, 4.0)
+        self.assertTrue(mul.__code__.__use_llvm__)
+        self.assertContains("PyNumber_Multiply", str(mul.__code__.co_llvm))
+        self.assertEquals(mul(3, 4), 12)
+        self.assertEquals(mul(3.0, 4.0), 12.0)
+
+    def test_inlining_modulo_ints(self):
+        mod = compile_for_llvm("mod", "def mod(a, b): return a % b",
+                               optimization_level=None)
+
+        # Prime with ints.
+        for _ in xrange(JIT_SPIN_COUNT):
+            mod(8, 3)
+        self.assertTrue(mod.__code__.__use_llvm__)
+        self.assertEqual(mod(8, 3), 2)
+        self.assertEqual(mod(9, 2), 1)
+        self.assertEqual(mod(9, 1), 0)
+        self.assertEqual(mod(9, -1), 0)
+        self.assertEqual(mod(-9, 1), 0)
+        self.assertEqual(mod(-10, -4), -2)
+
+        # Test bailing.
+        self.assertRaises(RuntimeError, mod, 5.0, 2)
+        self.assertRaises(RuntimeError, mod, 5, 2.0)
+        self.assertRaises(RuntimeError, mod, 9, 0)
+        self.assertRaises(RuntimeError, mod, -sys.maxint - 1, -1)
+
+        # Test correctly handling error/special cases.
+        sys.setbailerror(False)
+        self.assertRaises(ZeroDivisionError, mod, 9, 0)
+        x = mod(-sys.maxint - 1, -1)
+        self.assertEqual(x, 0L)
+        self.assertEqual(type(x), long)
+
+    def test_inlining_add_sub_on_ints_and_floats(self):
+        # Test our ability to optimize addition and subtraction on ints and
+        # floats by inlining their implementations.
+        foo_float = compile_for_llvm('foo', 'def foo(a, b, c): return a+b-c',
+                               optimization_level=None)
+        foo_int = compile_for_llvm('foo', 'def foo(a, b, c): return a+b-c',
+                               optimization_level=None)
+
+        # Specialize foo_float and foo_int on their respective types.
+        for _ in xrange(JIT_SPIN_COUNT):
+            self.assertEqual(foo_float(1.0, 2.0, 3.0), 0.0)
+            self.assertEqual(foo_int(1, 2, 3), 0)
+        self.assertTrue(foo_float.__code__.__use_llvm__)
+        self.assertTrue(foo_int.__code__.__use_llvm__)
+
+        # Test bailing
+        self.assertRaises(RuntimeError, foo_float, 1.0, 1.0, 1)
+        self.assertRaises(RuntimeError, foo_int, 1, 1, 1.0)
+
+        self.assertRaises(RuntimeError, foo_float, 1.0, 1.0, object())
+        self.assertRaises(RuntimeError, foo_int, 1, 1, object())
+
+        self.assertRaises(RuntimeError, foo_float, 1.0, 1.0, (1,))
+        self.assertRaises(RuntimeError, foo_int, 1, 1, (1,))
+
+        self.assertRaises(RuntimeError, foo_float, 1.0, 1.0, True)
+        self.assertRaises(RuntimeError, foo_int, 1, 1, True)
+
+        # Test PyIntType overflow
+        self.assertRaises(RuntimeError, foo_int, sys.maxint, sys.maxint, 1)
+
+        # Test if bailing still gives a correct result
+        sys.setbailerror(False)
+        self.assertEqual(foo_float(1.0, 1.0, 1), 1.0)
+        self.assertEqual(foo_int(1, 1, 1.0), 1.0)
+
+        self.assertRaises(TypeError, foo_float, 1.0, 1.0, object())
+        self.assertRaises(TypeError, foo_int, 1, 1, object())
+
+        self.assertRaises(TypeError, foo_float, 1.0, 1.0, (1,))
+        self.assertRaises(TypeError, foo_int, 1, 1, (1,))
+
+        self.assertEqual(foo_float(1.0, 1.0, True), 1.0)
+        self.assertEqual(foo_int(1, 1, True), 1)
+
+        # Test if PyIntType overflow gives a correct result
+        self.assertEqual(foo_int(sys.maxint, sys.maxint, 1),
+                        long(sys.maxint)+long(sys.maxint)-1)
+
+    def test_inlining_mult_div_on_ints_and_floats(self):
+        # Test our ability to optimize certain binary ops by inlining them
+        foo_float = compile_for_llvm('foo', 'def foo(a, b, c): return (a*b)/c',
+                               optimization_level=None)
+        foo_int = compile_for_llvm('foo', 'def foo(a, b, c): return (a*b)/c',
+                               optimization_level=None)
+
+        # Specialize foo_float and foo_int on their respective types.
+        for _ in xrange(JIT_SPIN_COUNT):
+            self.assertEqual(foo_float(1.0, 2.0, 2.0), 1.0)
+            self.assertEqual(foo_int(1, 2, 2), 1)
+        self.assertTrue(foo_float.__code__.__use_llvm__)
+        self.assertTrue(foo_int.__code__.__use_llvm__)
+        self.assertFalse("PyNumber_Multiply" in str(foo_int.__code__.co_llvm))
+
+        # Test bailing
+        self.assertRaises(RuntimeError, foo_float, 1.0, 1.0, 1)
+        self.assertRaises(RuntimeError, foo_int, 1, 1, 1.0)
+
+        # Test bailing, ZeroDivision
+        self.assertRaises(RuntimeError, foo_float, 1.0, 1.0, 0.0)
+        self.assertRaises(RuntimeError, foo_int, 1, 1, 0)
+
+        # Test PyIntType overflow
+        self.assertRaises(RuntimeError, foo_int, sys.maxint, sys.maxint, 1)
+
+        # Test if bailing still gives a correct result
+        sys.setbailerror(False)
+
+        self.assertEqual(foo_float(1.0, 1.0, 1), 1.0)
+        self.assertEqual(foo_int(1, 1, 1.0), 1.0)
+
+        self.assertRaises(ZeroDivisionError, foo_float, 1.0, 1.0, 0.0)
+        self.assertRaises(ZeroDivisionError, foo_int, 1, 1, 0)
+
+        # Test if PyIntType overflow gives a correct result
+        self.assertEqual(foo_int(sys.maxint, sys.maxint, 1),
+                        long(sys.maxint)*long(sys.maxint))
+
+    def test_inlining_list_getitem(self):
+        # Test BINARY_SUBSCR specialization for indexing a list with an int.
+        foo = compile_for_llvm('foo', 'def foo(a, b): return a[b]',
+                               optimization_level=None)
+        a = [1]
+        for _ in xrange(JIT_SPIN_COUNT):
+            foo(a, 0)
+        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertEqual(foo(a, 0), 1)
+        self.assertEqual(foo(a, -1), 1)
+
+        # Make sure unexpected types bail to the interpreter.
+        self.assertRaises(RuntimeError, foo, object(), 0)
+        self.assertRaises(RuntimeError, foo, a, object())
+        self.assertRaises(RuntimeError, foo, a, True)
+        self.assertRaises(RuntimeError, foo, a, (0,))
+
+        # Testing for out-of-bounds conditions.
+        self.assertRaises(RuntimeError, foo, a, -10)
+        self.assertRaises(RuntimeError, foo, a, 10)
+
+        # Make sure unexpected types are still handled correctly after bailing.
+        sys.setbailerror(False)
+        self.assertRaises(TypeError, foo, object(), 0)
+        self.assertRaises(TypeError, foo, a, object())
+        self.assertRaises(TypeError, foo, a, (0,))
+
+        # Testing for out-of-bounds conditions.
+        self.assertRaises(IndexError, foo, a, True)
+        self.assertRaises(IndexError, foo, a, -10)
+        self.assertRaises(IndexError, foo, a, 10)
+
+    def test_inlining_list_setitem(self):
+        # Test STORE_SUBSCR specialization for indexing a list with an int.
+        foo = compile_for_llvm('foo', 'def foo(a, b, c): a[b] = c',
+                               optimization_level=None)
+        a = [1]
+        for _ in xrange(JIT_SPIN_COUNT):
+            foo(a, 0, 10)
+        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertEqual(a[0], 10)
+
+        # Test negative indices.
+        foo(a, -1, 15)
+        self.assertEqual(a[0], 15)
+
+        # We should only have specialized on the list/index types, not the value
+        # being stored.
+        foo(a, 0, "abc")
+        self.assertEqual(a[0], "abc")
+
+        # Make sure unexpected types bail to the interpreter.
+        self.assertRaises(RuntimeError, foo, object(), 0, 10)
+        self.assertRaises(RuntimeError, foo, a, object(), 10)
+        self.assertRaises(RuntimeError, foo, a, True, 10)
+        self.assertRaises(RuntimeError, foo, a, (0,), 10)
+
+        # Testing for out-of-bounds conditions.
+        self.assertRaises(RuntimeError, foo, a, -10, 10)
+        self.assertRaises(RuntimeError, foo, a, 10, 10)
+
+        # Make sure unexpected types are still handled correctly after bailing.
+        sys.setbailerror(False)
+        self.assertRaises(TypeError, foo, object(), 0, 10)
+        self.assertRaises(TypeError, foo, a, object(), 10)
+        self.assertRaises(TypeError, foo, a, (0,), 10)
+
+        # Testing for out-of-bounds conditions.
+        self.assertRaises(IndexError, foo, a, True, 10)
+        self.assertRaises(IndexError, foo, a, -10, 10)
+        self.assertRaises(IndexError, foo, a, 10, 10)
 
     @at_each_optimization_level
     def test_access_frame_locals_via_vars(self, level):

@@ -742,6 +742,7 @@ float_hash(PyFloatObject *v)
 static PyObject *
 float_add(PyObject *v, PyObject *w)
 {
+	/* If you change this, also change llvm_inline_functions.c */
 	double a,b;
 	CONVERT_TO_DOUBLE(v, a);
 	CONVERT_TO_DOUBLE(w, b);
@@ -754,6 +755,7 @@ float_add(PyObject *v, PyObject *w)
 static PyObject *
 float_sub(PyObject *v, PyObject *w)
 {
+	/* If you change this, also change llvm_inline_functions.c */
 	double a,b;
 	CONVERT_TO_DOUBLE(v, a);
 	CONVERT_TO_DOUBLE(w, b);
@@ -766,6 +768,7 @@ float_sub(PyObject *v, PyObject *w)
 static PyObject *
 float_mul(PyObject *v, PyObject *w)
 {
+	/* If you change this, also change llvm_inline_functions.c */
 	double a,b;
 	CONVERT_TO_DOUBLE(v, a);
 	CONVERT_TO_DOUBLE(w, b);
@@ -778,6 +781,7 @@ float_mul(PyObject *v, PyObject *w)
 static PyObject *
 float_div(PyObject *v, PyObject *w)
 {
+	/* If you change this, also change llvm_inline_functions.c */
 	double a,b;
 	CONVERT_TO_DOUBLE(v, a);
 	CONVERT_TO_DOUBLE(w, b);

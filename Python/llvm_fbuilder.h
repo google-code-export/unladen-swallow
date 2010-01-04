@@ -278,6 +278,7 @@ private:
         return GetFeedback(0);
     }
     const PyRuntimeFeedback *GetFeedback(unsigned arg_index) const;
+    const PyTypeObject *GetTypeFeedback(unsigned arg_index) const;
 
     // Replaces a local variable with the PyObject* stored in
     // new_value.  Decrements the original value's refcount after
@@ -474,6 +475,8 @@ private:
     // of the Python/C API function that implements the operation.
     // GenericBinOp's apifunc is "PyObject *(*)(PyObject *, PyObject *)"
     void GenericBinOp(const char *apifunc);
+    // Like GenericBinOp(), but uses an optimized version if available.
+    void OptimizedBinOp(const char *apifunc);
     // GenericPowOp's is "PyObject *(*)(PyObject *, PyObject *, PyObject *)"
     void GenericPowOp(const char *apifunc);
     // GenericUnaryOp's is "PyObject *(*)(PyObject *)"
@@ -546,6 +549,11 @@ private:
     bool LOAD_ATTR_fast(int names_index);
     void STORE_ATTR_safe(int names_index);
     bool STORE_ATTR_fast(int names_index);
+
+    // _safe is guaranteed to work; _list_int is specialized for indexing a list
+    // with an int.
+    void STORE_SUBSCR_safe();
+    void STORE_SUBSCR_list_int();
 
     // Specifies which kind of attribute access we are performing, either load
     // or store.  Eventually we may support delete, but they are rare enough
