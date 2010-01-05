@@ -144,7 +144,7 @@ try:
     import _llvm
 except ImportError:
     _llvm = None
-    #sys.exc_clear()
+    sys.exc_clear()
 
 # I see no other way to suppress these warnings;
 # putting them in test_grammar.py has no effect:
