@@ -144,6 +144,7 @@ try:
     import _llvm
 except ImportError:
     _llvm = None
+    #sys.exc_clear()
 
 # I see no other way to suppress these warnings;
 # putting them in test_grammar.py has no effect:
@@ -1165,6 +1166,12 @@ _expectations['freebsd5'] = _expectations['freebsd4']
 _expectations['freebsd6'] = _expectations['freebsd4']
 _expectations['freebsd7'] = _expectations['freebsd4']
 _expectations['freebsd8'] = _expectations['freebsd4']
+
+# If Python was configured with --without-llvm, these tests will always skip.
+if _llvm is None:
+    for plat, skips in _expectations.items():
+        _expectations[plat] = skips + "\ntest_jit_gdb\ntest_llvm"
+
 
 class _ExpectedSkips:
     def __init__(self):
