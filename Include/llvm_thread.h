@@ -11,6 +11,7 @@
 
 struct PyGlobalLlvmData;
 class PyJitJob;
+class CompileToIrJob;
 
 extern "C" {
 #endif /* __cplusplus */
@@ -189,7 +190,7 @@ private:
     void RunJobAndApply(PyJitJob *job);
 
     // Helper method that handles running CompileJobs and CompileToIrJobs.
-    Py_CompileResult RunCompileJob(PyJitJob *job, Py_ShouldBlock block);
+    Py_CompileResult RunCompileJob(CompileToIrJob *job, Py_ShouldBlock block);
 };
 
 #endif /* __cplusplus */

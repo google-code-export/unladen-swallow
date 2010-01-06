@@ -203,6 +203,7 @@ struct CompileToIrJob : public PyJitJob {
                    int old_level, int new_level)
         : PyJitJob(), code_(code), llvm_function_(llvm_func),
           old_opt_level_(old_level), new_opt_level_(new_level) {
+        PyEval_AssertLockHeld();
         Py_INCREF(this->code_);
     }
 
@@ -211,7 +212,7 @@ struct CompileToIrJob : public PyJitJob {
     // jobs.
     virtual ~CompileToIrJob() {
         PyEval_AssertLockHeld();
-        Py_XDECREF(this->code_);
+        Py_DECREF(this->code_);
     }
 
     // Compile the code.
@@ -538,7 +539,7 @@ PyLlvmCompileThread::WaitForJobs()
 }
 
 Py_CompileResult
-PyLlvmCompileThread::RunCompileJob(PyJitJob *job, Py_ShouldBlock block)
+PyLlvmCompileThread::RunCompileJob(CompileToIrJob *job, Py_ShouldBlock block)
 {
 #ifdef WITH_BACKGROUND_COMPILATION
     if (block == PY_BLOCK) {
@@ -551,7 +552,8 @@ PyLlvmCompileThread::RunCompileJob(PyJitJob *job, Py_ShouldBlock block)
         // If there was an exception, raise it in this foreground thread.
         if (err->RaiseIfError()) {
             return PY_COMPILE_ERROR;
-        } else if (!code->co_llvm_function || !code->co_native_function) {
+        } else if (!job->code_->co_llvm_function ||
+                   !job->code_->co_native_function) {
             PyErr_SetString(PyExc_SystemError, "Compilation had no effect;"
                             " is the compilation thread running?");
             return PY_COMPILE_SHUTDOWN;

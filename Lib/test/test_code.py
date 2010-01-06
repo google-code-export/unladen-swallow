@@ -83,6 +83,12 @@ consts: ("'doc string'", 'None')
 import unittest
 import weakref
 
+try:
+    import _llvm
+except ImportError:
+    _llvm = None
+
+
 def consts(t):
     """Yield a doctest-safe sequence of object reprs."""
     for elt in t:
@@ -120,6 +126,12 @@ class CodeWeakRefTests(unittest.TestCase):
         # the reference dies.
         coderef = weakref.ref(f.__code__, callback)
         self.assertTrue(bool(coderef()))
+
+        if _llvm:
+            # The JIT will hold a ref to the code object while it is being
+            # compiled.  We need to wait for it to finish to drop the reference.
+            _llvm.wait_for_jit()
+
         del f
         self.assertFalse(bool(coderef()))
         self.assertTrue(self.called)

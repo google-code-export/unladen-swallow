@@ -795,6 +795,7 @@ enable_unicode
 with_py3k_warnings
 with_computed_gotos
 with_llvm
+with_background_jit
 with_instrumentation
 with_tsc
 '
@@ -1481,6 +1482,9 @@ Optional Packages:
                           integration entirely. Note that Python built with
                           --without-llvm cannot load extension modules built
                           with --with-llvm or vice-versa.
+  --with(out)-background-jit
+                          enable or disable the background JIT compilation
+                          thread. Requires LLVM. Enabled by default.
   --with-instrumentation  Compile in a bunch of runtime instrumentation useful
                           for optimizing Python itself. Requires --with-llvm.
   --with(out)-tsc         enable/disable timestamp counter profile
@@ -25814,6 +25818,34 @@ fi
 
 
 
+
+# Check for --with-background-jit or --without-background-jit.
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for --with(out)-background-jit" >&5
+$as_echo_n "checking for --with(out)-background-jit... " >&6; }
+
+# Check whether --with-background-jit was given.
+if test "${with_background_jit+set}" = set; then
+  withval=$with_background_jit;
+fi
+
+
+if test "$withval" == "no"
+then
+    { $as_echo "$as_me:${as_lineno-$LINENO}: result: disabled" >&5
+$as_echo "disabled" >&6; }
+else
+    if test "$BUILD_LLVM" == "disabled"
+    then
+            { { $as_echo "$as_me:$LINENO: error: --with-background-jit requires --with-llvm" >&5
+$as_echo "$as_me: error: --with-background-jit requires --with-llvm" >&2;}
+   { (exit 1); exit 1; }; }
+    fi
+    { $as_echo "$as_me:${as_lineno-$LINENO}: result: enabled" >&5
+$as_echo "enabled" >&6; }
+
+$as_echo "#define WITH_BACKGROUND_COMPILATION 1" >>confdefs.h
+
+fi
 
 # Check for --with-instrumentation
 { $as_echo "$as_me:$LINENO: checking for --with-instrumentation" >&5
