@@ -28,7 +28,8 @@ TEST_F(PyBytecodeIteratorTest, SimpleIteration)
     PyObject *code = PyString_FromStringAndSize(
             bytecode_str, llvm::array_lengthof(bytecode_str));
 
-    PyBytecodeIterator iter(code);
+    PyLlvmError err;
+    PyBytecodeIterator iter(code, &err);
 
     ASSERT_FALSE(iter.Done());
     EXPECT_FALSE(iter.Error());
@@ -66,7 +67,8 @@ TEST_F(PyBytecodeIteratorTest, ExtendedArg)
     PyObject *code = PyString_FromStringAndSize(
             bytecode_str, llvm::array_lengthof(bytecode_str));
 
-    PyBytecodeIterator iter(code);
+    PyLlvmError err;
+    PyBytecodeIterator iter(code, &err);
 
     ASSERT_FALSE(iter.Done());
     EXPECT_FALSE(iter.Error());
