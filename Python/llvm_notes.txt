@@ -229,3 +229,81 @@ Instrumentation:
   branches were compiled to IR, how many we were able to optimize, how many
   failed to optimize due to inconsistency, and how many failed to optimize due
   to insufficient data.
+
+
+Optimization: specialized binary operators
+------------------------------------------
+
+We take advantage of the gathered type feedback to optimize certain binary
+operators based on their input types. For example, if we know that a certain
++ operator always receives integer arguments, we can omit a lot of unnecessary
+indirection.
+
+Example codegen:
+
+def add(a, b):
+    return a + b
+
+def main():
+    for x in xrange(15000):
+        add(x, x + 1)
+
+
+Before type-based specialization:
+
+%binop_result = call %struct._object* @PyNumber_Add(%struct._object* %47,
+                                                    %struct._object* %local_b2)
+
+After type-based specialization:
+
+  %44 = load %struct._typeobject** %43
+  %45 = icmp eq %struct._typeobject* %44, @PyInt_Type
+  br i1 %45, label %46, label %BINOP_OPT_bail
+
+; <label>:46                                      ; preds = %line_start
+  %47 = getelementptr inbounds %struct._object* %local_b2, i32 0, i32 1
+  %48 = load %struct._typeobject** %47
+  %49 = icmp eq %struct._typeobject* %48, @PyInt_Type
+  br i1 %49, label %50, label %BINOP_OPT_bail
+
+; <label>:50                                      ; preds = %46
+  %51 = getelementptr inbounds %struct._object* %42, i32 1, i32 0
+  %52 = load i32* %51
+  %53 = getelementptr inbounds %struct._object* %local_b2, i32 1, i32 0
+  %54 = load i32* %53
+  %55 = add nsw i32 %54, %52
+  %56 = xor i32 %55, %52
+  %57 = icmp slt i32 %56, 0
+  br i1 %57, label %58, label %_PyLlvm_BinAdd_Int.exit
+
+_PyLlvm_BinAdd_Int.exit:                          ; preds = %50, %58
+  %61 = call %struct._object* @PyInt_FromLong(i32 %55) nounwind
+  %62 = icmp eq %struct._object* %61, null
+  br i1 %62, label %BINOP_OPT_bail, label %BINOP_OPT_success
+
+
+While this certainly increases code size, it eliminates the following
+indirection/runtime overhead:
+
+- Call PyNumber_Add().
+- ...which calls binary_op1().
+- ...which fetches the foo->ob_type->tp_as_number->nb_add function pointer.
+- ...and then does a bunch of checks to make sure that both operands are the
+     same types.
+- ...and then calls foo->ob_type->tp_as_number->nb_add.
+- ...which checks that both arguments are of PyInt_Type.
+- ...and then converts them to machine longs.
+- ...and finally does the work to add them and return up the call stack.
+
+
+Supported operators:
+- List subscription with an integer index.
+- Int + int addition, subtraction, multiplication, division and modulus.
+- Float + float addition, subtraction, multiplication, division and modulus.
+
+Instrumentation:
+- The --with-instrumentation build includes measurements for binary operator
+  inlining.
+
+Relevant revisions:
+- http://code.google.com/p/unladen-swallow/source/detail?r=957
