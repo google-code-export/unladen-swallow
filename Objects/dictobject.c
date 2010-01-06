@@ -2086,6 +2086,24 @@ _PyDict_DropWatcher(PyObject *self, PyCodeObject *code)
 	}
 	assert(0 && "Tried to drop non-watcher");
 }
+
+Py_ssize_t
+_PyDict_NumWatchers(PyDictObject *mp)
+{
+	return mp->ma_watchers_used;
+}
+
+unsigned
+_PyDict_IsWatchedBy(PyDictObject *mp, PyCodeObject *code)
+{
+	Py_ssize_t i;
+
+	for (i = 0; i < mp->ma_watchers_used; ++i) {
+		if (mp->ma_watchers[i] == code)
+			return 1;
+	}
+	return 0;
+}
 #endif  /* WITH_LLVM */
 
 #ifdef WITH_LLVM
