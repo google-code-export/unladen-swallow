@@ -2093,7 +2093,7 @@ _PyDict_NumWatchers(PyDictObject *mp)
 	return mp->ma_watchers_used;
 }
 
-unsigned
+int
 _PyDict_IsWatchedBy(PyDictObject *mp, PyCodeObject *code)
 {
 	Py_ssize_t i;

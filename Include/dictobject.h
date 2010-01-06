@@ -165,7 +165,7 @@ PyAPI_FUNC(void) _PyDict_DropWatcher(PyObject *dp, PyCodeObject *code);
 
 /* Internal helper methods used for testing the dict-watching system. */
 PyAPI_FUNC(Py_ssize_t) _PyDict_NumWatchers(PyDictObject *dp);
-PyAPI_FUNC(unsigned) _PyDict_IsWatchedBy(PyDictObject *dp, PyCodeObject *code);
+PyAPI_FUNC(int) _PyDict_IsWatchedBy(PyDictObject *dp, PyCodeObject *code);
 #endif
 
 #ifdef __cplusplus
