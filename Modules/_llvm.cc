@@ -9,7 +9,7 @@ LLVM-py.
 #include "Python.h"
 #include "_llvmfunctionobject.h"
 #include "llvm_compile.h"
-#include "Python/global_llvm_data_fwd.h"
+#include "Python/global_llvm_data.h"
 #include "Util/RuntimeFeedback_fwd.h"
 
 #include "llvm/Support/Debug.h"
@@ -179,6 +179,19 @@ llvm_get_hotness_threshold(PyObject *self)
     return PyLong_FromLong(PY_HOTNESS_THRESHOLD);
 }
 
+PyDoc_STRVAR(llvm_collect_unused_globals_doc,
+"collect_unused_globals()\n\
+\n\
+Collect any unused LLVM global variables that may be holding references to\n\
+Python objects.");
+
+static PyObject *
+llvm_collect_unused_globals(PyObject *self)
+{
+    PyGlobalLlvmData::Get()->CollectUnusedGlobals();
+    Py_RETURN_NONE;
+}
+
 static struct PyMethodDef llvm_methods[] = {
     {"set_debug", (PyCFunction)llvm_setdebug, METH_O, setdebug_doc},
     {"compile", llvm_compile, METH_VARARGS, llvm_compile_doc},
@@ -190,6 +203,8 @@ static struct PyMethodDef llvm_methods[] = {
      llvm_set_jit_control_doc},
     {"get_hotness_threshold", (PyCFunction)llvm_get_hotness_threshold,
      METH_NOARGS, llvm_get_hotness_threshold_doc},
+    {"collect_unused_globals", (PyCFunction)llvm_collect_unused_globals,
+     METH_NOARGS, llvm_collect_unused_globals_doc},
     { NULL, NULL }
 };
 

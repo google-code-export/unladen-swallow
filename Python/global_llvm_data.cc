@@ -348,14 +348,23 @@ PyGlobalLlvmData::MaybeCollectUnusedGlobals()
         num_globals < (this->num_globals_after_last_gc_ +
                        (this->num_globals_after_last_gc_ >> 2)))
         return;
+    this->CollectUnusedGlobals();
+}
 
+void
+PyGlobalLlvmData::CollectUnusedGlobals()
+{
+#if Py_WITH_INSTRUMENTATION
+    unsigned num_globals = this->module_->getGlobalList().size() +
+        this->module_->getFunctionList().size();
+#endif
     {
 #if Py_WITH_INSTRUMENTATION
         Timer timer(*global_gc_times);
 #endif
         this->gc_.run(*this->module_);
     }
-    num_globals_after_last_gc_ = this->module_->getGlobalList().size() +
+    this->num_globals_after_last_gc_ = this->module_->getGlobalList().size() +
         this->module_->getFunctionList().size();
 #if Py_WITH_INSTRUMENTATION
     global_gc_collected->RecordDataPoint(
