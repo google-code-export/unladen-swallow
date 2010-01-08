@@ -70,6 +70,12 @@ Previous models:
 - Simple call count-based model (10000 calls == hot). This was implemented as
   an obviously-deficient baseline to be improved upon.
 
+Instrumentation:
+- Passing --with-instrumentation to ./configure will cause Python to print,
+  among other things, a table of function hotness at interpreter-shutdown.
+  Misc/diff_hotness.py can then be used to highlight the differences between
+  two of these tables, showing the effects of changes to the model.
+
 
 Memory use: Destroying unused LLVM globals
 ------------------------------------------
