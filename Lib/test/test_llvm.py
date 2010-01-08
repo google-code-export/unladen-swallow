@@ -28,6 +28,10 @@ del _foo
 JIT_SPIN_COUNT = _llvm.get_hotness_threshold() / 10 + 1000
 JIT_OPT_LEVEL = sys.flags.optimize if sys.flags.optimize > 2 else 2
 
+# Various constants that feed into the hotness model.
+HOTNESS_CALL = 10  # Points for a function entry.
+HOTNESS_LOOP = 1   # Points for entering a loop.
+
 
 @contextlib.contextmanager
 def set_jit_control(new_level):
@@ -2449,20 +2453,95 @@ class OptimizationTests(LlvmTestCase, ExtraAssertsTestCase):
         self.assertEqual(foo.__code__.co_optimization, JIT_OPT_LEVEL)
         self.assertContains("getelementptr", str(foo.__code__.co_llvm))
 
-    def test_loop_hotness(self):
-        # Test that long-running loops count toward the hotness metric. A
-        # function doing 1e6 inner loop iterations per call should be worthy
-        # of optimization.
+    def test_for_loop_hotness(self):
+        # Test that long-running for loops count toward the hotness metric. A
+        # function doing 1e6 iterations per call should be worthy of
+        # optimization.
+        foo = compile_for_llvm("foo", """
+def foo():
+    for x in xrange(1000000):
+        pass
+""", optimization_level=None)
+        self.assertEqual(foo.__code__.co_hotness, 0)
+        self.assertFalse(foo.__code__.__use_llvm__)
+        foo()
+
+        # +1 point each for 1e6 loop iterations.
+        hotness = HOTNESS_CALL + HOTNESS_LOOP * 1000000
+        self.assertEqual(foo.__code__.co_hotness, hotness)
+
+        foo()  # Hot-or-not calculations are done on function-entry.
+        self.assertTrue(foo.__code__.__use_llvm__)
+
+    def test_nested_for_loop_hotness(self):
+        # Verify our understanding of how the hotness model deals with nested
+        # for loops. This can be confusing, and we don't want to change it
+        # accidentally.
+        foo = compile_for_llvm("foo", """
+def foo():
+    for x in xrange(50):
+        for y in xrange(70):
+            pass
+""", optimization_level=None)
+        self.assertEqual(foo.__code__.co_hotness, 0)
+        self.assertFalse(foo.__code__.__use_llvm__)
+        foo()
+
+        # 50 outer loop iterations, 3500 inner loop iterations.
+        hotness = HOTNESS_CALL + (HOTNESS_LOOP * 3500) + (HOTNESS_LOOP * 50)
+        self.assertEqual(foo.__code__.co_hotness, hotness)
+
+    def test_for_loop_jump_threading_hotness(self):
+        # Regression test: the bytecode peephole optimizer does some limited
+        # jump threading, which caused problems for one earlier attempt at
+        # tuning the hotness model.
+        foo = compile_for_llvm("foo", """
+def foo():
+    for x in xrange(1000000):
+        if x % 2:  # Alternate between the two branches
+            x = 8  # Nonsense
+""", optimization_level=None)
+        self.assertEqual(foo.__code__.co_hotness, 0)
+        self.assertFalse(foo.__code__.__use_llvm__)
+        foo()
+
+        hotness = HOTNESS_CALL + HOTNESS_LOOP * 1000000
+        self.assertEqual(foo.__code__.co_hotness, hotness)
+
+    def test_early_for_loop_exit_hotness(self):
+        # Make sure we understand how the hotness model counts early exits from
+        # for loops.
         foo = compile_for_llvm("foo", """
 def foo():
     for x in xrange(1000):
-        for y in xrange(1000):
-            pass
+        return True
 """, optimization_level=None)
+        self.assertEqual(foo.__code__.co_hotness, 0)
         self.assertFalse(foo.__code__.__use_llvm__)
         foo()
-        foo()  # Hot-or-not calculations are done on function-entry.
-        self.assertTrue(foo.__code__.__use_llvm__)
+
+        # +1 point for entering the loop once.
+        # TODO(collinwinter): we should count backedges, not loop entries.
+        hotness = HOTNESS_CALL + HOTNESS_LOOP
+        self.assertEqual(foo.__code__.co_hotness, hotness)
+
+    def test_while_loop_hotness(self):
+        # Verify our understanding of how the hotness model deals with while
+        # loops: we don't want to change it accidentally.
+        foo = compile_for_llvm("foo", """
+def foo():
+    i = 1000000
+    while i:
+        i -= 1
+""", optimization_level=None)
+        self.assertEqual(foo.__code__.co_hotness, 0)
+        self.assertFalse(foo.__code__.__use_llvm__)
+        foo()
+
+        # TODO(collinwinter): this should be 10 + 1000000, but we don't
+        # currently count while loops in the hotness model.
+        hotness = HOTNESS_CALL
+        self.assertEqual(foo.__code__.co_hotness, hotness)
 
     def test_generator_hotness(self):
         foo = compile_for_llvm("foo", """
@@ -2472,10 +2551,10 @@ def foo():
 """, optimization_level=None)
         iterations = JIT_SPIN_COUNT
         l = [foo() for _ in xrange(iterations)]
-        self.assertEqual(foo.__code__.co_hotness, iterations * 10)
+        self.assertEqual(foo.__code__.co_hotness, iterations * HOTNESS_CALL)
 
         l = map(list, l)
-        self.assertEqual(foo.__code__.co_hotness, iterations * 10)
+        self.assertEqual(foo.__code__.co_hotness, iterations * HOTNESS_CALL)
         self.assertEqual(foo.__code__.__use_llvm__, True)
         self.assertEqual(foo.__code__.co_optimization, JIT_OPT_LEVEL)
 
