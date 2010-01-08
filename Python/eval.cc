@@ -873,6 +873,8 @@ PyEval_EvalFrame(PyFrameObject *f)
 	inc_feedback_counter(co, opcode, f->f_lasti, PY_FDO_JUMP_FALSE)
 #define RECORD_NONBOOLEAN() \
 	inc_feedback_counter(co, opcode, f->f_lasti, PY_FDO_JUMP_NON_BOOLEAN)
+#define UPDATE_HOTNESS_JABS() \
+	do { if (oparg <= f->f_lasti) ++co->co_hotness; } while (0)
 #else
 #define RECORD_TYPE(arg_index, obj)
 #define RECORD_OBJECT(arg_index, obj)
@@ -880,6 +882,7 @@ PyEval_EvalFrame(PyFrameObject *f)
 #define RECORD_TRUE()
 #define RECORD_FALSE()
 #define RECORD_NONBOOLEAN()
+#define UPDATE_HOTNESS_JABS()
 #endif  /* WITH_LLVM */
 
 
@@ -2401,6 +2404,7 @@ PyEval_EvalFrame(PyFrameObject *f)
 			if (w == Py_False) {
 				RECORD_FALSE();
 				Py_DECREF(w);
+				UPDATE_HOTNESS_JABS();
 				JUMPTO(oparg);
 				FAST_DISPATCH();
 			}
@@ -2412,6 +2416,7 @@ PyEval_EvalFrame(PyFrameObject *f)
 			}
 			else if (err == 0) {
 				RECORD_FALSE();
+				UPDATE_HOTNESS_JABS();
 				JUMPTO(oparg);
 			}
 			else {
@@ -2431,6 +2436,7 @@ PyEval_EvalFrame(PyFrameObject *f)
 			if (w == Py_True) {
 				RECORD_TRUE();
 				Py_DECREF(w);
+				UPDATE_HOTNESS_JABS();
 				JUMPTO(oparg);
 				FAST_DISPATCH();
 			}
@@ -2442,6 +2448,7 @@ PyEval_EvalFrame(PyFrameObject *f)
 			}
 			else if (err > 0) {
 				RECORD_TRUE();
+				UPDATE_HOTNESS_JABS();
 				JUMPTO(oparg);
 			}
 			else {
@@ -2460,6 +2467,7 @@ PyEval_EvalFrame(PyFrameObject *f)
 			}
 			if (w == Py_False) {
 				RECORD_FALSE();
+				UPDATE_HOTNESS_JABS();
 				JUMPTO(oparg);
 				FAST_DISPATCH();
 			}
@@ -2475,6 +2483,7 @@ PyEval_EvalFrame(PyFrameObject *f)
 			}
 			else {
 				RECORD_FALSE();
+				UPDATE_HOTNESS_JABS();
 				JUMPTO(oparg);
 			}
 			RECORD_NONBOOLEAN();
@@ -2490,6 +2499,7 @@ PyEval_EvalFrame(PyFrameObject *f)
 			}
 			if (w == Py_True) {
 				RECORD_TRUE();
+				UPDATE_HOTNESS_JABS();
 				JUMPTO(oparg);
 				FAST_DISPATCH();
 			}
@@ -2500,6 +2510,7 @@ PyEval_EvalFrame(PyFrameObject *f)
 			}
 			else if (err > 0) {
 				RECORD_TRUE();
+				UPDATE_HOTNESS_JABS();
 				JUMPTO(oparg);
 			}
 			else {
@@ -2512,6 +2523,7 @@ PyEval_EvalFrame(PyFrameObject *f)
 
 		PREDICTED_WITH_ARG(JUMP_ABSOLUTE);
 		TARGET(JUMP_ABSOLUTE)
+			UPDATE_HOTNESS_JABS();
 			JUMPTO(oparg);
 #if FAST_LOOPS
 			/* Enabling this path speeds-up all while and for-loops by bypassing
@@ -2548,11 +2560,6 @@ PyEval_EvalFrame(PyFrameObject *f)
 			RECORD_TYPE(0, v);
 			x = (*v->ob_type->tp_iternext)(v);
 			if (x != NULL) {
-#ifdef WITH_LLVM
-				/* Putting the ++hotness here simulates doing
-				   this on the loop backedge. */
-				++co->co_hotness;
-#endif  /* WITH_LLVM */
 				PUSH(x);
 				PREDICT(STORE_FAST);
 				PREDICT(UNPACK_SEQUENCE);
@@ -2577,6 +2584,9 @@ PyEval_EvalFrame(PyFrameObject *f)
 			goto fast_block_end;
 
 		TARGET(CONTINUE_LOOP)
+#ifdef WITH_LLVM
+			++co->co_hotness;
+#endif
 			retval = PyInt_FromLong(oparg);
 			if (!retval) {
 				why = UNWIND_EXCEPTION;

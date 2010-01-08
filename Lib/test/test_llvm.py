@@ -30,7 +30,7 @@ JIT_OPT_LEVEL = sys.flags.optimize if sys.flags.optimize > 2 else 2
 
 # Various constants that feed into the hotness model.
 HOTNESS_CALL = 10  # Points for a function entry.
-HOTNESS_LOOP = 1   # Points for entering a loop.
+HOTNESS_LOOP = 1   # Points for a taken loop backedge.
 
 
 @contextlib.contextmanager
@@ -2520,10 +2520,9 @@ def foo():
         self.assertFalse(foo.__code__.__use_llvm__)
         foo()
 
-        # +1 point for entering the loop once.
-        # TODO(collinwinter): we should count backedges, not loop entries.
-        hotness = HOTNESS_CALL + HOTNESS_LOOP
-        self.assertEqual(foo.__code__.co_hotness, hotness)
+        # Note that we don't count the loop in any way, since we never take
+        # a loop backedge.
+        self.assertEqual(foo.__code__.co_hotness, HOTNESS_CALL)
 
     def test_while_loop_hotness(self):
         # Verify our understanding of how the hotness model deals with while
@@ -2538,9 +2537,7 @@ def foo():
         self.assertFalse(foo.__code__.__use_llvm__)
         foo()
 
-        # TODO(collinwinter): this should be 10 + 1000000, but we don't
-        # currently count while loops in the hotness model.
-        hotness = HOTNESS_CALL
+        hotness = HOTNESS_CALL + HOTNESS_LOOP * 1000000
         self.assertEqual(foo.__code__.co_hotness, hotness)
 
     def test_generator_hotness(self):
