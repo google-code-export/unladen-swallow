@@ -1,4 +1,4 @@
-#! /usr/bin/env python2.6
+#! /usr/bin/env python2.5
 
 """Compute the differences between two hotness metric tables.
 
@@ -25,6 +25,8 @@ $ python diff_hotness.py old_table.txt new_table.txt
 	baz.py:131 (elementInScope) -> -7403 points
 	baz.py:201 (elementInActiveFormattingElements) -> -5916 points
 """
+
+from __future__ import with_statement
 
 __author__ = "collinwinter@google.com (Collin Winter)"
 
