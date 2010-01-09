@@ -74,34 +74,20 @@ CFLAGSFORSHARED=@CFLAGSFORSHARED@
 PY_CFLAGS=	$(CFLAGS) $(CPPFLAGS) $(CFLAGSFORSHARED) -DPy_BUILD_CORE
 PY_CXXFLAGS=	$(CXXFLAGS) $(CPPFLAGS) $(CFLAGSFORSHARED) -DPy_BUILD_CORE -Wno-write-strings
 
-# LLVM flags extracted from llvm-config jit bitreader x86
-# These will be unused if BUILD_LLVM==disabled.
-LLVMBASEFLAGS=	-D__STDC_LIMIT_MACROS -D__STDC_CONSTANT_MACROS -Woverloaded-virtual
-ifeq (@BUILD_LLVM@, 0)
-	LLVMCXXFLAGS=	-I@LLVM_INC_DIR@ $(LLVMBASEFLAGS)
-	LLVM_LIB_DIR=   @LLVM_PATH@/lib
-	OUR_PWD=
-else
-	# If LLVM is disabled, we still need some of the utility headers from LLVM
-	# for things like managed statics and mutexes. Pull those in, but don't
-	# actually use LLVM for code generation.
-	LLVMCXXFLAGS=	-I@LLVM_INC_DIR@ -I$(srcdir)/@LLVM_INC_DIR@ $(LLVMBASEFLAGS)
-	# This line will be nonsensical if BUILD_LLVM==0, but that's what the
-	# test above is for. It's also nonsense if BUILD_LLVM==disabled, but
-	# then it won't be used, either.
-	LLVM_LIB_DIR=	@LLVM_PATH@/lib
-	# We can't trust the PWD environment variable (Buildbot doesn't set it
-	# correctly, for example).
-	OUR_PWD=`pwd`/
-endif
-LLVM_INC_DIR=	@LLVM_INC_DIR@
-LLVM_BIN_DIR=	@LLVM_PATH@/bin
-ifeq (@BUILD_LLVM@, disabled)
-	LLVMLIBS = UNUSED
-	LLVM_LIB_PATHS =
-else
-	LLVMLIBS = LLVMX86AsmParser LLVMX86AsmPrinter LLVMX86CodeGen LLVMSelectionDAG LLVMAsmPrinter LLVMX86Info LLVMBitReader LLVMJIT LLVMExecutionEngine LLVMCodeGen LLVMScalarOpts LLVMTransformUtils LLVMipa LLVMAnalysis LLVMTarget LLVMMC LLVMCore LLVMSupport LLVMSystem
-	LLVM_LIB_PATHS = $(patsubst %, $(LLVM_LIB_DIR)/lib%.a, $(LLVMLIBS))
+# LLVM integration options
+LLVM_INC_DIR=		@LLVM_INC_DIR@
+LLVM_BIN_DIR=		@LLVM_PATH@/bin
+LLVM_CONFIG=		$(LLVM_BIN_DIR)/llvm-config
+LLVM_CONFIG_CMD=	$(LLVM_CONFIG) jit bitreader backend
+ifneq (@BUILD_LLVM@, disabled)
+	LLVM_CXXFLAGS=	`$(LLVM_CONFIG_CMD) --cxxflags`
+	# Merge the output into a single line.
+	# TODO(collinwinter): fix this in llvm-config and remove this hack.
+	LLVM_LDFLAGS=	`$(LLVM_CONFIG_CMD) --ldflags --libs | awk '{ORS=""} {print $0}'`
+	LLVM_LIB_PATHS=	$(shell $(LLVM_CONFIG_CMD) --libfiles)
+	ifeq ($(LLVM_LIB_PATHS), "")
+		LLVM_LIB_PATHS=	llvm
+	endif
 endif
 
 
@@ -212,11 +198,6 @@ UNICODE_OBJS=   @UNICODE_OBJS@
 
 PYTHON=		python$(EXE)
 BUILDPYTHON=	python$(BUILDEXE)
-
-# This goes at the end of a CC line intended to build an executable.
-# LLVM will be included via libpythonX.Y.a.
-EXECUTABLE_LINK_ARGS=	$(LINKFORSHARED) $(BLDLIBRARY) $(LIBS) $(MODLIBS) \
-		$(SYSLIBS) $(LDLAST)
 
 # The task to run while instrument when building the profile-opt target
 PROFILE_TASK=	$(srcdir)/Tools/pybench/pybench.py -n 2 --with-gc --with-syscheck
@@ -456,7 +437,7 @@ coverage:
 .PHONY: llvm
 ifeq (@BUILD_LLVM@, 1)
 llvm:
-	$(MAKE) -C Util/llvm tools-only ONLY_TOOLS="clang opt llvm-link llvm-dis"
+	$(MAKE) -C Util/llvm tools-only ONLY_TOOLS="clang opt llvm-link llvm-dis llvm-config"
 else
 llvm: ;
 endif
@@ -464,13 +445,19 @@ endif
 # Declare some of LLVM's build outputs to depend on LLVM.  We only
 # declare the ones that other files need to depend on.
 $(LLVM_BIN_DIR)/clang $(LLVM_BIN_DIR)/opt $(LLVM_BIN_DIR)/llvm-link \
-	$(LLVM_BIN_DIR)/llvm-dis $(LLVM_LIB_PATHS) \
+	$(LLVM_BIN_DIR)/llvm-dis $(LLVM_CONFIG) $(LLVM_LIB_PATHS) \
 	$(LLVM_INC_DIR)/llvm/Intrinsics.gen: llvm
 
+sysconfig: llvm
+	@case @BUILD_LLVM@ in \
+	0|1) ( echo "LLVM_CXXFLAGS=$(LLVM_CXXFLAGS)"; echo "LLVM_LDFLAGS=$(LLVM_LDFLAGS)" ) > sysconfig;; \
+	disabled) touch sysconfig;; \
+	esac
+
 # Build the interpreter
-$(BUILDPYTHON): Modules/python.o $(LIBRARY) $(LDLIBRARY) $(BCLIBRARY)
-		$(LINKCC) $(LDFLAGS) -o $@ Modules/python.o \
-		$(EXECUTABLE_LINK_ARGS)
+$(BUILDPYTHON): Modules/python.o $(LIBRARY) $(LDLIBRARY) $(BCLIBRARY) sysconfig $(LLVM_CONFIG)
+	$(LINKCC) $(LDFLAGS) -o $@ Modules/python.o $(LINKFORSHARED) $(BLDLIBRARY) \
+		$(LIBS) $(MODLIBS) $(SYSLIBS) $(LLVM_LDFLAGS) $(LDLAST)
 
 platform: $(BUILDPYTHON)
 	$(RUNSHARED) ./$(BUILDPYTHON) -E -c 'import sys ; from distutils.util import get_platform ; print get_platform()+"-"+sys.version[0:3]' >platform
@@ -485,23 +472,8 @@ sharedmods: $(BUILDPYTHON)
 
 # Build static library
 # avoid long command lines, same as LIBRARY_OBJS.
-# We "link in" LLVM by extracting all .o files from LLVM's .a's, then
-# merging them into libpythonX.Y.a.
 $(LIBRARY): $(LIBRARY_OBJS) $(LLVM_LIB_PATHS)
-	-rm -rf $@ $@-objs
 	$(AR) cqS $@ Modules/getbuildinfo.o
-	set -e; \
-	if test @BUILD_LLVM@ != disabled; then \
-		export OUR_PWD=$(OUR_PWD); \
-		mkdir $@-objs; \
-		(set -e; \
-		cd $@-objs; \
-		for lib in $(LLVM_LIB_PATHS) ; do \
-			$(AR) x $${OUR_PWD}$$lib; \
-		done); \
-		$(AR) cqS $@ $@-objs/*.o; \
-		rm -fr $@-objs; \
-	fi
 	$(AR) cqS $@ $(PARSER_OBJS)
 	$(AR) cqS $@ $(OBJECT_OBJS)
 	$(AR) cqS $@ $(PYTHON_OBJS)
@@ -509,16 +481,16 @@ $(LIBRARY): $(LIBRARY_OBJS) $(LLVM_LIB_PATHS)
 	$(AR) cqS $@ $(MODOBJS)
 	$(RANLIB) $@
 
-libpython$(VERSION).so: $(LIBRARY_OBJS)
+libpython$(VERSION).so: $(LIBRARY_OBJS) $(LLVM_CONFIG)
 	if test $(INSTSONAME) != $(LDLIBRARY); then \
-		$(LDSHARED) $(LDFLAGS) -Wl,-h$(INSTSONAME) -o $(INSTSONAME) $(LIBRARY_OBJS) $(SHLIBS) $(LIBC) $(LIBM) $(LDLAST); \
+		$(LDSHARED) $(LLVM_LDFLAGS) $(LDFLAGS) -Wl,-h$(INSTSONAME) -o $(INSTSONAME) $(LIBRARY_OBJS) $(SHLIBS) $(LIBC) $(LIBM) $(LDLAST); \
 		$(LN) -f $(INSTSONAME) $@; \
 	else\
-		$(LDSHARED) $(LDFLAGS) -o $@ $(LIBRARY_OBJS) $(SHLIBS) $(LIBC) $(LIBM) $(LDLAST); \
+		$(LDSHARED) $(LLVM_LDFLAGS) $(LDFLAGS) -o $@ $(LIBRARY_OBJS) $(SHLIBS) $(LIBC) $(LIBM) $(LDLAST); \
 	fi
 
-libpython$(VERSION).sl: $(LIBRARY_OBJS)
-	$(LDSHARED) $(LDFLAGS) -o $@ $(LIBRARY_OBJS) $(SHLIBS) $(LIBC) $(LIBM) $(LDLAST)
+libpython$(VERSION).sl: $(LIBRARY_OBJS) $(LLVM_CONFIG)
+	$(LDSHARED) $(LLVM_LDFLAGS) $(LDFLAGS) -o $@ $(LIBRARY_OBJS) $(SHLIBS) $(LIBC) $(LIBM) $(LDLAST)
 
 # This rule is here for OPENSTEP/Rhapsody/MacOSX. It builds a temporary
 # minimal framework (not including the Lib directory and such) in the current
@@ -550,9 +522,9 @@ $(PYTHONFRAMEWORKDIR)/Versions/$(VERSION)/$(PYTHONFRAMEWORK): \
 
 # This rule builds the Cygwin Python DLL and import library if configured
 # for a shared core library; otherwise, this rule is a noop.
-$(DLLLIBRARY) libpython$(VERSION).dll.a: $(LIBRARY_OBJS)
+$(DLLLIBRARY) libpython$(VERSION).dll.a: $(LIBRARY_OBJS) $(LLVM_CONFIG)
 	if test -n "$(DLLLIBRARY)"; then \
-		$(LDSHARED) $(LDFLAGS) -Wl,--out-implib=$@ -o $(DLLLIBRARY) $^ \
+		$(LDSHARED) $(LLVM_LDFLAGS) $(LDFLAGS) -Wl,--out-implib=$@ -o $(DLLLIBRARY) $^ \
 			$(LIBS) $(MODLIBS) $(SYSLIBS) $(LDLAST); \
 	else true; \
 	fi
@@ -793,14 +765,15 @@ Util/googletest/gtest.o:
 	$(CXX) -c $(PY_CXXFLAGS) -I$(srcdir)/Util/googletest -I$(srcdir)/Util/googletest/include -o $@ $(srcdir)/Util/googletest/src/gtest-all.cc
 
 # Must be in the root object directory for Python to find libpython.bc.
+# BUILDPYTHON and python-config are order-only so that $^ doesn't pick them up.
+# The python-config line needs to come last, or this will be broken on Linux.
 AllUnitTests: $(srcdir)/Unittests/*Test.cc $(srcdir)/Unittests/pytest_main.cc \
-		$(LIBRARY) Util/googletest/gtest.o
-	$(CXX) $(LLVMCXXFLAGS) $(PY_CXXFLAGS) \
-		-I$(srcdir)/Util/googletest/include -o $@ $^ \
-		$(EXECUTABLE_LINK_ARGS)
+		$(LIBRARY) Util/googletest/gtest.o | $(BUILDPYTHON) python-config
+	$(CXX) $(CPPFLAGS) -I$(srcdir)/Util/googletest/include -o $@ $^ \
+		-L. $(LDFLAGS) `$(RUNSHARED) ./$(BUILDPYTHON) ./python-config --cxxflags --ldflags --libs`
 
 unittest: AllUnitTests
-	./AllUnitTests
+	$(RUNSHARED) ./AllUnitTests
 
 # Test the interpreter (twice, once without .pyc files, once with)
 # In the past, we've had problems where bugs in the marshalling or
@@ -1051,6 +1024,11 @@ $(srcdir)/Lib/$(PLATDIR):
 	export EXE; EXE="$(BUILDEXE)"; \
 	cd $(srcdir)/Lib/$(PLATDIR); ./regen
 
+python-config: Misc/python-config.in
+	# Substitution happens here, as the completely-expanded BINDIR
+	# is not available in configure
+	sed -e "s,@EXENAME@,$(BINDIR)/python$(VERSION)$(EXE)," < $(srcdir)/Misc/python-config.in >python-config
+
 # Install the include files
 INCLDIRSTOMAKE=$(INCLUDEDIR) $(CONFINCLUDEDIR) $(INCLUDEPY) $(CONFINCLUDEPY)
 inclinstall:
@@ -1072,7 +1050,7 @@ inclinstall:
 # Install the library and miscellaneous stuff needed for extending/embedding
 # This goes into $(exec_prefix)
 LIBPL=		$(LIBP)/config
-libainstall:	all
+libainstall:	all python-config
 	@for i in $(LIBDIR) $(LIBP) $(LIBPL) $(DESTSHARED); \
 	do \
 		if test ! -d $(DESTDIR)$$i; then \
@@ -1103,11 +1081,9 @@ libainstall:	all
 	$(INSTALL_DATA) Modules/Setup $(DESTDIR)$(LIBPL)/Setup
 	$(INSTALL_DATA) Modules/Setup.local $(DESTDIR)$(LIBPL)/Setup.local
 	$(INSTALL_DATA) Modules/Setup.config $(DESTDIR)$(LIBPL)/Setup.config
+	$(INSTALL_DATA) sysconfig $(DESTDIR)$(LIBPL)/sysconfig
 	$(INSTALL_SCRIPT) $(srcdir)/Modules/makesetup $(DESTDIR)$(LIBPL)/makesetup
 	$(INSTALL_SCRIPT) $(srcdir)/install-sh $(DESTDIR)$(LIBPL)/install-sh
-	# Substitution happens here, as the completely-expanded BINDIR
-	# is not available in configure
-	sed -e "s,@EXENAME@,$(BINDIR)/python$(VERSION)$(EXE)," < $(srcdir)/Misc/python-config.in >python-config
 	$(INSTALL_SCRIPT) python-config $(DESTDIR)$(BINDIR)/python$(VERSION)-config
 	rm python-config
 	@if [ -s Modules/python.exp -a \
@@ -1240,8 +1216,8 @@ config.status:	$(srcdir)/configure
 .c.o:
 	$(CC) -c $(PY_CFLAGS) -o $@ $<
 
-%.o: %.cc $(LLVM_INC_DIR)/llvm/Intrinsics.gen
-	$(CXX) -c $(LLVMCXXFLAGS) $(PY_CXXFLAGS) -o $@ $<
+%.o: %.cc $(LLVM_INC_DIR)/llvm/Intrinsics.gen $(LLVM_CONFIG)
+	$(CXX) -c $(LLVM_CXXFLAGS) $(PY_CXXFLAGS) -o $@ $<
 
 %.bc : %.c $(PYTHON_HEADERS) $(LLVM_BIN_DIR)/clang
 	$(LLVM_BIN_DIR)/clang -O3 -emit-llvm -c $(CPPFLAGS) $(CFLAGSFORSHARED) -DPy_BUILD_CORE $< -o $@
@@ -1289,6 +1265,7 @@ clean: pycremoval
 	find $(srcdir)/build -name 'fficonfig.h' -exec rm -f {} ';' || true
 	find $(srcdir)/build -name 'fficonfig.py' -exec rm -f {} ';' || true
 	rm -f Python/llvm_inline_functions.bc
+	rm -f sysconfig
 	rm -f $(BCLIBRARY)
 
 profile-removal:
