@@ -25,12 +25,12 @@ DEFAULT_OPT_LEVEL = _foo.__code__.co_optimization
 del _foo
 
 
-JIT_SPIN_COUNT = _llvm.get_hotness_threshold() / 10 + 1000
-JIT_OPT_LEVEL = sys.flags.optimize if sys.flags.optimize > 2 else 2
-
 # Various constants that feed into the hotness model.
 HOTNESS_CALL = 10  # Points for a function entry.
 HOTNESS_LOOP = 1   # Points for a taken loop backedge.
+
+JIT_SPIN_COUNT = _llvm.get_hotness_threshold() / HOTNESS_CALL + 1000
+JIT_OPT_LEVEL = sys.flags.optimize if sys.flags.optimize > 2 else 2
 
 
 @contextlib.contextmanager
@@ -75,6 +75,33 @@ def compile_for_llvm(function_name, def_string, optimization_level=-1,
             func.__code__.co_optimization = optimization_level
         func.__code__.__use_llvm__ = True
     return func
+
+
+def spin_until_hot(func, *training_args):
+    """Compile a function by calling it until it is hot.
+
+    Calls a function JIT_SPIN_COUNT times with each of training_args as
+    arguments and returns a list containing the return values from each
+    iteration.  When testing feedback directed optimizations, this function is
+    used to gather feedback in the code object before performaing JIT
+    compilation.
+
+    To inject different training arguments into the function while it is being
+    spun up, you can pass multiple tuples of arguments to this function, like
+    so:
+
+    spin_until_hot(mul, [1, 3], [1.0, 3.0])
+
+    This will cause the function to be trained on both integer and floating
+    point inputs.
+
+    """
+    results = []
+    with set_jit_control("whenhot"):
+        for _ in xrange(JIT_SPIN_COUNT):
+            for args in training_args:
+                results.append(func(*args))
+    return results
 
 
 class ExtraAssertsTestCase(unittest.TestCase):
@@ -143,9 +170,7 @@ class GeneralCompilationTests(ExtraAssertsTestCase, LlvmTestCase):
     def test_co_llvm(self):
         def f():
             return 1 + 2
-        with set_jit_control('whenhot'):
-            for _ in xrange(JIT_SPIN_COUNT):
-                f()
+        spin_until_hot(f, [])
         str_co_llvm = str(f.__code__.co_llvm)
         # After code objects are compiled to machine code, the IR form
         # is mostly cleared out. However, we want to be able to print
@@ -2449,7 +2474,7 @@ class OptimizationTests(LlvmTestCase, ExtraAssertsTestCase):
         foo = compile_for_llvm("foo", "def foo(): pass",
                                optimization_level=None)
         iterations = JIT_SPIN_COUNT
-        l = [foo() for _ in xrange(iterations)]
+        [foo() for _ in xrange(iterations)]
         self.assertEqual(foo.__code__.co_hotness, iterations * 10)
         self.assertEqual(foo.__code__.__use_llvm__, True)
         self.assertEqual(foo.__code__.co_optimization, JIT_OPT_LEVEL)
@@ -2562,15 +2587,13 @@ def foo():
         # implementation. We do this by asserting that if their assumptions
         # about globals/builtins no longer hold, they bail.
         with test_support.swap_attr(__builtin__, "len", len):
-            iterations = JIT_SPIN_COUNT
             foo = compile_for_llvm("foo", """
 def foo(x, callback):
     callback()
     return len(x)
 """, optimization_level=None)
 
-            for _ in xrange(iterations):
-                foo([], lambda: None)
+            spin_until_hot(foo, [[], lambda: None])
             self.assertEqual(foo.__code__.__use_llvm__, True)
 
             def change_builtins():
@@ -2617,8 +2640,7 @@ def foo(trigger):
         return match
     return 5
 """, optimization_level=None)
-        for _ in xrange(JIT_SPIN_COUNT):  # Spin foo() until it becomes hot.
-            foo([])
+        spin_until_hot(foo, [[]])
         self.assertEquals(foo.__code__.__use_llvm__, True)
         self.assertEquals(foo([]), 5)
 
@@ -2644,10 +2666,7 @@ def foo(trigger):
         def outer(leaf):
             [leaf(), len([])]
 
-        # This will specialize the len() call in outer, but not the leaf() call,
-        # since lambdas are created anew each time through the loop.
-        for _ in xrange(JIT_SPIN_COUNT):
-            outer(lambda: None)
+        spin_until_hot(outer, [lambda: None])
         self.assertTrue(outer.__code__.__use_llvm__)
         sys.setbailerror(False)
         outer(profiling_leaf)
@@ -2663,8 +2682,7 @@ def foo(trigger):
         def foo(f):
             return f([])
 
-        for _ in xrange(JIT_SPIN_COUNT):
-            foo(len)
+        spin_until_hot(foo, [len])
         self.assertTrue(foo.__code__.__use_llvm__)
         self.assertRaises(RuntimeError, foo, lambda x: 7)
 
@@ -2682,8 +2700,7 @@ def foo(trigger):
         # Compile like this so we get a new code object every time.
         foo = compile_for_llvm("foo", "def foo(): return len([])",
                                optimization_level=None)
-        for _ in xrange(JIT_SPIN_COUNT):
-            foo()
+        spin_until_hot(foo, [])
         self.assertEqual(foo.__code__.__use_llvm__, True)
         self.assertEqual(foo.__code__.co_fatalbailcount, 0)
         self.assertEqual(foo(), 0)
@@ -2693,8 +2710,7 @@ def foo(trigger):
             self.assertEqual(foo.__code__.co_fatalbailcount, 1)
             # Since we can't recompile things yet, __use_llvm__ should be left
             # at False and execution should use the eval loop.
-            for _ in xrange(JIT_SPIN_COUNT):
-                foo()
+            spin_until_hot(foo, [])
             self.assertEqual(foo.__code__.__use_llvm__, False)
             self.assertEqual(foo(), 7)
 
@@ -2705,8 +2721,7 @@ def foo(trigger):
         d = dict.fromkeys(range(12000))
         foo = compile_for_llvm('foo', 'def foo(x): return x()',
                                optimization_level=None)
-        for _ in xrange(JIT_SPIN_COUNT):
-            foo(d.popitem)
+        spin_until_hot(foo, [d.popitem])
         self.assertTrue(foo.__code__.__use_llvm__)
 
         k, v = foo(d.popitem)
@@ -2717,8 +2732,7 @@ def foo(trigger):
         # Test our ability to optimize calls to METH_ARG_RANGE/arity=2 functions.
         foo = compile_for_llvm('foo', 'def foo(x): return isinstance(x, int)',
                                optimization_level=None)
-        for _ in xrange(JIT_SPIN_COUNT):
-            foo(5)
+        spin_until_hot(foo, [5])
         self.assertTrue(foo.__code__.__use_llvm__)
         self.assertTrue(foo(5))
         self.assertFalse(foo([]))
@@ -2731,8 +2745,7 @@ def foo(trigger):
         class Object(object):
             pass
         x = Object()
-        for _ in xrange(JIT_SPIN_COUNT):
-            foo(x)
+        spin_until_hot(foo, [x])
         self.assertEqual(x.y, 5)
         self.assertTrue(foo.__code__.__use_llvm__)
         self.assertContains("@setattr", str(foo.__code__.co_llvm))
@@ -2742,8 +2755,7 @@ def foo(trigger):
         foo = compile_for_llvm('foo', 'def foo(x): return sum(x, 1)',
                                optimization_level=None)
         input = [1, 2]
-        for _ in xrange(JIT_SPIN_COUNT):
-            foo(input)
+        spin_until_hot(foo, [input])
         self.assertTrue(foo.__code__.__use_llvm__)
         self.assertEqual(foo([2, 3]), 6)
         self.assertRaises(TypeError, foo, 5)
@@ -2755,8 +2767,7 @@ def foo(trigger):
         foo = compile_for_llvm('foo', 'def foo(x): return sum(x)',
                                optimization_level=None)
         input = [1, 2]
-        for _ in xrange(JIT_SPIN_COUNT):
-            foo(input)
+        spin_until_hot(foo, [input])
         self.assertTrue(foo.__code__.__use_llvm__)
         self.assertEqual(foo([2, 3]), 5)
         self.assertRaises(TypeError, foo, 5)
@@ -2768,9 +2779,7 @@ def foo(trigger):
         # function pointer directly.
         foo = compile_for_llvm('foo', 'def foo(x): return x.join(["c", "d"])',
                                optimization_level=None)
-        for _ in xrange(JIT_SPIN_COUNT):
-            foo("a")
-            foo("c")
+        spin_until_hot(foo, ["a"], ["c"])
         self.assertTrue(foo.__code__.__use_llvm__)
         self.assertEqual(foo("a"), "cad")
 
@@ -2783,10 +2792,8 @@ def foo(trigger):
         # do any inlining of multiplication.
         mul = compile_for_llvm("mul", "def mul(a, b): return a * b",
                                optimization_level=None)
+        spin_until_hot(mul, [3, 4], [3.0, 4.0])
 
-        for _ in xrange(JIT_SPIN_COUNT):
-            mul(3, 4)
-            mul(3.0, 4.0)
         self.assertTrue(mul.__code__.__use_llvm__)
         self.assertContains("PyNumber_Multiply", str(mul.__code__.co_llvm))
         self.assertEquals(mul(3, 4), 12)
@@ -2797,8 +2804,7 @@ def foo(trigger):
                                optimization_level=None)
 
         # Prime with ints.
-        for _ in xrange(JIT_SPIN_COUNT):
-            mod(8, 3)
+        spin_until_hot(mod, [8, 3])
         self.assertTrue(mod.__code__.__use_llvm__)
         self.assertEqual(mod(8, 3), 2)
         self.assertEqual(mod(9, 2), 1)
@@ -2828,10 +2834,12 @@ def foo(trigger):
         foo_int = compile_for_llvm('foo', 'def foo(a, b, c): return a+b-c',
                                optimization_level=None)
 
+        self.assertEqual(foo_float(1.0, 2.0, 3.0), 0.0)
+        self.assertEqual(foo_int(1, 2, 3), 0)
+
         # Specialize foo_float and foo_int on their respective types.
-        for _ in xrange(JIT_SPIN_COUNT):
-            self.assertEqual(foo_float(1.0, 2.0, 3.0), 0.0)
-            self.assertEqual(foo_int(1, 2, 3), 0)
+        spin_until_hot(foo_float, [1.0, 2.0, 3.0])
+        spin_until_hot(foo_int, [1, 2, 3])
         self.assertTrue(foo_float.__code__.__use_llvm__)
         self.assertTrue(foo_int.__code__.__use_llvm__)
 
@@ -2876,10 +2884,12 @@ def foo(trigger):
         foo_int = compile_for_llvm('foo', 'def foo(a, b, c): return (a*b)/c',
                                optimization_level=None)
 
+        self.assertEqual(foo_float(1.0, 2.0, 2.0), 1.0)
+        self.assertEqual(foo_int(1, 2, 2), 1)
+
         # Specialize foo_float and foo_int on their respective types.
-        for _ in xrange(JIT_SPIN_COUNT):
-            self.assertEqual(foo_float(1.0, 2.0, 2.0), 1.0)
-            self.assertEqual(foo_int(1, 2, 2), 1)
+        spin_until_hot(foo_float, [1.0, 2.0, 2.0])
+        spin_until_hot(foo_int, [1, 2, 2])
         self.assertTrue(foo_float.__code__.__use_llvm__)
         self.assertTrue(foo_int.__code__.__use_llvm__)
         self.assertFalse("PyNumber_Multiply" in str(foo_int.__code__.co_llvm))
@@ -2913,8 +2923,7 @@ def foo(trigger):
         foo = compile_for_llvm('foo', 'def foo(a, b): return a[b]',
                                optimization_level=None)
         a = [1]
-        for _ in xrange(JIT_SPIN_COUNT):
-            foo(a, 0)
+        spin_until_hot(foo, [a, 0])
         self.assertTrue(foo.__code__.__use_llvm__)
         self.assertEqual(foo(a, 0), 1)
         self.assertEqual(foo(a, -1), 1)
@@ -2945,8 +2954,7 @@ def foo(trigger):
         foo = compile_for_llvm('foo', 'def foo(a, b, c): a[b] = c',
                                optimization_level=None)
         a = [1]
-        for _ in xrange(JIT_SPIN_COUNT):
-            foo(a, 0, 10)
+        spin_until_hot(foo, [a, 0, 10])
         self.assertTrue(foo.__code__.__use_llvm__)
         self.assertEqual(a[0], 10)
 
@@ -3082,8 +3090,7 @@ def foo(x):
     return 8
 """, optimization_level=None)
 
-        for _ in xrange(JIT_SPIN_COUNT):
-            foo(True)
+        spin_until_hot(foo, [True])
 
         self.assertTrue(foo.__code__.__use_llvm__)
         self.assertEqual(foo(True), 7)
@@ -3108,9 +3115,7 @@ def foo(x):
     return 8
 """, optimization_level=None)
 
-        for _ in xrange(JIT_SPIN_COUNT):
-            foo(True)
-            foo(False)
+        spin_until_hot(foo, [True], [False])
 
         self.assertTrue(foo.__code__.__use_llvm__)
         self.assertEqual(foo(True), 7)
@@ -3132,8 +3137,7 @@ def foo(x):
     return 8
 """, optimization_level=None)
 
-        for _ in xrange(JIT_SPIN_COUNT):
-            foo(False)
+        spin_until_hot(foo, [False])
 
         self.assertTrue(foo.__code__.__use_llvm__)
         self.assertEqual(foo(False), 7)
@@ -3158,9 +3162,7 @@ def foo(x):
     return 8
 """, optimization_level=None)
 
-        for _ in xrange(JIT_SPIN_COUNT):
-            foo(True)
-            foo(False)
+        spin_until_hot(foo, [True], [False])
 
         self.assertTrue(foo.__code__.__use_llvm__)
         self.assertEqual(foo(False), 7)
@@ -3179,8 +3181,7 @@ def foo(x):
     return x and len([1, 2])
 """, optimization_level=None)
 
-        for _ in xrange(JIT_SPIN_COUNT):
-            foo(False)
+        spin_until_hot(foo, [False])
 
         self.assertTrue(foo.__code__.__use_llvm__)
         self.assertEqual(foo(False), False)
@@ -3202,9 +3203,7 @@ def foo(x):
     return x and len([1, 2])
 """, optimization_level=None)
 
-        for _ in xrange(JIT_SPIN_COUNT):
-            foo(True)
-            foo(False)
+        spin_until_hot(foo, [True], [False])
 
         self.assertTrue(foo.__code__.__use_llvm__)
         self.assertEqual(foo(False), False)
@@ -3223,8 +3222,7 @@ def foo(x):
     return x or len([1, 2])
 """, optimization_level=None)
 
-        for _ in xrange(JIT_SPIN_COUNT):
-            foo(True)
+        spin_until_hot(foo, [True])
 
         self.assertTrue(foo.__code__.__use_llvm__)
         self.assertEqual(foo(True), True)
@@ -3246,9 +3244,7 @@ def foo(x):
     return x or len([1, 2])
 """, optimization_level=None)
 
-        for _ in xrange(JIT_SPIN_COUNT):
-            foo(True)
-            foo(False)
+        spin_until_hot(foo, [True], [False])
 
         self.assertTrue(foo.__code__.__use_llvm__)
         self.assertEqual(foo(True), True)
@@ -3267,8 +3263,7 @@ def foo():
     return len([])
 """, optimization_level=None)
         import os  # Make sure this is in sys.modules.
-        for _ in xrange(JIT_SPIN_COUNT):
-            foo()
+        spin_until_hot(foo, [])
 
         # If we get here, we haven't bailed, but double-check to be sure.
         self.assertTrue(foo.__code__.__use_llvm__)
@@ -3284,10 +3279,7 @@ def foo():
             return c.foo
         c = C()
 
-        # Spin the code until it is hot, while checking for correctness.
-        for i in xrange(JIT_SPIN_COUNT):
-            self.assertEqual(i, get_foo(c))
-            c.foo += 1
+        spin_until_hot(get_foo, [c])
         self.assertTrue(get_foo.__code__.__use_llvm__)
 
         # Check that the code bails correctly by passing an argument of another
@@ -3317,9 +3309,7 @@ def foo():
             return c.foo
         c = C()
 
-        # Spin the code until it is hot.
-        for i in xrange(JIT_SPIN_COUNT):
-            get_foo(c)
+        spin_until_hot(get_foo, [c])
         self.assertTrue(get_foo.__code__.__use_llvm__)
 
         # Check that invalidating the code by assigning a descriptor works.
@@ -3344,9 +3334,7 @@ def foo():
         c = C()
         self.assertFalse(hasattr(c, '__dict__'))
 
-        # Spin the code until it is hot.
-        for _ in xrange(JIT_SPIN_COUNT):
-            get_foo(c)
+        spin_until_hot(get_foo, [c])
         self.assertTrue(get_foo.__code__.__use_llvm__)
 
         # Check that invalidating the code by assigning a descriptor works.
@@ -3370,9 +3358,7 @@ def foo():
             return c.foo
         c = C()
 
-        # Spin the code until it is hot.
-        for _ in xrange(JIT_SPIN_COUNT):
-            self.assertEqual(0, get_foo(c))
+        spin_until_hot(get_foo, [c])
         self.assertTrue(get_foo.__code__.__use_llvm__)
 
         # Check that invalidating the code by assigning a descriptor works.
@@ -3419,8 +3405,7 @@ def foo():
 
         # Test them in the compiled code.  We're concerned with correctness,
         # not speed, so we turn off errors on bails.
-        for _ in xrange(JIT_SPIN_COUNT):
-            get_foo(c)
+        spin_until_hot(get_foo, [c])
         sys.setbailerror(False)
         self.assertTrue(get_foo.__code__.__use_llvm__)
         test_mutate_descriptor()
@@ -3469,8 +3454,7 @@ def foo():
 
         # Test them in the compiled code.  We're concerned with correctness,
         # not speed, so we turn off errors on bails.
-        for _ in xrange(JIT_SPIN_COUNT):
-            get_foo()
+        spin_until_hot(get_foo, [])
         sys.setbailerror(False)
         self.assertTrue(get_foo.__code__.__use_llvm__)
         test_mutate_descriptor()
@@ -3521,8 +3505,7 @@ def foo():
 
         # Test them in the compiled code.  We're concerned with correctness,
         # not speed, so we turn off errors on bails.
-        for _ in xrange(JIT_SPIN_COUNT):
-            get_foo()
+        spin_until_hot(get_foo, [])
         sys.setbailerror(False)
         self.assertTrue(get_foo.__code__.__use_llvm__)
         test_mutate_descriptor()
@@ -3566,8 +3549,7 @@ def foo():
 
         # Test them in the compiled code.  We're concerned with correctness,
         # not speed, so we turn off errors on bails.
-        for _ in xrange(JIT_SPIN_COUNT):
-            get_foo()
+        spin_until_hot(get_foo, [])
         sys.setbailerror(False)
         self.assertTrue(get_foo.__code__.__use_llvm__)
         test_mutate_descriptor()
@@ -3585,8 +3567,7 @@ def foo():
         def get_foo(o):
             return o.foo
         c = C()
-        for _ in xrange(JIT_SPIN_COUNT):
-            get_foo(c)
+        spin_until_hot(get_foo, [c])
         self.assertTrue(get_foo.__code__.__use_llvm__)
 
         # Do this song and dance to free C.
@@ -3621,8 +3602,7 @@ def foo():
             return o.foo  # This should bail if we've been invalidated.
 
         c = C()
-        for _ in xrange(JIT_SPIN_COUNT):
-            get_foo(c)
+        spin_until_hot(get_foo, [c])
         self.assertTrue(get_foo.__code__.__use_llvm__)
         self.assertEqual(get_foo(c), 1)
         invalidate_code = True
@@ -3636,11 +3616,11 @@ def foo():
         c = C()
         def set_attr(o, x):
             o.foo = x
-        for i in xrange(JIT_SPIN_COUNT):
-            set_attr(c, i)
-            self.assertEqual(c.foo, i)
+        spin_until_hot(set_attr, [c, 0])
+
         # Check that this bails properly when called on itself, a function.
         self.assertRaises(RuntimeError, set_attr, set_attr, 1)
+
         # Check that when it bails, it does the correct thing.
         sys.setbailerror(False)
         set_attr(set_attr, 1)
@@ -3654,9 +3634,7 @@ def foo():
         c = C()
         def set_attr(o, x):
             o.foo = x
-        for i in xrange(JIT_SPIN_COUNT):
-            set_attr(c, i)
-            self.assertEqual(c.foo, i)
+        spin_until_hot(set_attr, [c, 0])
         # Check that sticking a foo descriptor on C invalidates the code.
         C.foo = property(lambda self: -1)
         self.assertFalse(set_attr.__code__.__use_llvm__)
@@ -3709,8 +3687,7 @@ def foo():
 
         # Test them in the compiled code.  We're concerned with correctness,
         # not speed, so we turn off errors on bails.
-        for _ in xrange(JIT_SPIN_COUNT):
-            set_foo(0)
+        spin_until_hot(set_foo, [0])
         # Delete any stale foo attribute shadowing the non-data descriptor.
         del c.foo
         sys.setbailerror(False)
@@ -3749,8 +3726,7 @@ class LlvmRebindBuiltinsTests(test_dynamic.RebindBuiltinsTests):
     def configure_func(self, func, *args):
         # Spin the function until it triggers as hot. Setting co_optimization
         # doesn't trigger the full range of optimizations.
-        for _ in xrange(JIT_SPIN_COUNT):
-            func(*args)
+        spin_until_hot(func, args)
 
     def test_changing_globals_invalidates_function(self):
         foo = compile_for_llvm("foo", "def foo(): return len(range(3))",
