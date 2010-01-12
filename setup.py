@@ -1,7 +1,7 @@
 # Autodetecting setup.py script for building the Python extensions
 #
 
-__version__ = "$Revision: 67099 $"
+__version__ = "$Revision: 75282 $"
 
 import sys, os, imp, re, optparse
 from glob import glob
@@ -486,7 +486,8 @@ class PyBuildExt(build_ext):
         exts.append( Extension("_json", ["_json.c"]) )
         # Python C API test module
         exts.append( Extension('_testcapi', ['_testcapimodule.c', 'cPickle.c'],
-                               define_macros=[('NO_STATIC_MEMOTABLE', 1)]) )
+                               define_macros=[('NO_STATIC_MEMOTABLE', 1)],
+                               depends=['testcapi_long.h']) )
         # profilers (_lsprof is for cProfile.py)
         exts.append( Extension('_hotshot', ['_hotshot.c']) )
         exts.append( Extension('_lsprof', ['_lsprof.c', 'rotatingtree.c']) )
@@ -1077,11 +1078,22 @@ class PyBuildExt(build_ext):
                 exts.append( Extension('dbm', ['dbmmodule.c'],
                                        define_macros=[('HAVE_NDBM_H',None)],
                                        libraries = ndbm_libs ) )
-            elif (self.compiler.find_library_file(lib_dirs, 'gdbm')
-                  and find_file("gdbm/ndbm.h", inc_dirs, []) is not None):
-                exts.append( Extension('dbm', ['dbmmodule.c'],
-                                       define_macros=[('HAVE_GDBM_NDBM_H',None)],
-                                       libraries = ['gdbm'] ) )
+            elif self.compiler.find_library_file(lib_dirs, 'gdbm'):
+                gdbm_libs = ['gdbm']
+                if self.compiler.find_library_file(lib_dirs, 'gdbm_compat'):
+                    gdbm_libs.append('gdbm_compat')
+                if find_file("gdbm/ndbm.h", inc_dirs, []) is not None:
+                    exts.append( Extension(
+                        'dbm', ['dbmmodule.c'],
+                        define_macros=[('HAVE_GDBM_NDBM_H',None)],
+                        libraries = gdbm_libs ) )
+                elif find_file("gdbm-ndbm.h", inc_dirs, []) is not None:
+                    exts.append( Extension(
+                        'dbm', ['dbmmodule.c'],
+                        define_macros=[('HAVE_GDBM_DASH_NDBM_H',None)],
+                        libraries = gdbm_libs ) )
+                else:
+                    missing.append('dbm')
             elif db_incs is not None:
                 exts.append( Extension('dbm', ['dbmmodule.c'],
                                        library_dirs=dblib_dir,
@@ -1337,6 +1349,15 @@ class PyBuildExt(build_ext):
                 )
             libraries = []
 
+        elif platform.startswith('netbsd'):
+            macros = dict(                  # at least NetBSD 5
+                HAVE_SEM_OPEN=1,
+                HAVE_SEM_TIMEDWAIT=0,
+                HAVE_FD_TRANSFER=1,
+                HAVE_BROKEN_SEM_GETVALUE=1
+                )
+            libraries = []
+
         else:                                   # Linux and other unices
             macros = dict(
                 HAVE_SEM_OPEN=1,
@@ -1385,6 +1406,15 @@ class PyBuildExt(build_ext):
             exts.append( Extension('sunaudiodev', ['sunaudiodev.c']) )
         else:
             missing.append('sunaudiodev')
+
+        if platform == 'darwin':
+            # _scproxy
+            exts.append(Extension("_scproxy", [os.path.join(srcdir, "Mac/Modules/_scproxy.c")],
+                extra_link_args= [
+                    '-framework', 'SystemConfiguration',
+                    '-framework', 'CoreFoundation'
+                ]))
+
 
         if platform == 'darwin' and ("--disable-toolbox-glue" not in
                 sysconfig.get_config_var("CONFIG_ARGS")):
@@ -1438,6 +1468,8 @@ class PyBuildExt(build_ext):
                         }
             addMacExtension('_CF', core_kwds, ['cf/pycfbridge.c'])
             addMacExtension('autoGIL', core_kwds)
+
+
 
             # Carbon
             carbon_kwds = {'extra_compile_args': carbon_extra_compile_args,
@@ -1496,8 +1528,8 @@ class PyBuildExt(build_ext):
         # different the UNIX search logic is not sharable.
         from os.path import join, exists
         framework_dirs = [
-            '/System/Library/Frameworks/',
             '/Library/Frameworks',
+            '/System/Library/Frameworks/',
             join(os.getenv('HOME'), '/Library/Frameworks')
         ]
 
@@ -1538,19 +1570,17 @@ class PyBuildExt(build_ext):
         # architectures.
         cflags = sysconfig.get_config_vars('CFLAGS')[0]
         archs = re.findall('-arch\s+(\w+)', cflags)
-        if 'x86_64' in archs or 'ppc64' in archs:
-            try:
-                archs.remove('x86_64')
-            except ValueError:
-                pass
-            try:
-                archs.remove('ppc64')
-            except ValueError:
-                pass
+        fp = os.popen("file %s/Tk.framework/Tk | grep 'for architecture'"%(F,))
+        detected_archs = []
+        for ln in fp:
+            a = ln.split()[-1]
+            if a in archs:
+                detected_archs.append(ln.split()[-1])
+        fp.close()
 
-            for a in archs:
-                frameworks.append('-arch')
-                frameworks.append(a)
+        for a in detected_archs:
+            frameworks.append('-arch')
+            frameworks.append(a)
 
         ext = Extension('_tkinter', ['_tkinter.c', 'tkappinit.c'],
                         define_macros=[('WITH_APPINIT', 1)],

@@ -22,12 +22,12 @@ from test import test_support
 # with sys.path, which is less precise.
 mod_path = os.path.abspath(os.path.join(os.path.dirname(__file__),
                                         "pickletester.py"))
-mod = types.ModuleType("test.pickletester")
-execfile(mod_path, mod.__dict__, mod.__dict__)
-AbstractPickleTests = mod.AbstractPickleTests
-if mod.__name__ in sys.modules:
+pickletester = types.ModuleType("test.pickletester")
+execfile(mod_path, pickletester.__dict__, pickletester.__dict__)
+AbstractPickleTests = pickletester.AbstractPickleTests
+if pickletester.__name__ in sys.modules:
     raise RuntimeError("Did not expect to find test.pickletester loaded")
-sys.modules[mod.__name__] = mod
+sys.modules[pickletester.__name__] = pickletester
 
 
 class DumpCPickle_LoadPickle(AbstractPickleTests):
@@ -141,6 +141,43 @@ class AbstractCompatTests(AbstractPickleTests):
 
     def test_global_ext4(self):
         pass
+
+    # This is a cut-down version of pickletester's test_float. Backwards
+    # compatibility for the values in for_bin_protos was explicitly broken in
+    # r68903 to fix a bug.
+    def test_float(self):
+        for_bin_protos = [4.94e-324, 1e-310]
+        neg_for_bin_protos = [-x for x in for_bin_protos]
+        test_values = [0.0, 7e-308, 6.626e-34, 0.1, 0.5,
+                       3.14, 263.44582062374053, 6.022e23, 1e30]
+        test_proto0_values = test_values + [-x for x in test_values]
+        test_values = test_proto0_values + for_bin_protos + neg_for_bin_protos
+
+        for value in test_proto0_values:
+            pickle = self.dumps(value, 0)
+            got = self.loads(pickle)
+            self.assertEqual(value, got)
+
+        for proto in pickletester.protocols[1:]:
+            for value in test_values:
+                pickle = self.dumps(value, proto)
+                got = self.loads(pickle)
+                self.assertEqual(value, got)
+
+    # Backwards compatibility was explicitly broken in r67934 to fix a bug.
+    def test_unicode_high_plane(self):
+        pass
+
+    if test_support.have_unicode:
+        # This is a cut-down version of pickletester's test_unicode. Backwards
+        # compatibility was explicitly broken in r67934 to fix a bug.
+        def test_unicode(self):
+            endcases = [u'', u'<\\u>', u'<\\\u1234>', u'<\n>', u'<\\>']
+            for proto in pickletester.protocols:
+                for u in endcases:
+                    p = self.dumps(u, proto)
+                    u2 = self.loads(p)
+                    self.assertEqual(u2, u)
 
 
 if not have_python_version("python2.4"):

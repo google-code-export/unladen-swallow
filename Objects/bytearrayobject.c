@@ -154,6 +154,17 @@ _getbuffer(PyObject *obj, Py_buffer *view)
     return view->len;
 }
 
+static int
+_canresize(PyByteArrayObject *self)
+{
+    if (self->ob_exports > 0) {
+        PyErr_SetString(PyExc_BufferError,
+                "Existing exports of data: object cannot be re-sized");
+        return 0;
+    }
+    return 1;
+}
+
 /* Direct API functions */
 
 PyObject *
@@ -229,6 +240,13 @@ PyByteArray_Resize(PyObject *self, Py_ssize_t size)
     assert(PyByteArray_Check(self));
     assert(size >= 0);
 
+    if (size == Py_SIZE(self)) {
+        return 0;
+    }
+    if (!_canresize((PyByteArrayObject *)self)) {
+        return -1;
+    }
+
     if (size < alloc / 2) {
         /* Major downsize; resize down to exact size */
         alloc = size + 1;
@@ -246,16 +264,6 @@ PyByteArray_Resize(PyObject *self, Py_ssize_t size)
     else {
         /* Major upsize; resize up to exact size */
         alloc = size + 1;
-    }
-
-    if (((PyByteArrayObject *)self)->ob_exports > 0) {
-            /*
-            fprintf(stderr, "%d: %s", ((PyByteArrayObject *)self)->ob_exports,
-                    ((PyByteArrayObject *)self)->ob_bytes);
-            */
-            PyErr_SetString(PyExc_BufferError,
-                    "Existing exports of data: object cannot be re-sized");
-            return -1;
     }
 
     sval = PyMem_Realloc(((PyByteArrayObject *)self)->ob_bytes, alloc);
@@ -522,6 +530,10 @@ bytes_setslice(PyByteArrayObject *self, Py_ssize_t lo, Py_ssize_t hi,
 
     if (avail != needed) {
         if (avail > needed) {
+            if (!_canresize(self)) {
+                res = -1;
+                goto finish;
+            }
             /*
               0   lo               hi               old_size
               |   |<----avail----->|<-----tomove------>|
@@ -654,6 +666,8 @@ bytes_ass_subscript(PyByteArrayObject *self, PyObject *index, PyObject *values)
         stop = start;
     if (step == 1) {
         if (slicelen != needed) {
+            if (!_canresize(self))
+                return -1;
             if (slicelen > needed) {
                 /*
                   0   start           stop              old_size
@@ -689,6 +703,8 @@ bytes_ass_subscript(PyByteArrayObject *self, PyObject *index, PyObject *values)
             /* Delete slice */
             Py_ssize_t cur, i;
 
+            if (!_canresize(self))
+                return -1;
             if (step < 0) {
                 stop = start + 1;
                 start = stop + step * (slicelen - 1) - 1;
@@ -1077,7 +1093,7 @@ bytes_dealloc(PyByteArrayObject *self)
 {
 	if (self->ob_exports > 0) {
 		PyErr_SetString(PyExc_SystemError,
-			"deallocated bytearray object has exported buffers");
+                        "deallocated bytearray object has exported buffers");
 		PyErr_Print();
 	}
     if (self->ob_bytes != 0) {
@@ -1442,14 +1458,14 @@ bytes_translate(PyByteArrayObject *self, PyObject *args)
     if (vtable.len != 256) {
         PyErr_SetString(PyExc_ValueError,
                         "translation table must be 256 characters long");
-        result = NULL;
-        goto done;
+        PyBuffer_Release(&vtable);
+        return NULL;
     }
 
     if (delobj != NULL) {
         if (_getbuffer(delobj, &vdel) < 0) {
-            result = NULL;
-            goto done;
+            PyBuffer_Release(&vtable);
+	    return NULL;
         }
     }
     else {
@@ -1473,7 +1489,7 @@ bytes_translate(PyByteArrayObject *self, PyObject *args)
         }
         goto done;
     }
-
+    
     for (i = 0; i < 256; i++)
         trans_table[i] = Py_CHARMASK(table[i]);
 
@@ -2589,7 +2605,7 @@ bytes_insert(PyByteArrayObject *self, PyObject *args)
 
     if (n == PY_SSIZE_T_MAX) {
         PyErr_SetString(PyExc_OverflowError,
-                        "cannot add more objects to bytes");
+                        "cannot add more objects to bytearray");
         return NULL;
     }
     if (!_getbytevalue(value, &ival))
@@ -2624,7 +2640,7 @@ bytes_append(PyByteArrayObject *self, PyObject *arg)
         return NULL;
     if (n == PY_SSIZE_T_MAX) {
         PyErr_SetString(PyExc_OverflowError,
-                        "cannot add more objects to bytes");
+                        "cannot add more objects to bytearray");
         return NULL;
     }
     if (PyByteArray_Resize((PyObject *)self, n + 1) < 0)
@@ -2662,6 +2678,10 @@ bytes_extend(PyByteArrayObject *self, PyObject *arg)
 
     /* Try to determine the length of the argument. 32 is abitrary. */
     buf_size = _PyObject_LengthHint(arg, 32);
+    if (buf_size == -1) {
+        Py_DECREF(it);
+        return NULL;
+    }
 
     bytes_obj = PyByteArray_FromStringAndSize(NULL, buf_size);
     if (bytes_obj == NULL)
@@ -2721,7 +2741,7 @@ bytes_pop(PyByteArrayObject *self, PyObject *args)
 
     if (n == 0) {
         PyErr_SetString(PyExc_OverflowError,
-                        "cannot pop an empty bytes");
+                        "cannot pop an empty bytearray");
         return NULL;
     }
     if (where < 0)
@@ -2730,13 +2750,15 @@ bytes_pop(PyByteArrayObject *self, PyObject *args)
         PyErr_SetString(PyExc_IndexError, "pop index out of range");
         return NULL;
     }
+    if (!_canresize(self))
+        return NULL;
 
     value = self->ob_bytes[where];
     memmove(self->ob_bytes + where, self->ob_bytes + where + 1, n - where);
     if (PyByteArray_Resize((PyObject *)self, n - 1) < 0)
         return NULL;
 
-    return PyInt_FromLong(value);
+    return PyInt_FromLong((unsigned char)value);
 }
 
 PyDoc_STRVAR(remove__doc__,
@@ -2757,9 +2779,11 @@ bytes_remove(PyByteArrayObject *self, PyObject *arg)
             break;
     }
     if (where == n) {
-        PyErr_SetString(PyExc_ValueError, "value not found in bytes");
+        PyErr_SetString(PyExc_ValueError, "value not found in bytearray");
         return NULL;
     }
+    if (!_canresize(self))
+        return NULL;
 
     memmove(self->ob_bytes + where, self->ob_bytes + where + 1, n - where);
     if (PyByteArray_Resize((PyObject *)self, n - 1) < 0)
@@ -3097,10 +3121,10 @@ Returns the size of B in memory, in bytes");
 static PyObject *
 bytes_sizeof(PyByteArrayObject *self)
 {
-	Py_ssize_t res;
+    Py_ssize_t res;
 
-	res = sizeof(PyByteArrayObject) + self->ob_alloc * sizeof(char);
-	return PyInt_FromSsize_t(res);
+    res = sizeof(PyByteArrayObject) + self->ob_alloc * sizeof(char);
+    return PyInt_FromSsize_t(res);
 }
 
 static PySequenceMethods bytes_as_sequence = {

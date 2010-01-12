@@ -310,6 +310,23 @@ extern int lstat(const char *, struct stat *);
 #define WAIT_STATUS_INT(s) (s)
 #endif /* UNION_WAIT */
 
+/* Issue #1983: pid_t can be longer than a C long on some systems */
+#if !defined(SIZEOF_PID_T) || SIZEOF_PID_T == SIZEOF_INT
+#define PARSE_PID "i"
+#define PyLong_FromPid PyInt_FromLong
+#define PyLong_AsPid PyInt_AsLong
+#elif SIZEOF_PID_T == SIZEOF_LONG
+#define PARSE_PID "l"
+#define PyLong_FromPid PyInt_FromLong
+#define PyLong_AsPid PyInt_AsLong
+#elif defined(SIZEOF_LONG_LONG) && SIZEOF_PID_T == SIZEOF_LONG_LONG
+#define PARSE_PID "L"
+#define PyLong_FromPid PyLong_FromLongLong
+#define PyLong_AsPid PyInt_AsLongLong
+#else
+#error "sizeof(pid_t) is neither sizeof(int), sizeof(long) or sizeof(long long)"
+#endif /* SIZEOF_PID_T */
+
 /* Don't use the "_r" form if we don't need it (also, won't have a
    prototype for it, at least on Solaris -- maybe others as well?). */
 #if defined(HAVE_CTERMID_R) && defined(WITH_THREAD)
@@ -2383,7 +2400,7 @@ posix_listdir(PyObject *self, PyObject *args)
 static PyObject *
 posix__getfullpathname(PyObject *self, PyObject *args)
 {
-	/* assume encoded strings wont more than double no of chars */
+	/* assume encoded strings won't more than double no of chars */
 	char inbuf[MAX_PATH*2];
 	char *inbufp = inbuf;
 	Py_ssize_t insize = sizeof(inbuf);
@@ -2393,13 +2410,27 @@ posix__getfullpathname(PyObject *self, PyObject *args)
 	if (unicode_file_names()) {
 		PyUnicodeObject *po;
 		if (PyArg_ParseTuple(args, "U|:_getfullpathname", &po)) {
-			Py_UNICODE woutbuf[MAX_PATH*2];
+			Py_UNICODE *wpath = PyUnicode_AS_UNICODE(po);
+			Py_UNICODE woutbuf[MAX_PATH*2], *woutbufp = woutbuf;
 			Py_UNICODE *wtemp;
-			if (!GetFullPathNameW(PyUnicode_AS_UNICODE(po),
-						sizeof(woutbuf)/sizeof(woutbuf[0]),
-						 woutbuf, &wtemp))
-				return win32_error("GetFullPathName", "");
-			return PyUnicode_FromUnicode(woutbuf, wcslen(woutbuf));
+			DWORD result;
+			PyObject *v;
+			result = GetFullPathNameW(wpath,
+						   sizeof(woutbuf)/sizeof(woutbuf[0]),
+						    woutbuf, &wtemp);
+			if (result > sizeof(woutbuf)/sizeof(woutbuf[0])) {
+				woutbufp = malloc(result * sizeof(Py_UNICODE));
+				if (!woutbufp)
+					return PyErr_NoMemory();
+				result = GetFullPathNameW(wpath, result, woutbufp, &wtemp);
+			}
+			if (result)
+				v = PyUnicode_FromUnicode(woutbufp, wcslen(woutbufp));
+			else
+				v = win32_error_unicode("GetFullPathNameW", wpath);
+			if (woutbufp != woutbuf)
+				free(woutbufp);
+			return v;
 		}
 		/* Drop the argument parsing error as narrow strings
 		   are also valid. */
@@ -3599,12 +3630,22 @@ Return 0 to child process and PID of child to parent process.");
 static PyObject *
 posix_fork1(PyObject *self, PyObject *noargs)
 {
-	pid_t pid = fork1();
+	pid_t pid;
+	int result;
+	_PyImport_AcquireLock();
+	pid = fork1();
+	result = _PyImport_ReleaseLock();
 	if (pid == -1)
 		return posix_error();
 	if (pid == 0)
 		PyOS_AfterFork();
-	return PyInt_FromLong(pid);
+	if (result < 0) {
+		/* Don't clobber the OSError if the fork failed. */
+		PyErr_SetString(PyExc_RuntimeError,
+				"not holding the import lock");
+		return NULL;
+	}
+	return PyLong_FromPid(pid);
 }
 #endif
 
@@ -3618,12 +3659,22 @@ Return 0 to child process and PID of child to parent process.");
 static PyObject *
 posix_fork(PyObject *self, PyObject *noargs)
 {
-	pid_t pid = fork();
+	pid_t pid;
+	int result;
+	_PyImport_AcquireLock();
+	pid = fork();
+	result = _PyImport_ReleaseLock();
 	if (pid == -1)
 		return posix_error();
 	if (pid == 0)
 		PyOS_AfterFork();
-	return PyInt_FromLong(pid);
+	if (result < 0) {
+		/* Don't clobber the OSError if the fork failed. */
+		PyErr_SetString(PyExc_RuntimeError,
+				"not holding the import lock");
+		return NULL;
+	}
+	return PyLong_FromPid(pid);
 }
 #endif
 
@@ -3725,15 +3776,23 @@ To both, return fd of newly opened pseudo-terminal.\n");
 static PyObject *
 posix_forkpty(PyObject *self, PyObject *noargs)
 {
-	int master_fd = -1;
+	int master_fd = -1, result;
 	pid_t pid;
 
+	_PyImport_AcquireLock();
 	pid = forkpty(&master_fd, NULL, NULL, NULL);
+	result = _PyImport_ReleaseLock();
 	if (pid == -1)
 		return posix_error();
 	if (pid == 0)
 		PyOS_AfterFork();
-	return Py_BuildValue("(li)", pid, master_fd);
+	if (result < 0) {
+		/* Don't clobber the OSError if the fork failed. */
+		PyErr_SetString(PyExc_RuntimeError,
+				"not holding the import lock");
+		return NULL;
+	}
+	return Py_BuildValue("(Ni)", PyLong_FromPid(pid), master_fd);
 }
 #endif
 
@@ -3783,7 +3842,7 @@ Return the current process id");
 static PyObject *
 posix_getpid(PyObject *self, PyObject *noargs)
 {
-	return PyInt_FromLong((long)getpid());
+	return PyLong_FromPid(getpid());
 }
 
 
@@ -3837,13 +3896,13 @@ Call the system call getpgid().");
 static PyObject *
 posix_getpgid(PyObject *self, PyObject *args)
 {
-	int pid, pgid;
-	if (!PyArg_ParseTuple(args, "i:getpgid", &pid))
+	pid_t pid, pgid;
+	if (!PyArg_ParseTuple(args, PARSE_PID ":getpgid", &pid))
 		return NULL;
 	pgid = getpgid(pid);
 	if (pgid < 0)
 		return posix_error();
-	return PyInt_FromLong((long)pgid);
+	return PyLong_FromPid(pgid);
 }
 #endif /* HAVE_GETPGID */
 
@@ -3857,9 +3916,9 @@ static PyObject *
 posix_getpgrp(PyObject *self, PyObject *noargs)
 {
 #ifdef GETPGRP_HAVE_ARG
-	return PyInt_FromLong((long)getpgrp(0));
+	return PyLong_FromPid(getpgrp(0));
 #else /* GETPGRP_HAVE_ARG */
-	return PyInt_FromLong((long)getpgrp());
+	return PyLong_FromPid(getpgrp());
 #endif /* GETPGRP_HAVE_ARG */
 }
 #endif /* HAVE_GETPGRP */
@@ -3893,7 +3952,7 @@ Return the parent's process id.");
 static PyObject *
 posix_getppid(PyObject *self, PyObject *noargs)
 {
-	return PyInt_FromLong(getppid());
+	return PyLong_FromPid(getppid());
 }
 #endif
 
@@ -3950,7 +4009,7 @@ posix_kill(PyObject *self, PyObject *args)
 {
 	pid_t pid;
 	int sig;
-	if (!PyArg_ParseTuple(args, "ii:kill", &pid, &sig))
+	if (!PyArg_ParseTuple(args, PARSE_PID "i:kill", &pid, &sig))
 		return NULL;
 #if defined(PYOS_OS2) && !defined(PYCC_GCC)
     if (sig == XCPT_SIGNAL_INTR || sig == XCPT_SIGNAL_BREAK) {
@@ -3982,8 +4041,13 @@ Kill a process group with a signal.");
 static PyObject *
 posix_killpg(PyObject *self, PyObject *args)
 {
-	int pgid, sig;
-	if (!PyArg_ParseTuple(args, "ii:killpg", &pgid, &sig))
+	int sig;
+	pid_t pgid;
+	/* XXX some man pages make the `pgid` parameter an int, others
+	   a pid_t. Since getpgrp() returns a pid_t, we assume killpg should
+	   take the same type. Moreover, pid_t is always at least as wide as
+	   int (else compilation of this module fails), which is safe. */
+	if (!PyArg_ParseTuple(args, PARSE_PID "i:killpg", &pgid, &sig))
 		return NULL;
 	if (killpg(pgid, sig) == -1)
 		return posix_error();
@@ -4519,7 +4583,7 @@ _PyPopen(char *cmdstring, int mode, int n, int bufsize)
 		ins_rc[0]  = ins_rc[1]  = ins_rc[2]  = 0;
 
 		procObj = PyList_New(2);
-		pidObj = PyInt_FromLong((long) pipe_pid);
+		pidObj = PyLong_FromPid(pipe_pid);
 		intObj = PyInt_FromLong((long) file_count);
 
 		if (procObj && pidObj && intObj)
@@ -4645,7 +4709,7 @@ static int _PyPclose(FILE *file)
 		    (pidObj = PyList_GetItem(procObj,0)) != NULL &&
 		    (intObj = PyList_GetItem(procObj,1)) != NULL)
 		{
-			pipe_pid = (int) PyInt_AsLong(pidObj);
+			pipe_pid = (pid_t) PyLong_AsPid(pidObj);
 			file_count = (int) PyInt_AsLong(intObj);
 
 			if (file_count > 1)
@@ -4998,7 +5062,7 @@ _PyPopenCreateProcess(char *cmdstring,
 			   "Your program accessed mem currently in use at xxx"
 			   and a hopeful warning about the stability of your
 			   system.
-			   Cost is Ctrl+C wont kill children, but anyone
+			   Cost is Ctrl+C won't kill children, but anyone
 			   who cares can have a go!
 			*/
 			dwProcessFlags |= CREATE_NEW_CONSOLE;
@@ -5491,9 +5555,15 @@ Set the current process's user id.");
 static PyObject *
 posix_setuid(PyObject *self, PyObject *args)
 {
-	int uid;
-	if (!PyArg_ParseTuple(args, "i:setuid", &uid))
+	long uid_arg;
+	uid_t uid;
+	if (!PyArg_ParseTuple(args, "l:setuid", &uid_arg))
 		return NULL;
+	uid = uid_arg;
+	if (uid != uid_arg) {
+		PyErr_SetString(PyExc_OverflowError, "user id too big");
+		return NULL;
+	}
 	if (setuid(uid) < 0)
 		return posix_error();
 	Py_INCREF(Py_None);
@@ -5510,10 +5580,16 @@ Set the current process's effective user id.");
 static PyObject *
 posix_seteuid (PyObject *self, PyObject *args)
 {
-	int euid;
-	if (!PyArg_ParseTuple(args, "i", &euid)) {
+	long euid_arg;
+	uid_t euid;
+	if (!PyArg_ParseTuple(args, "l", &euid_arg))
 		return NULL;
-	} else if (seteuid(euid) < 0) {
+	euid = euid_arg;
+	if (euid != euid_arg) {
+		PyErr_SetString(PyExc_OverflowError, "user id too big");
+		return NULL;
+	}
+	if (seteuid(euid) < 0) {
 		return posix_error();
 	} else {
 		Py_INCREF(Py_None);
@@ -5530,10 +5606,16 @@ Set the current process's effective group id.");
 static PyObject *
 posix_setegid (PyObject *self, PyObject *args)
 {
-	int egid;
-	if (!PyArg_ParseTuple(args, "i", &egid)) {
+	long egid_arg;
+	gid_t egid;
+	if (!PyArg_ParseTuple(args, "l", &egid_arg))
 		return NULL;
-	} else if (setegid(egid) < 0) {
+	egid = egid_arg;
+	if (egid != egid_arg) {
+		PyErr_SetString(PyExc_OverflowError, "group id too big");
+		return NULL;
+	}
+	if (setegid(egid) < 0) {
 		return posix_error();
 	} else {
 		Py_INCREF(Py_None);
@@ -5550,10 +5632,17 @@ Set the current process's real and effective user ids.");
 static PyObject *
 posix_setreuid (PyObject *self, PyObject *args)
 {
-	int ruid, euid;
-	if (!PyArg_ParseTuple(args, "ii", &ruid, &euid)) {
+	long ruid_arg, euid_arg;
+	uid_t ruid, euid;
+	if (!PyArg_ParseTuple(args, "ll", &ruid_arg, &euid_arg))
 		return NULL;
-	} else if (setreuid(ruid, euid) < 0) {
+	ruid = ruid_arg;
+	euid = euid_arg;
+	if (euid != euid_arg || ruid != ruid_arg) {
+		PyErr_SetString(PyExc_OverflowError, "user id too big");
+		return NULL;
+	}
+	if (setreuid(ruid, euid) < 0) {
 		return posix_error();
 	} else {
 		Py_INCREF(Py_None);
@@ -5570,10 +5659,17 @@ Set the current process's real and effective group ids.");
 static PyObject *
 posix_setregid (PyObject *self, PyObject *args)
 {
-	int rgid, egid;
-	if (!PyArg_ParseTuple(args, "ii", &rgid, &egid)) {
+	long rgid_arg, egid_arg;
+	gid_t rgid, egid;
+	if (!PyArg_ParseTuple(args, "ll", &rgid_arg, &egid_arg))
 		return NULL;
-	} else if (setregid(rgid, egid) < 0) {
+	rgid = rgid_arg;
+	egid = egid_arg;
+	if (egid != egid_arg || rgid != rgid_arg) {
+		PyErr_SetString(PyExc_OverflowError, "group id too big");
+		return NULL;
+	}
+	if (setregid(rgid, egid) < 0) {
 		return posix_error();
 	} else {
 		Py_INCREF(Py_None);
@@ -5590,9 +5686,15 @@ Set the current process's group id.");
 static PyObject *
 posix_setgid(PyObject *self, PyObject *args)
 {
-	int gid;
-	if (!PyArg_ParseTuple(args, "i:setgid", &gid))
+	long gid_arg;
+	gid_t gid;
+	if (!PyArg_ParseTuple(args, "l:setgid", &gid_arg))
 		return NULL;
+	gid = gid_arg;
+	if (gid != gid_arg) {
+		PyErr_SetString(PyExc_OverflowError, "group id too big");
+		return NULL;
+	}
 	if (setgid(gid) < 0)
 		return posix_error();
 	Py_INCREF(Py_None);
@@ -5640,7 +5742,7 @@ posix_setgroups(PyObject *self, PyObject *groups)
 					return NULL;
 				}
 				grouplist[i] = x;
-				/* read back the value to see if it fitted in gid_t */
+				/* read back to see if it fits in gid_t */
 				if (grouplist[i] != x) {
 					PyErr_SetString(PyExc_TypeError,
 							"group id too big");
@@ -5724,7 +5826,7 @@ wait_helper(pid_t pid, int status, struct rusage *ru)
 		return NULL;
 	}
 
-	return Py_BuildValue("iiN", pid, status, result);
+	return Py_BuildValue("NiN", PyLong_FromPid(pid), status, result);
 }
 #endif /* HAVE_WAIT3 || HAVE_WAIT4 */
 
@@ -5767,7 +5869,7 @@ posix_wait4(PyObject *self, PyObject *args)
 	WAIT_TYPE status;
 	WAIT_STATUS_INT(status) = 0;
 
-	if (!PyArg_ParseTuple(args, "ii:wait4", &pid, &options))
+	if (!PyArg_ParseTuple(args, PARSE_PID "i:wait4", &pid, &options))
 		return NULL;
 
 	Py_BEGIN_ALLOW_THREADS
@@ -5791,7 +5893,7 @@ posix_waitpid(PyObject *self, PyObject *args)
 	WAIT_TYPE status;
 	WAIT_STATUS_INT(status) = 0;
 
-	if (!PyArg_ParseTuple(args, "ii:waitpid", &pid, &options))
+	if (!PyArg_ParseTuple(args, PARSE_PID "i:waitpid", &pid, &options))
 		return NULL;
 	Py_BEGIN_ALLOW_THREADS
 	pid = waitpid(pid, &status, options);
@@ -5799,7 +5901,7 @@ posix_waitpid(PyObject *self, PyObject *args)
 	if (pid == -1)
 		return posix_error();
 
-	return Py_BuildValue("ii", pid, WAIT_STATUS_INT(status));
+	return Py_BuildValue("Ni", PyLong_FromPid(pid), WAIT_STATUS_INT(status));
 }
 
 #elif defined(HAVE_CWAIT)
@@ -5815,7 +5917,7 @@ posix_waitpid(PyObject *self, PyObject *args)
 	Py_intptr_t pid;
 	int status, options;
 
-	if (!PyArg_ParseTuple(args, "ii:waitpid", &pid, &options))
+	if (!PyArg_ParseTuple(args, PARSE_PID "i:waitpid", &pid, &options))
 		return NULL;
 	Py_BEGIN_ALLOW_THREADS
 	pid = _cwait(&status, pid, options);
@@ -5824,7 +5926,7 @@ posix_waitpid(PyObject *self, PyObject *args)
 		return posix_error();
 
 	/* shift the status left a byte so this is more like the POSIX waitpid */
-	return Py_BuildValue("ii", pid, status << 8);
+	return Py_BuildValue("Ni", PyLong_FromPid(pid), status << 8);
 }
 #endif /* HAVE_WAITPID || HAVE_CWAIT */
 
@@ -5846,7 +5948,7 @@ posix_wait(PyObject *self, PyObject *noargs)
 	if (pid == -1)
 		return posix_error();
 
-	return Py_BuildValue("ii", pid, WAIT_STATUS_INT(status));
+	return Py_BuildValue("Ni", PyLong_FromPid(pid), WAIT_STATUS_INT(status));
 }
 #endif
 
@@ -5947,10 +6049,6 @@ posix_symlink(PyObject *self, PyObject *args)
 
 
 #ifdef HAVE_TIMES
-#ifndef HZ
-#define HZ 60 /* Universal constant :-) */
-#endif /* HZ */
-
 #if defined(PYCC_VACPP) && defined(PYOS_OS2)
 static long
 system_uptime(void)
@@ -5976,6 +6074,8 @@ posix_times(PyObject *self, PyObject *noargs)
 			     (double)system_uptime() / 1000);
 }
 #else /* not OS2 */
+#define NEED_TICKS_PER_SECOND
+static long ticks_per_second = -1;
 static PyObject *
 posix_times(PyObject *self, PyObject *noargs)
 {
@@ -5986,11 +6086,11 @@ posix_times(PyObject *self, PyObject *noargs)
 	if (c == (clock_t) -1)
 		return posix_error();
 	return Py_BuildValue("ddddd",
-			     (double)t.tms_utime / HZ,
-			     (double)t.tms_stime / HZ,
-			     (double)t.tms_cutime / HZ,
-			     (double)t.tms_cstime / HZ,
-			     (double)c / HZ);
+			     (double)t.tms_utime / ticks_per_second,
+			     (double)t.tms_stime / ticks_per_second,
+			     (double)t.tms_cutime / ticks_per_second,
+			     (double)t.tms_cstime / ticks_per_second,
+			     (double)c / ticks_per_second);
 }
 #endif /* not OS2 */
 #endif /* HAVE_TIMES */
@@ -6039,7 +6139,7 @@ posix_getsid(PyObject *self, PyObject *args)
 {
 	pid_t pid;
 	int sid;
-	if (!PyArg_ParseTuple(args, "i:getsid", &pid))
+	if (!PyArg_ParseTuple(args, PARSE_PID ":getsid", &pid))
 		return NULL;
 	sid = getsid(pid);
 	if (sid < 0)
@@ -6074,7 +6174,7 @@ posix_setpgid(PyObject *self, PyObject *args)
 {
 	pid_t pid;
 	int pgrp;
-	if (!PyArg_ParseTuple(args, "ii:setpgid", &pid, &pgrp))
+	if (!PyArg_ParseTuple(args, PARSE_PID "i:setpgid", &pid, &pgrp))
 		return NULL;
 	if (setpgid(pid, pgrp) < 0)
 		return posix_error();
@@ -6099,7 +6199,7 @@ posix_tcgetpgrp(PyObject *self, PyObject *args)
 	pgid = tcgetpgrp(fd);
 	if (pgid < 0)
 		return posix_error();
-	return PyInt_FromLong((long)pgid);
+	return PyLong_FromPid(pgid);
 }
 #endif /* HAVE_TCGETPGRP */
 
@@ -6112,8 +6212,9 @@ Set the process group associated with the terminal given by a fd.");
 static PyObject *
 posix_tcsetpgrp(PyObject *self, PyObject *args)
 {
-	int fd, pgid;
-	if (!PyArg_ParseTuple(args, "ii:tcsetpgrp", &fd, &pgid))
+	int fd;
+	pid_t pgid;
+	if (!PyArg_ParseTuple(args, "i" PARSE_PID ":tcsetpgrp", &fd, &pgid))
 		return NULL;
 	if (tcsetpgrp(fd, pgid) < 0)
 		return posix_error();
@@ -8952,6 +9053,15 @@ INITFUNC(void)
 
 		statvfs_result_desc.name = MODNAME ".statvfs_result";
 		PyStructSequence_InitType(&StatVFSResultType, &statvfs_result_desc);
+#ifdef NEED_TICKS_PER_SECOND
+#  if defined(HAVE_SYSCONF) && defined(_SC_CLK_TCK)
+		ticks_per_second = sysconf(_SC_CLK_TCK);
+#  elif defined(HZ)
+		ticks_per_second = HZ;
+#  else
+		ticks_per_second = 60; /* magic fallback value; may be bogus */
+#  endif
+#endif
 	}
 	Py_INCREF((PyObject*) &StatResultType);
 	PyModule_AddObject(m, "stat_result", (PyObject*) &StatResultType);

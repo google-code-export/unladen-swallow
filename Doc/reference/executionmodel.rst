@@ -87,9 +87,10 @@ subclass of :exc:`NameError`.
 The following constructs bind names: formal parameters to functions,
 :keyword:`import` statements, class and function definitions (these bind the
 class or function name in the defining block), and targets that are identifiers
-if occurring in an assignment, :keyword:`for` loop header, or in the second
-position of an :keyword:`except` clause header.  The :keyword:`import` statement
-of the form "``from ...import *``" binds all names defined in the imported
+if occurring in an assignment, :keyword:`for` loop header, in the second
+position of an :keyword:`except` clause header or after :keyword:`as` in a
+:keyword:`with` statement.  The :keyword:`import` statement
+of the form ``from ... import *`` binds all names defined in the imported
 module, except those beginning with an underscore.  This form may only be used
 at the module level.
 
@@ -230,7 +231,7 @@ Exceptions can also be identified by strings, in which case the
 :keyword:`except` clause is selected by object identity.  An arbitrary value can
 be raised along with the identifying string which can be passed to the handler.
 
-.. warning::
+.. note::
 
    Messages to exceptions are not part of the Python API.  Their contents may
    change from one version of Python to the next without warning and should not be

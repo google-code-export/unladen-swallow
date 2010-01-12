@@ -5,7 +5,7 @@ Implements the Distutils 'register' command (register with the repository).
 
 # created 2002/10/21, Richard Jones
 
-__revision__ = "$Id: register.py 63060 2008-05-11 14:00:00Z andrew.kuchling $"
+__revision__ = "$Id: register.py 67944 2008-12-27 13:28:42Z tarek.ziade $"
 
 import os, string, urllib2, getpass, urlparse
 import StringIO
@@ -141,12 +141,14 @@ class register(PyPIRCCommand):
         # get the user's login info
         choices = '1 2 3 4'.split()
         while choice not in choices:
-            print '''We need to know who you are, so please choose either:
+            self.announce('''\
+We need to know who you are, so please choose either:
  1. use your existing login,
  2. register as a new user,
  3. have the server generate a new password for you (and email it to you), or
  4. quit
-Your selection [default 1]: ''',
+Your selection [default 1]: ''', log.INFO)
+
             choice = raw_input()
             if not choice:
                 choice = '1'
@@ -167,12 +169,16 @@ Your selection [default 1]: ''',
             # send the info to the server and report the result
             code, result = self.post_to_server(self.build_post_data('submit'),
                 auth)
-            print 'Server response (%s): %s' % (code, result)
+            self.announce('Server response (%s): %s' % (code, result),
+                          log.INFO)
 
             # possibly save the login
             if not self.has_config and code == 200:
-                print 'I can store your PyPI login so future submissions will be faster.'
-                print '(the login will be stored in %s)' % self._get_rc_file()
+                self.announce(('I can store your PyPI login so future '
+                               'submissions will be faster.'), log.INFO)
+                self.announce('(the login will be stored in %s)' % \
+                              self._get_rc_file(), log.INFO)
+
                 choice = 'X'
                 while choice.lower() not in 'yn':
                     choice = raw_input('Save your login (y/N)?')

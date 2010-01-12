@@ -30,7 +30,7 @@ button.pack(side=BOTTOM)
 tk.mainloop()
 """
 
-__version__ = "$Revision: 67083 $"
+__version__ = "$Revision: 73770 $"
 
 import sys
 if sys.platform == "win32":
@@ -3032,7 +3032,8 @@ class Text(Widget):
            forwards=None, backwards=None, exact=None,
            regexp=None, nocase=None, count=None, elide=None):
         """Search PATTERN beginning from INDEX until STOPINDEX.
-        Return the index of the first character of a match or an empty string."""
+        Return the index of the first character of a match or an
+        empty string."""
         args = [self._w, 'search']
         if forwards: args.append('-forwards')
         if backwards: args.append('-backwards')
@@ -3041,11 +3042,11 @@ class Text(Widget):
         if nocase: args.append('-nocase')
         if elide: args.append('-elide')
         if count: args.append('-count'); args.append(count)
-        if pattern[0] == '-': args.append('--')
+        if pattern and pattern[0] == '-': args.append('--')
         args.append(pattern)
         args.append(index)
         if stopindex: args.append(stopindex)
-        return self.tk.call(tuple(args))
+        return str(self.tk.call(tuple(args)))
     def see(self, index):
         """Scroll such that the character at INDEX is visible."""
         self.tk.call(self._w, 'see', index)
@@ -3315,7 +3316,7 @@ class PhotoImage(Image):
         """Return the color (red, green, blue) of the pixel at X,Y."""
         return self.tk.call(self.name, 'get', x, y)
     def put(self, data, to=None):
-        """Put row formated colors to image starting from
+        """Put row formatted colors to image starting from
         position TO, e.g. image.put("{red green} {blue yellow}", to=(4,6))"""
         args = (self.name, 'put', data)
         if to:

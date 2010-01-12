@@ -272,7 +272,6 @@ static void record_object(PyCodeObject *, int, int, int, PyObject *);
 static void inc_feedback_counter(PyCodeObject *, int, int, int);
 #endif  /* WITH_LLVM */
 
-int _Py_TracingPossible = 0;
 int _Py_ProfilingPossible = 0;
 
 /* Keep this in sync with llvm_fbuilder.cc */
@@ -664,6 +663,13 @@ _PyEval_RaiseForUnboundLocal(PyFrameObject *frame, int var_index)
 		UNBOUNDLOCAL_ERROR_MSG,
 		PyTuple_GetItem(frame->f_code->co_varnames, var_index));
 }
+
+/* Records whether tracing is on for any thread.  Counts the number of
+   threads for which tstate->c_tracefunc is non-NULL, so if the value
+   is 0, we know we don't have to check this thread's c_tracefunc.
+   This speeds up the if statement in PyEval_EvalFrameEx() after
+   fast_next_opcode*/
+int _Py_TracingPossible = 0;
 
 /* for manipulating the thread switch and periodic "stuff" - used to be
    per thread, now just a pair o' globals */
@@ -4557,10 +4563,17 @@ do_call(PyObject *func, PyObject ***pp_stack, int na, int nk)
 		PCALL(PCALL_METHOD);
 	else if (PyType_Check(func))
 		PCALL(PCALL_TYPE);
+	else if (PyCFunction_Check(func))
+		PCALL(PCALL_CFUNCTION);
 	else
 		PCALL(PCALL_OTHER);
 #endif
-	result = _PyObject_Call(func, callargs, kwdict);
+	if (PyCFunction_Check(func)) {
+		PyThreadState *tstate = PyThreadState_GET();
+		C_TRACE(result, PyCFunction_Call(func, callargs, kwdict));
+	}
+	else
+		result = PyObject_Call(func, callargs, kwdict);
  call_fail:
 	Py_XDECREF(callargs);
 	Py_XDECREF(kwdict);
@@ -4645,10 +4658,17 @@ ext_do_call(PyObject *func, PyObject ***pp_stack, int flags, int na, int nk)
 		PCALL(PCALL_METHOD);
 	else if (PyType_Check(func))
 		PCALL(PCALL_TYPE);
+	else if (PyCFunction_Check(func))
+		PCALL(PCALL_CFUNCTION);
 	else
 		PCALL(PCALL_OTHER);
 #endif
-	result = _PyObject_Call(func, callargs, kwdict);
+	if (PyCFunction_Check(func)) {
+		PyThreadState *tstate = PyThreadState_GET();
+		C_TRACE(result, PyCFunction_Call(func, callargs, kwdict));
+	}
+	else
+		result = PyObject_Call(func, callargs, kwdict);
 ext_call_fail:
 	Py_XDECREF(callargs);
 	Py_XDECREF(kwdict);

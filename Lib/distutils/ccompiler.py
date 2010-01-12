@@ -5,7 +5,7 @@ for the Distutils compiler abstraction model."""
 
 # This module should be kept compatible with Python 2.1.
 
-__revision__ = "$Id: ccompiler.py 60923 2008-02-21 18:18:37Z guido.van.rossum $"
+__revision__ = "$Id: ccompiler.py 67896 2008-12-21 17:01:26Z benjamin.peterson $"
 
 import sys, os, re
 from types import *
@@ -1003,7 +1003,7 @@ main (int argc, char **argv) {
         return move_file (src, dst, dry_run=self.dry_run)
 
     def mkpath (self, name, mode=0777):
-        mkpath (name, mode, self.dry_run)
+        mkpath (name, mode, dry_run=self.dry_run)
 
 
 # class CCompiler

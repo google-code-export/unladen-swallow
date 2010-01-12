@@ -30,13 +30,13 @@
 """Read from and write to tar format archives.
 """
 
-__version__ = "$Revision: 65514 $"
+__version__ = "$Revision: 73770 $"
 # $Source$
 
 version     = "0.9.0"
 __author__  = "Lars Gustäbel (lars@gustaebel.de)"
-__date__    = "$Date: 2008-08-04 14:23:07 -0700 (Mon, 04 Aug 2008) $"
-__cvsid__   = "$Id: tarfile.py 65514 2008-08-04 21:23:07Z brett.cannon $"
+__date__    = "$Date: 2009-07-02 17:37:21 +0200 (Thu, 02 Jul 2009) $"
+__cvsid__   = "$Id: tarfile.py 73770 2009-07-02 15:37:21Z jesus.cea $"
 __credits__ = "Gustavo Niemeyer, Niels Gustäbel, Richard Townsend."
 
 #---------
@@ -662,12 +662,14 @@ class _BZ2Proxy(object):
         b = [self.buf]
         x = len(self.buf)
         while x < size:
+            raw = self.fileobj.read(self.blocksize)
+            if not raw:
+                break
             try:
-                raw = self.fileobj.read(self.blocksize)
                 data = self.bz2obj.decompress(raw)
-                b.append(data)
             except EOFError:
                 break
+            b.append(data)
             x += len(data)
         self.buf = "".join(b)
 
@@ -1589,7 +1591,8 @@ class TarFile(object):
         return self.format == USTAR_FORMAT
     def _setposix(self, value):
         import warnings
-        warnings.warn("use the format attribute instead", DeprecationWarning)
+        warnings.warn("use the format attribute instead", DeprecationWarning,
+                      2)
         if value:
             self.format = USTAR_FORMAT
         else:
@@ -1772,7 +1775,7 @@ class TarFile(object):
     def getmember(self, name):
         """Return a TarInfo object for member `name'. If `name' can not be
            found in the archive, KeyError is raised. If a member occurs more
-           than once in the archive, its last occurence is assumed to be the
+           than once in the archive, its last occurrence is assumed to be the
            most up-to-date version.
         """
         tarinfo = self._getmember(name)
@@ -2283,10 +2286,6 @@ class TarFile(object):
         """Set modification time of targetpath according to tarinfo.
         """
         if not hasattr(os, 'utime'):
-            return
-        if sys.platform == "win32" and tarinfo.isdir():
-            # According to msdn.microsoft.com, it is an error (EACCES)
-            # to use utime() on directories.
             return
         try:
             os.utime(targetpath, (tarinfo.mtime, tarinfo.mtime))

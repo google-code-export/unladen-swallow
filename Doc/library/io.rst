@@ -6,7 +6,7 @@
 .. moduleauthor:: Guido van Rossum <guido@python.org>
 .. moduleauthor:: Mike Verdone <mike.verdone@gmail.com>
 .. moduleauthor:: Mark Russell <mark.russell@zen.co.uk>
-.. sectionauthor:: Benjamin Peterson
+.. sectionauthor:: Benjamin Peterson <benjamin@python.org>
 .. versionadded:: 2.6
 
 The :mod:`io` module provides the Python interfaces to stream handling.  The
@@ -14,7 +14,7 @@ builtin :func:`open` function is defined in this module.
 
 At the top of the I/O hierarchy is the abstract base class :class:`IOBase`.  It
 defines the basic interface to a stream.  Note, however, that there is no
-seperation between reading and writing to streams; implementations are allowed
+separation between reading and writing to streams; implementations are allowed
 to throw an :exc:`IOError` if they do not support a given operation.
 
 Extending :class:`IOBase` is :class:`RawIOBase` which deals simply with the
@@ -214,8 +214,10 @@ I/O Base Classes
 
    .. method:: close()
 
-      Flush and close this stream.  This method has no effect if the file is
-      already closed.
+      Flush and close this stream. This method has no effect if the file is
+      already closed. Once the file is closed, any operation on the file
+      (e.g. reading or writing) will raise an :exc:`IOError`. The internal
+      file descriptor isn't closed if *closefd* was False.
 
    .. attribute:: closed
 
@@ -610,7 +612,7 @@ Text I/O
    is enabled.  With this enabled, on input, the lines endings ``'\n'``,
    ``'\r'``, or ``'\r\n'`` are translated to ``'\n'`` before being returned to
    the caller.  Conversely, on output, ``'\n'`` is translated to the system
-   default line seperator, :data:`os.linesep`.  If *newline* is any other of its
+   default line separator, :data:`os.linesep`.  If *newline* is any other of its
    legal values, that newline becomes the newline when the file is read and it
    is returned untranslated.  On output, ``'\n'`` is converted to the *newline*.
 
@@ -627,7 +629,7 @@ Text I/O
    .. attribute:: line_buffering
 
       Whether line buffering is enabled.
-   
+
 
 .. class:: StringIO([initial_value[, encoding[, errors[, newline]]]])
 

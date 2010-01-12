@@ -9,6 +9,7 @@ import threading
 import mimetools
 import httplib
 import socket
+import StringIO
 import os
 from test import test_support
 
@@ -586,25 +587,25 @@ class CGIHandlerTestCase(unittest.TestCase):
         self.cgi = None
 
     def test_cgi_get(self):
-        os.environ['REQUEST_METHOD'] = 'GET'
-        # if the method is GET and no request_text is given, it runs handle_get
-        # get sysout output
-        tmp = sys.stdout
-        sys.stdout = open(test_support.TESTFN, "w")
-        self.cgi.handle_request()
-        sys.stdout.close()
-        sys.stdout = tmp
+        with test_support.EnvironmentVarGuard() as env:
+            env.set('REQUEST_METHOD', 'GET')
+            # if the method is GET and no request_text is given, it runs handle_get
+            # get sysout output
+            tmp = sys.stdout
+            sys.stdout = open(test_support.TESTFN, "w")
+            self.cgi.handle_request()
+            sys.stdout.close()
+            sys.stdout = tmp
 
-        # parse Status header
-        handle = open(test_support.TESTFN, "r").read()
-        status = handle.split()[1]
-        message = ' '.join(handle.split()[2:4])
+            # parse Status header
+            handle = open(test_support.TESTFN, "r").read()
+            status = handle.split()[1]
+            message = ' '.join(handle.split()[2:4])
 
-        self.assertEqual(status, '400')
-        self.assertEqual(message, 'Bad Request')
+            self.assertEqual(status, '400')
+            self.assertEqual(message, 'Bad Request')
 
-        os.remove(test_support.TESTFN)
-        os.environ['REQUEST_METHOD'] = ''
+            os.remove(test_support.TESTFN)
 
     def test_cgi_xmlrpc_response(self):
         data = """<?xml version='1.0'?>
@@ -627,7 +628,9 @@ class CGIHandlerTestCase(unittest.TestCase):
         sys.stdin = open("xmldata.txt", "r")
         sys.stdout = open(test_support.TESTFN, "w")
 
-        self.cgi.handle_request()
+        with test_support.EnvironmentVarGuard() as env:
+            env.set('CONTENT_LENGTH', str(len(data)))
+            self.cgi.handle_request()
 
         sys.stdin.close()
         sys.stdout.close()
@@ -643,12 +646,96 @@ class CGIHandlerTestCase(unittest.TestCase):
         os.remove("xmldata.txt")
         os.remove(test_support.TESTFN)
 
+class FakeSocket:
+
+    def __init__(self):
+        self.data = StringIO.StringIO()
+
+    def send(self, buf):
+        self.data.write(buf)
+        return len(buf)
+
+    def sendall(self, buf):
+        self.data.write(buf)
+
+    def getvalue(self):
+        return self.data.getvalue()
+
+    def makefile(self, x, y):
+        raise RuntimeError
+
+class FakeTransport(xmlrpclib.Transport):
+    """A Transport instance that records instead of sending a request.
+
+    This class replaces the actual socket used by httplib with a
+    FakeSocket object that records the request.  It doesn't provide a
+    response.
+    """
+
+    def make_connection(self, host):
+        conn = xmlrpclib.Transport.make_connection(self, host)
+        conn._conn.sock = self.fake_socket = FakeSocket()
+        return conn
+
+class TransportSubclassTestCase(unittest.TestCase):
+
+    def issue_request(self, transport_class):
+        """Return an HTTP request made via transport_class."""
+        transport = transport_class()
+        proxy = xmlrpclib.ServerProxy("http://example.com/",
+                                      transport=transport)
+        try:
+            proxy.pow(6, 8)
+        except RuntimeError:
+            return transport.fake_socket.getvalue()
+        return None
+
+    def test_custom_user_agent(self):
+        class TestTransport(FakeTransport):
+
+            def send_user_agent(self, conn):
+                xmlrpclib.Transport.send_user_agent(self, conn)
+                conn.putheader("X-Test", "test_custom_user_agent")
+
+        req = self.issue_request(TestTransport)
+        self.assert_("X-Test: test_custom_user_agent\r\n" in req)
+
+    def test_send_host(self):
+        class TestTransport(FakeTransport):
+
+            def send_host(self, conn, host):
+                xmlrpclib.Transport.send_host(self, conn, host)
+                conn.putheader("X-Test", "test_send_host")
+
+        req = self.issue_request(TestTransport)
+        self.assert_("X-Test: test_send_host\r\n" in req)
+
+    def test_send_request(self):
+        class TestTransport(FakeTransport):
+
+            def send_request(self, conn, url, body):
+                xmlrpclib.Transport.send_request(self, conn, url, body)
+                conn.putheader("X-Test", "test_send_request")
+
+        req = self.issue_request(TestTransport)
+        self.assert_("X-Test: test_send_request\r\n" in req)
+
+    def test_send_content(self):
+        class TestTransport(FakeTransport):
+
+            def send_content(self, conn, body):
+                conn.putheader("X-Test", "test_send_content")
+                xmlrpclib.Transport.send_content(self, conn, body)
+
+        req = self.issue_request(TestTransport)
+        self.assert_("X-Test: test_send_content\r\n" in req)
+
 def test_main():
     if sys.flags.optimize >= 2:
         print >>sys.stderr, "test_xmlrpc -- skipping some tests due to -O flag."
         sys.stderr.flush()
     xmlrpc_tests = [XMLRPCTestCase, HelperTestCase, DateTimeTestCase,
-         BinaryTestCase, FaultTestCase]
+         BinaryTestCase, FaultTestCase, TransportSubclassTestCase]
 
     # The test cases against a SimpleXMLRPCServer raise a socket error
     # 10035 (WSAEWOULDBLOCK) in the server thread handle_request call when

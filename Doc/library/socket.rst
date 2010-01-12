@@ -184,10 +184,10 @@ The module :mod:`socket` exports the following constants and functions:
 
 .. data:: SIO_*
           RCVALL_*
-          
+
    Constants for Windows' WSAIoctl(). The constants are used as arguments to the
    :meth:`ioctl` method of socket objects.
-   
+
    .. versionadded:: 2.6
 
 .. data:: TIPC_*
@@ -222,7 +222,7 @@ The module :mod:`socket` exports the following constants and functions:
    all the necessary arguments for creating the corresponding socket. *host* is a domain
    name, a string representation of an IPv4/v6 address or ``None``. *port* is a string
    service name such as ``'http'``, a numeric port number or ``None``.
-   The rest of the arguments are optional and must be numeric if specified.  
+   The rest of the arguments are optional and must be numeric if specified.
    By passing ``None`` as the value of *host* and *port*, , you can pass ``NULL`` to the C API.
 
    The :func:`getaddrinfo` function returns a list of 5-tuples with the following
@@ -405,7 +405,7 @@ The module :mod:`socket` exports the following constants and functions:
    :exc:`socket.error` will be raised. Note that exactly what is valid depends on
    the underlying C implementation of :cfunc:`inet_aton`.
 
-   :func:`inet_aton` does not support IPv6, and :func:`getnameinfo` should be used
+   :func:`inet_aton` does not support IPv6, and :func:`inet_pton` should be used
    instead for IPv4/v6 dual stack support.
 
 
@@ -419,7 +419,7 @@ The module :mod:`socket` exports the following constants and functions:
 
    If the string passed to this function is not exactly 4 bytes in length,
    :exc:`socket.error` will be raised. :func:`inet_ntoa` does not support IPv6, and
-   :func:`getnameinfo` should be used instead for IPv4/v6 dual stack support.
+   :func:`inet_ntop` should be used instead for IPv4/v6 dual stack support.
 
 
 .. function:: inet_pton(address_family, ip_string)
@@ -436,6 +436,11 @@ The module :mod:`socket` exports the following constants and functions:
    :cfunc:`inet_pton`.
 
    Availability: Unix (maybe not all platforms).
+
+   .. seealso::
+
+      :func:`ipaddr.BaseIP.packed`
+         Platform-independent conversion to a packed, binary format.
 
    .. versionadded:: 2.3
 
@@ -588,14 +593,14 @@ correspond to Unix system calls applicable to sockets.
    contents of the buffer (see the optional built-in module :mod:`struct` for a way
    to decode C structures encoded as strings).
 
-   
+
 .. method:: socket.ioctl(control, option)
 
-   :platform: Windows 
-   
+   :platform: Windows
+
    The :meth:`ioctl` method is a limited interface to the WSAIoctl system
    interface. Please refer to the MSDN documentation for more information.
-   
+
    .. versionadded:: 2.6
 
 
@@ -852,20 +857,21 @@ sends traffic to the first one connected successfully. ::
    HOST = None               # Symbolic name meaning all available interfaces
    PORT = 50007              # Arbitrary non-privileged port
    s = None
-   for res in socket.getaddrinfo(HOST, PORT, socket.AF_UNSPEC, socket.SOCK_STREAM, 0, socket.AI_PASSIVE):
+   for res in socket.getaddrinfo(HOST, PORT, socket.AF_UNSPEC,
+                                 socket.SOCK_STREAM, 0, socket.AI_PASSIVE):
        af, socktype, proto, canonname, sa = res
        try:
-   	s = socket.socket(af, socktype, proto)
+           s = socket.socket(af, socktype, proto)
        except socket.error, msg:
-   	s = None
-   	continue
+           s = None
+           continue
        try:
-   	s.bind(sa)
-   	s.listen(1)
+           s.bind(sa)
+           s.listen(1)
        except socket.error, msg:
-   	s.close()
-   	s = None
-   	continue
+           s.close()
+           s = None
+           continue
        break
    if s is None:
        print 'could not open socket'
@@ -890,16 +896,16 @@ sends traffic to the first one connected successfully. ::
    for res in socket.getaddrinfo(HOST, PORT, socket.AF_UNSPEC, socket.SOCK_STREAM):
        af, socktype, proto, canonname, sa = res
        try:
-   	s = socket.socket(af, socktype, proto)
+           s = socket.socket(af, socktype, proto)
        except socket.error, msg:
-   	s = None
-   	continue
+           s = None
+           continue
        try:
-   	s.connect(sa)
+           s.connect(sa)
        except socket.error, msg:
-   	s.close()
-   	s = None
-   	continue
+           s.close()
+           s = None
+           continue
        break
    if s is None:
        print 'could not open socket'
@@ -909,7 +915,7 @@ sends traffic to the first one connected successfully. ::
    s.close()
    print 'Received', repr(data)
 
-   
+
 The last example shows how to write a very simple network sniffer with raw
 sockets on Windows. The example requires administrator privileges to modify
 the interface::
@@ -918,19 +924,19 @@ the interface::
 
    # the public network interface
    HOST = socket.gethostbyname(socket.gethostname())
-   
+
    # create a raw socket and bind it to the public interface
    s = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_IP)
    s.bind((HOST, 0))
-   
+
    # Include IP headers
    s.setsockopt(socket.IPPROTO_IP, socket.IP_HDRINCL, 1)
-   
+
    # receive all packages
    s.ioctl(socket.SIO_RCVALL, socket.RCVALL_ON)
-   
+
    # receive a package
    print s.recvfrom(65565)
-   
+
    # disabled promiscuous mode
    s.ioctl(socket.SIO_RCVALL, socket.RCVALL_OFF)

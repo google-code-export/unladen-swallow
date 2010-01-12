@@ -372,7 +372,7 @@ get_ulong(PyObject *v, unsigned long *p)
 		return -1;
 	}
 	x = PyInt_AsUnsignedLongMask(v);
-	if (x == -1 && PyErr_Occurred())
+	if (x == (unsigned long)-1 && PyErr_Occurred())
 		return -1;
 	*p = x;
 	return 0;
@@ -410,7 +410,7 @@ get_ulonglong(PyObject *v, unsigned PY_LONG_LONG *p)
  		return -1;
  	}
 	x = PyInt_AsUnsignedLongLongMask(v);
-	if (x == -1 && PyErr_Occurred())
+	if (x == (unsigned PY_LONG_LONG)-1 && PyErr_Occurred())
 		return -1;
 	*p = x;
 	return 0;
@@ -1452,11 +1452,14 @@ Z_set(void *ptr, PyObject *value, Py_ssize_t size)
 		size += 1; /* terminating NUL */
 		size *= sizeof(wchar_t);
 		buffer = (wchar_t *)PyMem_Malloc(size);
-		if (!buffer)
+		if (!buffer) {
+			Py_DECREF(value);
 			return PyErr_NoMemory();
+		}
 		memset(buffer, 0, size);
 		keep = PyCObject_FromVoidPtr(buffer, PyMem_Free);
 		if (!keep) {
+			Py_DECREF(value);
 			PyMem_Free(buffer);
 			return NULL;
 		}

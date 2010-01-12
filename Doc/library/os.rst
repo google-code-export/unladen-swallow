@@ -46,15 +46,6 @@ the :mod:`os` module, but using them is of course a threat to portability!
    ``'ce'``, ``'java'``, ``'riscos'``.
 
 
-.. data:: path
-
-   The corresponding operating system dependent standard module for pathname
-   operations, such as :mod:`posixpath` or :mod:`ntpath`.  Thus, given the proper
-   imports, ``os.path.split(file)`` is equivalent to but more portable than
-   ``posixpath.split(file)``.  Note that this is also an importable module: it may
-   be imported directly as :mod:`os.path`.
-
-
 .. _os-procinfo:
 
 Process Parameters
@@ -363,12 +354,12 @@ These functions create new file objects. (See also :func:`open`.)
    is ``'r'`` (default) or ``'w'``. The *bufsize* argument has the same meaning as
    the corresponding argument to the built-in :func:`open` function.  The exit
    status of the command (encoded in the format specified for :func:`wait`) is
-   available as the return value of the :meth:`close` method of the file object,
+   available as the return value of the :meth:`~file.close` method of the file object,
    except that when the exit status is zero (termination without errors), ``None``
    is returned. Availability: Unix, Windows.
 
    .. deprecated:: 2.6
-      This function is obsolete.  Use the :mod:`subprocess` module.  Check 
+      This function is obsolete.  Use the :mod:`subprocess` module.  Check
       especially the :ref:`subprocess-replacements` section.
 
    .. versionchanged:: 2.0
@@ -418,7 +409,7 @@ functions, see :ref:`popen2-flow-control`.
    child_stdout)``.
 
    .. deprecated:: 2.6
-      This function is obsolete.  Use the :mod:`subprocess` module.  Check 
+      This function is obsolete.  Use the :mod:`subprocess` module.  Check
       especially the :ref:`subprocess-replacements` section.
 
    Availability: Unix, Windows.
@@ -432,7 +423,7 @@ functions, see :ref:`popen2-flow-control`.
    child_stdout, child_stderr)``.
 
    .. deprecated:: 2.6
-      This function is obsolete.  Use the :mod:`subprocess` module.  Check 
+      This function is obsolete.  Use the :mod:`subprocess` module.  Check
       especially the :ref:`subprocess-replacements` section.
 
    Availability: Unix, Windows.
@@ -446,7 +437,7 @@ functions, see :ref:`popen2-flow-control`.
    child_stdout_and_stderr)``.
 
    .. deprecated:: 2.6
-      This function is obsolete.  Use the :mod:`subprocess` module.  Check 
+      This function is obsolete.  Use the :mod:`subprocess` module.  Check
       especially the :ref:`subprocess-replacements` section.
 
    Availability: Unix, Windows.
@@ -484,9 +475,9 @@ by file descriptors.
    .. note::
 
       This function is intended for low-level I/O and must be applied to a file
-      descriptor as returned by :func:`open` or :func:`pipe`.  To close a "file
+      descriptor as returned by :func:`os.open` or :func:`pipe`.  To close a "file
       object" returned by the built-in function :func:`open` or by :func:`popen` or
-      :func:`fdopen`, use its :meth:`close` method.
+      :func:`fdopen`, use its :meth:`~file.close` method.
 
 
 .. function:: closerange(fd_low, fd_high)
@@ -613,8 +604,8 @@ by file descriptors.
    .. note::
 
       This function is intended for low-level I/O.  For normal usage, use the built-in
-      function :func:`open`, which returns a "file object" with :meth:`read` and
-      :meth:`write` methods (and many more).  To wrap a file descriptor in a "file
+      function :func:`open`, which returns a "file object" with :meth:`~file.read` and
+      :meth:`~file.write` methods (and many more).  To wrap a file descriptor in a "file
       object", use :func:`fdopen`.
 
 
@@ -643,22 +634,22 @@ by file descriptors.
    .. note::
 
       This function is intended for low-level I/O and must be applied to a file
-      descriptor as returned by :func:`open` or :func:`pipe`.  To read a "file object"
+      descriptor as returned by :func:`os.open` or :func:`pipe`.  To read a "file object"
       returned by the built-in function :func:`open` or by :func:`popen` or
-      :func:`fdopen`, or :data:`sys.stdin`, use its :meth:`read` or :meth:`readline`
-      methods.
+      :func:`fdopen`, or :data:`sys.stdin`, use its :meth:`~file.read` or
+      :meth:`~file.readline` methods.
 
 
 .. function:: tcgetpgrp(fd)
 
    Return the process group associated with the terminal given by *fd* (an open
-   file descriptor as returned by :func:`open`). Availability: Unix.
+   file descriptor as returned by :func:`os.open`). Availability: Unix.
 
 
 .. function:: tcsetpgrp(fd, pg)
 
    Set the process group associated with the terminal given by *fd* (an open file
-   descriptor as returned by :func:`open`) to *pg*. Availability: Unix.
+   descriptor as returned by :func:`os.open`) to *pg*. Availability: Unix.
 
 
 .. function:: ttyname(fd)
@@ -676,15 +667,16 @@ by file descriptors.
    .. note::
 
       This function is intended for low-level I/O and must be applied to a file
-      descriptor as returned by :func:`open` or :func:`pipe`.  To write a "file
+      descriptor as returned by :func:`os.open` or :func:`pipe`.  To write a "file
       object" returned by the built-in function :func:`open` or by :func:`popen` or
-      :func:`fdopen`, or :data:`sys.stdout` or :data:`sys.stderr`, use its :meth:`write`
-      method.
+      :func:`fdopen`, or :data:`sys.stdout` or :data:`sys.stderr`, use its
+      :meth:`~file.write` method.
 
-The following data items are available for use in constructing the *flags*
-parameter to the :func:`open` function.  Some items will not be available on all
-platforms.  For descriptions of their availability and use, consult
-:manpage:`open(2)`.
+The following constants are options for the *flags* parameter to the
+:func:`~os.open` function.  They can be combined using the bitwise OR operator
+``|``.  Some of them are not available on all platforms.  For descriptions of
+their availability and use, consult the :manpage:`open(2)` manual page on Unix
+or `the MSDN <http://msdn.microsoft.com/en-us/library/z0kc8e3z.aspx>`_ on Windows.
 
 
 .. data:: O_RDONLY
@@ -695,8 +687,7 @@ platforms.  For descriptions of their availability and use, consult
           O_EXCL
           O_TRUNC
 
-   Options for the *flag* argument to the :func:`open` function. These can be
-   combined using the bitwise OR operator ``|``. Availability: Unix, Windows.
+   These constants are available on Unix and Windows.
 
 
 .. data:: O_DSYNC
@@ -708,8 +699,7 @@ platforms.  For descriptions of their availability and use, consult
           O_SHLOCK
           O_EXLOCK
 
-   More options for the *flag* argument to the :func:`open` function. Availability:
-   Unix.
+   These constants are only available on Unix.
 
 
 .. data:: O_BINARY
@@ -720,8 +710,7 @@ platforms.  For descriptions of their availability and use, consult
           O_SEQUENTIAL
           O_TEXT
 
-   Options for the *flag* argument to the :func:`open` function. These can be
-   combined using the bitwise OR operator ``|``. Availability: Windows.
+   These constants are only available on Windows.
 
 
 .. data:: O_ASYNC
@@ -730,8 +719,8 @@ platforms.  For descriptions of their availability and use, consult
           O_NOFOLLOW
           O_NOATIME
 
-   Options for the *flag* argument to the :func:`open` function. These are
-   GNU extensions and not present if they are not defined by the C library.
+   These constants are GNU extensions and not present if they are not defined by
+   the C library.
 
 
 .. data:: SEEK_SET
@@ -763,7 +752,7 @@ Files and Directories
    .. note::
 
       Using :func:`access` to check if a user is authorized to e.g. open a file before
-      actually doing so using :func:`open` creates a  security hole, because the user
+      actually doing so using :func:`open` creates a security hole, because the user
       might exploit the short time interval  between checking and opening the file to
       manipulate it.
 
@@ -865,25 +854,25 @@ Files and Directories
    combinations of them:
 
 
-   * ``stat.S_ISUID``
-   * ``stat.S_ISGID``
-   * ``stat.S_ENFMT``
-   * ``stat.S_ISVTX``
-   * ``stat.S_IREAD``
-   * ``stat.S_IWRITE``
-   * ``stat.S_IEXEC``
-   * ``stat.S_IRWXU``
-   * ``stat.S_IRUSR``
-   * ``stat.S_IWUSR``
-   * ``stat.S_IXUSR``
-   * ``stat.S_IRWXG``
-   * ``stat.S_IRGRP``
-   * ``stat.S_IWGRP``
-   * ``stat.S_IXGRP``
-   * ``stat.S_IRWXO``
-   * ``stat.S_IROTH``
-   * ``stat.S_IWOTH``
-   * ``stat.S_IXOTH``
+   * :data:`stat.S_ISUID`
+   * :data:`stat.S_ISGID`
+   * :data:`stat.S_ENFMT`
+   * :data:`stat.S_ISVTX`
+   * :data:`stat.S_IREAD`
+   * :data:`stat.S_IWRITE`
+   * :data:`stat.S_IEXEC`
+   * :data:`stat.S_IRWXU`
+   * :data:`stat.S_IRUSR`
+   * :data:`stat.S_IWUSR`
+   * :data:`stat.S_IXUSR`
+   * :data:`stat.S_IRWXG`
+   * :data:`stat.S_IRGRP`
+   * :data:`stat.S_IWGRP`
+   * :data:`stat.S_IXGRP`
+   * :data:`stat.S_IRWXO`
+   * :data:`stat.S_IROTH`
+   * :data:`stat.S_IWOTH`
+   * :data:`stat.S_IXOTH`
 
    Availability: Unix, Windows.
 
@@ -933,14 +922,15 @@ Files and Directories
 
 .. function:: listdir(path)
 
-   Return a list containing the names of the entries in the directory. The list is
-   in arbitrary order.  It does not include the special entries ``'.'`` and
-   ``'..'`` even if they are present in the directory. Availability:
-   Unix, Windows.
+   Return a list containing the names of the entries in the directory given by
+   *path*.  The list is in arbitrary order.  It does not include the special
+   entries ``'.'`` and ``'..'`` even if they are present in the
+   directory.  Availability: Unix, Windows.
 
    .. versionchanged:: 2.3
       On Windows NT/2k/XP and Unix, if *path* is a Unicode object, the result will be
-      a list of Unicode objects.
+      a list of Unicode objects. Undecodable filenames will still be returned as
+      string objects.
 
 
 .. function:: lstat(path)
@@ -1451,7 +1441,7 @@ to be ignored.
    These functions all execute a new program, replacing the current process; they
    do not return.  On Unix, the new executable is loaded into the current process,
    and will have the same process id as the caller.  Errors will be reported as
-   :exc:`OSError` exceptions.  
+   :exc:`OSError` exceptions.
 
    The current process is replaced immediately. Open file objects and
    descriptors are not flushed, so if there may be data buffered
@@ -1483,7 +1473,7 @@ to be ignored.
    used to define the environment variables for the new process (these are used
    instead of the current process' environment); the functions :func:`execl`,
    :func:`execlp`, :func:`execv`, and :func:`execvp` all cause the new process to
-   inherit the environment of the current process. 
+   inherit the environment of the current process.
 
    Availability: Unix, Windows.
 
@@ -1720,8 +1710,8 @@ written in Python, such as a mail server's external command delivery program.
 
    (Note that the :mod:`subprocess` module provides more powerful facilities for
    spawning new processes and retrieving their results; using that module is
-   preferable to using these functions.  Check specially the *Replacing Older 
-   Functions with the subprocess Module* section in that documentation page.)
+   preferable to using these functions.  Check especially the
+   :ref:`subprocess-replacements` section.)
 
    If *mode* is :const:`P_NOWAIT`, this function returns the process id of the new
    process; if *mode* is :const:`P_WAIT`, returns the process's exit code if it
@@ -1753,7 +1743,9 @@ written in Python, such as a mail server's external command delivery program.
    which is used to define the environment variables for the new process (they are
    used instead of the current process' environment); the functions
    :func:`spawnl`, :func:`spawnlp`, :func:`spawnv`, and :func:`spawnvp` all cause
-   the new process to inherit the environment of the current process.
+   the new process to inherit the environment of the current process.  Note that
+   keys and values in the *env* dictionary must be strings; invalid keys or
+   values will cause the function to fail, with a return value of ``127``.
 
    As an example, the following calls to :func:`spawnlp` and :func:`spawnvpe` are
    equivalent::

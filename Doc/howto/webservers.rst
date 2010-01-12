@@ -88,7 +88,7 @@ they can be run as CGI if no better option is available.
    <http://wiki.python.org/moin/CgiScripts>`_ with some additional information
    about CGI in Python.
 
-   
+
 Simple script for testing CGI
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -99,7 +99,8 @@ simple CGI program::
     # -*- coding: UTF-8 -*-
 
     # enable debugging
-    import cgitb; cgitb.enable()
+    import cgitb
+    cgitb.enable()
 
     print "Content-Type: text/plain;charset=utf-8"
     print
@@ -386,7 +387,7 @@ compared with other web techniques.
 
    You might be interested in some WSGI-supporting modules already contained in
    the standard library, namely:
-    
+
    * :mod:`wsgiref` -- some tiny utilities and servers for WSGI
 
 
@@ -425,7 +426,7 @@ MVC stands for three components:
   user.  Typically this component is represented by the templates.
 * The *controller*.  This is the layer between the user and the model.  The
   controller reacts on user actions (like opening some specific URL) and tells
-  the model to modify the data if neccessary.
+  the model to modify the data if necessary.
 
 While one might think that MVC is a complex design pattern, in fact it is not.
 It is used in Python because it has turned out to be useful for creating clean,
@@ -434,9 +435,9 @@ maintainable web sites.
 .. note::
 
    While not all Python frameworks explicitly support MVC, it is often trivial
-   to create a web site which uses the MVC pattern by seperating the data logic
+   to create a web site which uses the MVC pattern by separating the data logic
    (the model) from the user interaction logic (the controller) and the
-   templates (the view).  That's why it is important not to write unneccessary
+   templates (the view).  That's why it is important not to write unnecessary
    Python code in the templates -- it is against MVC and creates more chaos.
 
 .. seealso::
@@ -499,7 +500,7 @@ using these is a good idea.
    time in looking through the most popular ones.  Some frameworks have their
    own template engine or have a recommentation for one.  It's wise to use
    these.
-  
+
    Popular template engines include:
 
    * Mako
@@ -606,7 +607,7 @@ Some notable frameworks
 -----------------------
 
 There is an incredible number of frameworks, so there is no way to describe them
-all.  It is not even neccessary, as most of these frameworks are nothing special
+all.  It is not even necessary, as most of these frameworks are nothing special
 and everything that can be done with these can also be done with one of the
 popular ones.
 
@@ -678,7 +679,7 @@ project called `Grok <http://grok.zope.org/>`_ which makes it possible for
 Another framework that's already been mentioned is `Pylons`_.  Pylons is much
 like TurboGears with ab even stronger emphasis on flexibility, which is bought
 at the cost of being more difficult to use.  Nearly every component can be
-exchanged, which makes it neccessary to use the documentation of every single
+exchanged, which makes it necessary to use the documentation of every single
 component, because there are so many Pylons combinations possible that can
 satisfy every requirement.  Pylons builds upon `Paste
 <http://pythonpaste.org/>`_, an extensive set of tools which are handy for WSGI.
@@ -687,7 +688,7 @@ And that's still not everything.  The most up-to-date information can always be
 found in the Python wiki.
 
 .. seealso::
-    
+
    The Python wiki contains an extensive list of `web frameworks
    <http://wiki.python.org/moin/WebFrameworks>`_.
 

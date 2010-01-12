@@ -176,6 +176,9 @@ class URLopener:
     def open(self, fullurl, data=None):
         """Use URLopener().open(file) instead of open(file, 'r')."""
         fullurl = unwrap(toBytes(fullurl))
+        # percent encode url. fixing lame server errors like space within url
+        # parts
+        fullurl = quote(fullurl, safe="%/:=&?~#+!$,;'@()*[]")
         if self.tempcache and fullurl in self.tempcache:
             filename, headers = self.tempcache[fullurl]
             fp = open(filename, 'rb')
@@ -233,41 +236,45 @@ class URLopener:
             except IOError, msg:
                 pass
         fp = self.open(url, data)
-        headers = fp.info()
-        if filename:
-            tfp = open(filename, 'wb')
-        else:
-            import tempfile
-            garbage, path = splittype(url)
-            garbage, path = splithost(path or "")
-            path, garbage = splitquery(path or "")
-            path, garbage = splitattr(path or "")
-            suffix = os.path.splitext(path)[1]
-            (fd, filename) = tempfile.mkstemp(suffix)
-            self.__tempfiles.append(filename)
-            tfp = os.fdopen(fd, 'wb')
-        result = filename, headers
-        if self.tempcache is not None:
-            self.tempcache[url] = result
-        bs = 1024*8
-        size = -1
-        read = 0
-        blocknum = 0
-        if reporthook:
-            if "content-length" in headers:
-                size = int(headers["Content-Length"])
-            reporthook(blocknum, bs, size)
-        while 1:
-            block = fp.read(bs)
-            if block == "":
-                break
-            read += len(block)
-            tfp.write(block)
-            blocknum += 1
-            if reporthook:
-                reporthook(blocknum, bs, size)
-        fp.close()
-        tfp.close()
+        try:
+            headers = fp.info()
+            if filename:
+                tfp = open(filename, 'wb')
+            else:
+                import tempfile
+                garbage, path = splittype(url)
+                garbage, path = splithost(path or "")
+                path, garbage = splitquery(path or "")
+                path, garbage = splitattr(path or "")
+                suffix = os.path.splitext(path)[1]
+                (fd, filename) = tempfile.mkstemp(suffix)
+                self.__tempfiles.append(filename)
+                tfp = os.fdopen(fd, 'wb')
+            try:
+                result = filename, headers
+                if self.tempcache is not None:
+                    self.tempcache[url] = result
+                bs = 1024*8
+                size = -1
+                read = 0
+                blocknum = 0
+                if reporthook:
+                    if "content-length" in headers:
+                        size = int(headers["Content-Length"])
+                    reporthook(blocknum, bs, size)
+                while 1:
+                    block = fp.read(bs)
+                    if block == "":
+                        break
+                    read += len(block)
+                    tfp.write(block)
+                    blocknum += 1
+                    if reporthook:
+                        reporthook(blocknum, bs, size)
+            finally:
+                tfp.close()
+        finally:
+            fp.close()
         del fp
         del tfp
 
@@ -1324,38 +1331,7 @@ def proxy_bypass_environment(host):
 
 
 if sys.platform == 'darwin':
-
-    def _CFSetup(sc):
-        from ctypes import c_int32, c_void_p, c_char_p, c_int
-        sc.CFStringCreateWithCString.argtypes = [ c_void_p, c_char_p, c_int32 ]
-        sc.CFStringCreateWithCString.restype = c_void_p
-        sc.SCDynamicStoreCopyProxies.argtypes = [ c_void_p ]
-        sc.SCDynamicStoreCopyProxies.restype = c_void_p
-        sc.CFDictionaryGetValue.argtypes = [ c_void_p, c_void_p ]
-        sc.CFDictionaryGetValue.restype = c_void_p
-        sc.CFStringGetLength.argtypes = [ c_void_p ]
-        sc.CFStringGetLength.restype = c_int32
-        sc.CFStringGetCString.argtypes = [ c_void_p, c_char_p, c_int32, c_int32 ]
-        sc.CFStringGetCString.restype = c_int32
-        sc.CFNumberGetValue.argtypes = [ c_void_p, c_int, c_void_p ]
-        sc.CFNumberGetValue.restype = c_int32
-        sc.CFRelease.argtypes = [ c_void_p ]
-        sc.CFRelease.restype = None
-
-    def _CStringFromCFString(sc, value):
-        from ctypes import create_string_buffer
-        length = sc.CFStringGetLength(value) + 1
-        buff = create_string_buffer(length)
-        sc.CFStringGetCString(value, buff, length, 0)
-        return buff.value
-
-    def _CFNumberToInt32(sc, cfnum):
-        from ctypes import byref, c_int
-        val = c_int()
-        kCFNumberSInt32Type = 3
-        sc.CFNumberGetValue(cfnum, kCFNumberSInt32Type, byref(val))
-        return val.value
-
+    from _scproxy import _get_proxy_settings, _get_proxies
 
     def proxy_bypass_macosx_sysconf(host):
         """
@@ -1364,11 +1340,11 @@ if sys.platform == 'darwin':
         This function uses the MacOSX framework SystemConfiguration
         to fetch the proxy information.
         """
-        from ctypes import cdll
-        from ctypes.util import find_library
         import re
         import socket
         from fnmatch import fnmatch
+
+        hostonly, port = splitport(host)
 
         def ip2num(ipAddr):
             parts = ipAddr.split('.')
@@ -1377,63 +1353,39 @@ if sys.platform == 'darwin':
                 parts = (parts + [0, 0, 0, 0])[:4]
             return (parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]
 
-        sc = cdll.LoadLibrary(find_library("SystemConfiguration"))
-        _CFSetup(sc)
+        proxy_settings = _get_proxy_settings()
+
+        # Check for simple host names:
+        if '.' not in host:
+            if proxy_settings['exclude_simple']:
+                return True
 
         hostIP = None
 
-        if not sc:
-            return False
+        for value in proxy_settings.get('exceptions', ()):
+            # Items in the list are strings like these: *.local, 169.254/16
+            if not value: continue
 
-        kSCPropNetProxiesExceptionsList = sc.CFStringCreateWithCString(0, "ExceptionsList", 0)
-        kSCPropNetProxiesExcludeSimpleHostnames = sc.CFStringCreateWithCString(0,
-                "ExcludeSimpleHostnames", 0)
+            m = re.match(r"(\d+(?:\.\d+)*)(/\d+)?", value)
+            if m is not None:
+                if hostIP is None:
+                    try:
+                        hostIP = socket.gethostbyname(hostonly)
+                        hostIP = ip2num(hostIP)
+                    except socket.error:
+                        continue
 
+                base = ip2num(m.group(1))
+                mask = int(m.group(2)[1:])
+                mask = 32 - mask
 
-        proxyDict = sc.SCDynamicStoreCopyProxies(None)
-        if proxyDict is None:
-            return False
-
-        try:
-            # Check for simple host names:
-            if '.' not in host:
-                exclude_simple = sc.CFDictionaryGetValue(proxyDict,
-                        kSCPropNetProxiesExcludeSimpleHostnames)
-                if exclude_simple and _CFNumberToInt32(sc, exclude_simple):
+                if (hostIP >> mask) == (base >> mask):
                     return True
 
+            elif fnmatch(host, value):
+                return True
 
-            # Check the exceptions list:
-            exceptions = sc.CFDictionaryGetValue(proxyDict, kSCPropNetProxiesExceptionsList)
-            if exceptions:
-                # Items in the list are strings like these: *.local, 169.254/16
-                for index in xrange(sc.CFArrayGetCount(exceptions)):
-                    value = sc.CFArrayGetValueAtIndex(exceptions, index)
-                    if not value: continue
-                    value = _CStringFromCFString(sc, value)
-
-                    m = re.match(r"(\d+(?:\.\d+)*)(/\d+)?", value)
-                    if m is not None:
-                        if hostIP is None:
-                            hostIP = socket.gethostbyname(host)
-                            hostIP = ip2num(hostIP)
-
-                        base = ip2num(m.group(1))
-                        mask = int(m.group(2)[1:])
-                        mask = 32 - mask
-
-                        if (hostIP >> mask) == (base >> mask):
-                            return True
-
-                    elif fnmatch(host, value):
-                        return True
-
-            return False
-
-        finally:
-            sc.CFRelease(kSCPropNetProxiesExceptionsList)
-            sc.CFRelease(kSCPropNetProxiesExcludeSimpleHostnames)
-
+        return False
 
 
     def getproxies_macosx_sysconf():
@@ -1442,106 +1394,7 @@ if sys.platform == 'darwin':
         This function uses the MacOSX framework SystemConfiguration
         to fetch the proxy information.
         """
-        from ctypes import cdll
-        from ctypes.util import find_library
-
-        sc = cdll.LoadLibrary(find_library("SystemConfiguration"))
-        _CFSetup(sc)
-
-        if not sc:
-            return {}
-
-        kSCPropNetProxiesHTTPEnable = sc.CFStringCreateWithCString(0, "HTTPEnable", 0)
-        kSCPropNetProxiesHTTPProxy = sc.CFStringCreateWithCString(0, "HTTPProxy", 0)
-        kSCPropNetProxiesHTTPPort = sc.CFStringCreateWithCString(0, "HTTPPort", 0)
-
-        kSCPropNetProxiesHTTPSEnable = sc.CFStringCreateWithCString(0, "HTTPSEnable", 0)
-        kSCPropNetProxiesHTTPSProxy = sc.CFStringCreateWithCString(0, "HTTPSProxy", 0)
-        kSCPropNetProxiesHTTPSPort = sc.CFStringCreateWithCString(0, "HTTPSPort", 0)
-
-        kSCPropNetProxiesFTPEnable = sc.CFStringCreateWithCString(0, "FTPEnable", 0)
-        kSCPropNetProxiesFTPPassive = sc.CFStringCreateWithCString(0, "FTPPassive", 0)
-        kSCPropNetProxiesFTPPort = sc.CFStringCreateWithCString(0, "FTPPort", 0)
-        kSCPropNetProxiesFTPProxy = sc.CFStringCreateWithCString(0, "FTPProxy", 0)
-
-        kSCPropNetProxiesGopherEnable = sc.CFStringCreateWithCString(0, "GopherEnable", 0)
-        kSCPropNetProxiesGopherPort = sc.CFStringCreateWithCString(0, "GopherPort", 0)
-        kSCPropNetProxiesGopherProxy = sc.CFStringCreateWithCString(0, "GopherProxy", 0)
-
-        proxies = {}
-        proxyDict = sc.SCDynamicStoreCopyProxies(None)
-
-        try:
-            # HTTP:
-            enabled = sc.CFDictionaryGetValue(proxyDict, kSCPropNetProxiesHTTPEnable)
-            if enabled and _CFNumberToInt32(sc, enabled):
-                proxy = sc.CFDictionaryGetValue(proxyDict, kSCPropNetProxiesHTTPProxy)
-                port = sc.CFDictionaryGetValue(proxyDict, kSCPropNetProxiesHTTPPort)
-
-                if proxy:
-                    proxy = _CStringFromCFString(sc, proxy)
-                    if port:
-                        port = _CFNumberToInt32(sc, port)
-                        proxies["http"] = "http://%s:%i" % (proxy, port)
-                    else:
-                        proxies["http"] = "http://%s" % (proxy, )
-
-            # HTTPS:
-            enabled = sc.CFDictionaryGetValue(proxyDict, kSCPropNetProxiesHTTPSEnable)
-            if enabled and _CFNumberToInt32(sc, enabled):
-                proxy = sc.CFDictionaryGetValue(proxyDict, kSCPropNetProxiesHTTPSProxy)
-                port = sc.CFDictionaryGetValue(proxyDict, kSCPropNetProxiesHTTPSPort)
-
-                if proxy:
-                    proxy = _CStringFromCFString(sc, proxy)
-                    if port:
-                        port = _CFNumberToInt32(sc, port)
-                        proxies["https"] = "http://%s:%i" % (proxy, port)
-                    else:
-                        proxies["https"] = "http://%s" % (proxy, )
-
-            # FTP:
-            enabled = sc.CFDictionaryGetValue(proxyDict, kSCPropNetProxiesFTPEnable)
-            if enabled and _CFNumberToInt32(sc, enabled):
-                proxy = sc.CFDictionaryGetValue(proxyDict, kSCPropNetProxiesFTPProxy)
-                port = sc.CFDictionaryGetValue(proxyDict, kSCPropNetProxiesFTPPort)
-
-                if proxy:
-                    proxy = _CStringFromCFString(sc, proxy)
-                    if port:
-                        port = _CFNumberToInt32(sc, port)
-                        proxies["ftp"] = "http://%s:%i" % (proxy, port)
-                    else:
-                        proxies["ftp"] = "http://%s" % (proxy, )
-
-            # Gopher:
-            enabled = sc.CFDictionaryGetValue(proxyDict, kSCPropNetProxiesGopherEnable)
-            if enabled and _CFNumberToInt32(sc, enabled):
-                proxy = sc.CFDictionaryGetValue(proxyDict, kSCPropNetProxiesGopherProxy)
-                port = sc.CFDictionaryGetValue(proxyDict, kSCPropNetProxiesGopherPort)
-
-                if proxy:
-                    proxy = _CStringFromCFString(sc, proxy)
-                    if port:
-                        port = _CFNumberToInt32(sc, port)
-                        proxies["gopher"] = "http://%s:%i" % (proxy, port)
-                    else:
-                        proxies["gopher"] = "http://%s" % (proxy, )
-        finally:
-            sc.CFRelease(proxyDict)
-
-        sc.CFRelease(kSCPropNetProxiesHTTPEnable)
-        sc.CFRelease(kSCPropNetProxiesHTTPProxy)
-        sc.CFRelease(kSCPropNetProxiesHTTPPort)
-        sc.CFRelease(kSCPropNetProxiesFTPEnable)
-        sc.CFRelease(kSCPropNetProxiesFTPPassive)
-        sc.CFRelease(kSCPropNetProxiesFTPPort)
-        sc.CFRelease(kSCPropNetProxiesFTPProxy)
-        sc.CFRelease(kSCPropNetProxiesGopherEnable)
-        sc.CFRelease(kSCPropNetProxiesGopherPort)
-        sc.CFRelease(kSCPropNetProxiesGopherProxy)
-
-        return proxies
+        return _get_proxies()
 
 
 

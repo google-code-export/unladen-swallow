@@ -182,6 +182,8 @@ get_long(PyObject *v, long *p)
 
 /* Same, but handling unsigned long */
 
+#ifndef PY_STRUCT_OVERFLOW_MASKING
+
 static int
 get_ulong(PyObject *v, unsigned long *p)
 {
@@ -201,6 +203,8 @@ get_ulong(PyObject *v, unsigned long *p)
 	}
 	return 0;
 }
+
+#endif /* PY_STRUCT_OVERFLOW_MASKING */
 
 #ifdef HAVE_LONG_LONG
 
@@ -646,7 +650,7 @@ np_ushort(char *p, PyObject *v, const formatdef *f)
 		return -1;
 	if (x < 0 || x > USHRT_MAX){
 		PyErr_SetString(StructError,
-				"short format requires 0 <= number <= " STRINGIFY(USHRT_MAX));
+				"ushort format requires 0 <= number <= " STRINGIFY(USHRT_MAX));
 		return -1;
 	}
 	y = (unsigned short)x;
@@ -663,7 +667,7 @@ np_int(char *p, PyObject *v, const formatdef *f)
 		return -1;
 #if (SIZEOF_LONG > SIZEOF_INT)
 	if ((x < ((long)INT_MIN)) || (x > ((long)INT_MAX)))
-		return _range_error(f, 0);
+		RANGE_ERROR(x, f, 0, -1);
 #endif
 	y = (int)x;
 	memcpy(p, (char *)&y, sizeof y);
@@ -675,12 +679,12 @@ np_uint(char *p, PyObject *v, const formatdef *f)
 {
 	unsigned long x;
 	unsigned int y;
-	if (get_ulong(v, &x) < 0)
-		return _range_error(f, 1);
+	if (get_wrapped_ulong(v, &x) < 0)
+		return -1;
 	y = (unsigned int)x;
 #if (SIZEOF_LONG > SIZEOF_INT)
 	if (x > ((unsigned long)UINT_MAX))
-		return _range_error(f, 1);
+		RANGE_ERROR(y, f, 1, -1);
 #endif
 	memcpy(p, (char *)&y, sizeof y);
 	return 0;
@@ -700,8 +704,8 @@ static int
 np_ulong(char *p, PyObject *v, const formatdef *f)
 {
 	unsigned long x;
-	if (get_ulong(v, &x) < 0)
-		return _range_error(f, 1);
+	if (get_wrapped_ulong(v, &x) < 0)
+		return -1;
 	memcpy(p, (char *)&x, sizeof x);
 	return 0;
 }

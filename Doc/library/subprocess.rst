@@ -39,9 +39,12 @@ This module defines one class called :class:`Popen`:
    Arguments are:
 
    *args* should be a string, or a sequence of program arguments.  The program
-   to execute is normally the first item in the args sequence or the string if a
-   string is given, but can be explicitly set by using the *executable*
-   argument.
+   to execute is normally the first item in the args sequence or the string if
+   a string is given, but can be explicitly set by using the *executable*
+   argument.  When *executable* is given, the first item in the args sequence
+   is still treated by most programs as the command name, which can then be
+   different from the actual executable name.  On Unix, it becomes the display
+   name for the executing program in utilities such as :program:`ps`.
 
    On Unix, with *shell=False* (default): In this case, the Popen class uses
    :meth:`os.execvp` to execute the child program. *args* should normally be a
@@ -73,13 +76,13 @@ This module defines one class called :class:`Popen`:
    specified by the :envvar:`COMSPEC` environment variable.
 
    *stdin*, *stdout* and *stderr* specify the executed programs' standard input,
-   standard output and standard error file handles, respectively.  Valid values are
-   ``PIPE``, an existing file descriptor (a positive integer), an existing file
-   object, and ``None``.  ``PIPE`` indicates that a new pipe to the child should be
-   created.  With ``None``, no redirection will occur; the child's file handles
-   will be inherited from the parent.  Additionally, *stderr* can be ``STDOUT``,
-   which indicates that the stderr data from the applications should be captured
-   into the same file handle as for stdout.
+   standard output and standard error file handles, respectively.  Valid values
+   are :data:`PIPE`, an existing file descriptor (a positive integer), an
+   existing file object, and ``None``.  :data:`PIPE` indicates that a new pipe
+   to the child should be created.  With ``None``, no redirection will occur;
+   the child's file handles will be inherited from the parent.  Additionally,
+   *stderr* can be :data:`STDOUT`, which indicates that the stderr data from the
+   applications should be captured into the same file handle as for stdout.
 
    If *preexec_fn* is set to a callable object, this object will be called in the
    child process just before the child is executed. (Unix only)
@@ -102,6 +105,15 @@ This module defines one class called :class:`Popen`:
    variables for the new process; these are used instead of inheriting the current
    process' environment, which is the default behavior.
 
+   .. note::
+
+      If specified, *env* must provide any variables required
+      for the program to execute.  On Windows, in order to run a
+      `side-by-side assembly`_ the specified *env* **must** include a valid
+      :envvar:`SystemRoot`.
+
+   .. _side-by-side assembly: http://en.wikipedia.org/wiki/Side-by-Side_Assembly
+
    If *universal_newlines* is :const:`True`, the file objects stdout and stderr are
    opened as text files, but lines may be terminated by any of ``'\n'``, the Unix
    end-of-line convention, ``'\r'``, the old Macintosh convention or ``'\r\n'``, the
@@ -117,6 +129,20 @@ This module defines one class called :class:`Popen`:
    The *startupinfo* and *creationflags*, if given, will be passed to the
    underlying CreateProcess() function.  They can specify things such as appearance
    of the main window and priority for the new process.  (Windows only)
+
+
+.. data:: PIPE
+
+   Special value that can be used as the *stdin*, *stdout* or *stderr* argument
+   to :class:`Popen` and indicates that a pipe to the standard stream should be
+   opened.
+
+
+.. data:: STDOUT
+
+   Special value that can be used as the *stderr* argument to :class:`Popen` and
+   indicates that standard error should go into the same handle as standard
+   output.
 
 
 Convenience Functions
@@ -207,7 +233,7 @@ Instances of the :class:`Popen` class have the following methods:
    *input* argument should be a string to be sent to the child process, or
    ``None``, if no data should be sent to the child.
 
-   :meth:`communicate` returns a tuple ``(stdout, stderr)``.
+   :meth:`communicate` returns a tuple ``(stdoutdata, stderrdata)``.
 
    Note that if you want to send data to the process's stdin, you need to create
    the Popen object with ``stdin=PIPE``.  Similarly, to get anything other than
@@ -253,28 +279,29 @@ The following attributes are also available:
 
 .. warning::
 
-   Use :meth:`communicate` rather than :meth:`.stdin.write`,
-   :meth:`.stdout.read` or :meth:`.stderr.read` to avoid deadlocks due
-   to any of the other OS pipe buffers filling up and blocking the child
-   process.
+   Use :meth:`communicate` rather than :attr:`.stdin.write <stdin>`,
+   :attr:`.stdout.read <stdout>` or :attr:`.stderr.read <stderr>` to avoid
+   deadlocks due to any of the other OS pipe buffers filling up and blocking the
+   child process.
 
 
 .. attribute:: Popen.stdin
 
-   If the *stdin* argument is ``PIPE``, this attribute is a file object that
-   provides input to the child process.  Otherwise, it is ``None``.
+   If the *stdin* argument was :data:`PIPE`, this attribute is a file object
+   that provides input to the child process.  Otherwise, it is ``None``.
 
 
 .. attribute:: Popen.stdout
 
-   If the *stdout* argument is ``PIPE``, this attribute is a file object that
-   provides output from the child process.  Otherwise, it is ``None``.
+   If the *stdout* argument was :data:`PIPE`, this attribute is a file object
+   that provides output from the child process.  Otherwise, it is ``None``.
 
 
 .. attribute:: Popen.stderr
 
-   If the *stderr* argument is ``PIPE``, this attribute is file object that
-   provides error output from the child process.  Otherwise, it is ``None``.
+   If the *stderr* argument was :data:`PIPE`, this attribute is a file object
+   that provides error output from the child process.  Otherwise, it is
+   ``None``.
 
 
 .. attribute:: Popen.pid
@@ -287,7 +314,7 @@ The following attributes are also available:
    The child return code, set by :meth:`poll` and :meth:`wait` (and indirectly
    by :meth:`communicate`).  A ``None`` value indicates that the process
    hasn't terminated yet.
-   
+
    A negative value ``-N`` indicates that the child was terminated by signal
    ``N`` (Unix only).
 
@@ -330,8 +357,8 @@ Replacing shell pipeline
    output = p2.communicate()[0]
 
 
-Replacing os.system()
-^^^^^^^^^^^^^^^^^^^^^
+Replacing :func:`os.system`
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 ::
 
@@ -358,8 +385,8 @@ A more realistic example would look like this::
        print >>sys.stderr, "Execution failed:", e
 
 
-Replacing os.spawn\*
-^^^^^^^^^^^^^^^^^^^^
+Replacing the :func:`os.spawn <os.spawnl>` family
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 P_NOWAIT example::
 
@@ -386,26 +413,26 @@ Environment example::
    Popen(["/bin/mycmd", "myarg"], env={"PATH": "/usr/bin"})
 
 
-Replacing os.popen\*
-^^^^^^^^^^^^^^^^^^^^
+Replacing :func:`os.popen`, :func:`os.popen2`, :func:`os.popen3`
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 ::
 
-   pipe = os.popen(cmd, 'r', bufsize)
+   pipe = os.popen("cmd", 'r', bufsize)
    ==>
-   pipe = Popen(cmd, shell=True, bufsize=bufsize, stdout=PIPE).stdout
+   pipe = Popen("cmd", shell=True, bufsize=bufsize, stdout=PIPE).stdout
 
 ::
 
-   pipe = os.popen(cmd, 'w', bufsize)
+   pipe = os.popen("cmd", 'w', bufsize)
    ==>
-   pipe = Popen(cmd, shell=True, bufsize=bufsize, stdin=PIPE).stdin
+   pipe = Popen("cmd", shell=True, bufsize=bufsize, stdin=PIPE).stdin
 
 ::
 
-   (child_stdin, child_stdout) = os.popen2(cmd, mode, bufsize)
+   (child_stdin, child_stdout) = os.popen2("cmd", mode, bufsize)
    ==>
-   p = Popen(cmd, shell=True, bufsize=bufsize,
+   p = Popen("cmd", shell=True, bufsize=bufsize,
              stdin=PIPE, stdout=PIPE, close_fds=True)
    (child_stdin, child_stdout) = (p.stdin, p.stdout)
 
@@ -413,9 +440,9 @@ Replacing os.popen\*
 
    (child_stdin,
     child_stdout,
-    child_stderr) = os.popen3(cmd, mode, bufsize)
+    child_stderr) = os.popen3("cmd", mode, bufsize)
    ==>
-   p = Popen(cmd, shell=True, bufsize=bufsize,
+   p = Popen("cmd", shell=True, bufsize=bufsize,
              stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True)
    (child_stdin,
     child_stdout,
@@ -423,20 +450,41 @@ Replacing os.popen\*
 
 ::
 
-   (child_stdin, child_stdout_and_stderr) = os.popen4(cmd, mode, bufsize)
+   (child_stdin, child_stdout_and_stderr) = os.popen4("cmd", mode,
+                                                      bufsize)
    ==>
-   p = Popen(cmd, shell=True, bufsize=bufsize,
+   p = Popen("cmd", shell=True, bufsize=bufsize,
              stdin=PIPE, stdout=PIPE, stderr=STDOUT, close_fds=True)
    (child_stdin, child_stdout_and_stderr) = (p.stdin, p.stdout)
 
+On Unix, os.popen2, os.popen3 and os.popen4 also accept a sequence as
+the command to execute, in which case arguments will be passed
+directly to the program without shell intervention.  This usage can be
+replaced as follows::
 
-Replacing popen2.\*
-^^^^^^^^^^^^^^^^^^^
+   (child_stdin, child_stdout) = os.popen2(["/bin/ls", "-l"], mode,
+                                           bufsize)
+   ==>
+   p = Popen(["/bin/ls", "-l"], bufsize=bufsize, stdin=PIPE, stdout=PIPE)
+   (child_stdin, child_stdout) = (p.stdin, p.stdout)
 
-.. note::
+Return code handling translates as follows::
 
-   If the cmd argument to popen2 functions is a string, the command is executed
-   through /bin/sh.  If it is a list, the command is directly executed.
+   pipe = os.popen("cmd", 'w')
+   ...
+   rc = pipe.close()
+   if rc != None and rc % 256:
+       print "There were some errors"
+   ==>
+   process = Popen("cmd", 'w', shell=True, stdin=PIPE)
+   ...
+   process.stdin.close()
+   if process.wait() != 0:
+       print "There were some errors"
+
+
+Replacing functions from the :mod:`popen2` module
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 ::
 
@@ -446,23 +494,26 @@ Replacing popen2.\*
              stdin=PIPE, stdout=PIPE, close_fds=True)
    (child_stdout, child_stdin) = (p.stdout, p.stdin)
 
-::
+On Unix, popen2 also accepts a sequence as the command to execute, in
+which case arguments will be passed directly to the program without
+shell intervention.  This usage can be replaced as follows::
 
-   (child_stdout, child_stdin) = popen2.popen2(["mycmd", "myarg"], bufsize, mode)
+   (child_stdout, child_stdin) = popen2.popen2(["mycmd", "myarg"], bufsize,
+                                               mode)
    ==>
    p = Popen(["mycmd", "myarg"], bufsize=bufsize,
              stdin=PIPE, stdout=PIPE, close_fds=True)
    (child_stdout, child_stdin) = (p.stdout, p.stdin)
 
-The popen2.Popen3 and popen2.Popen4 basically works as subprocess.Popen, except
-that:
+:class:`popen2.Popen3` and :class:`popen2.Popen4` basically work as
+:class:`subprocess.Popen`, except that:
 
-* subprocess.Popen raises an exception if the execution fails
+* :class:`Popen` raises an exception if the execution fails.
 
 * the *capturestderr* argument is replaced with the *stderr* argument.
 
-* stdin=PIPE and stdout=PIPE must be specified.
+* ``stdin=PIPE`` and ``stdout=PIPE`` must be specified.
 
 * popen2 closes all file descriptors by default, but you have to specify
-  close_fds=True with subprocess.Popen.
+  ``close_fds=True`` with :class:`Popen`.
 

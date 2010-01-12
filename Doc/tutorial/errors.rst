@@ -91,7 +91,7 @@ is signalled by raising the :exc:`KeyboardInterrupt` exception. ::
    ...         break
    ...     except ValueError:
    ...         print "Oops!  That was no valid number.  Try again..."
-   ...     
+   ...
 
 The :keyword:`try` statement works as follows.
 
@@ -199,12 +199,12 @@ indirectly) in the try clause. For example::
 
    >>> def this_fails():
    ...     x = 1/0
-   ... 
+   ...
    >>> try:
    ...     this_fails()
    ... except ZeroDivisionError as detail:
    ...     print 'Handling run-time error:', detail
-   ... 
+   ...
    Handling run-time error: integer division or modulo by zero
 
 
@@ -216,22 +216,21 @@ Raising Exceptions
 The :keyword:`raise` statement allows the programmer to force a specified
 exception to occur. For example::
 
-   >>> raise NameError, 'HiThere'
+   >>> raise NameError('HiThere')
    Traceback (most recent call last):
      File "<stdin>", line 1, in ?
    NameError: HiThere
 
-The first argument to :keyword:`raise` names the exception to be raised.  The
-optional second argument specifies the exception's argument.  Alternatively, the
-above could be written as ``raise NameError('HiThere')``.  Either form works
-fine, but there seems to be a growing stylistic preference for the latter.
+The sole argument to :keyword:`raise` indicates the exception to be raised.
+This must be either an exception instance or an exception class (a class that
+derives from :class:`Exception`).
 
 If you need to determine whether an exception was raised but don't intend to
 handle it, a simpler form of the :keyword:`raise` statement allows you to
 re-raise the exception::
 
    >>> try:
-   ...     raise NameError, 'HiThere'
+   ...     raise NameError('HiThere')
    ... except NameError:
    ...     print 'An exception flew by!'
    ...     raise
@@ -256,14 +255,14 @@ directly or indirectly.  For example::
    ...         self.value = value
    ...     def __str__(self):
    ...         return repr(self.value)
-   ... 
+   ...
    >>> try:
    ...     raise MyError(2*2)
    ... except MyError as e:
    ...     print 'My exception occurred, value:', e.value
-   ... 
+   ...
    My exception occurred, value: 4
-   >>> raise MyError, 'oops!'
+   >>> raise MyError('oops!')
    Traceback (most recent call last):
      File "<stdin>", line 1, in ?
    __main__.MyError: 'oops!'
@@ -331,7 +330,7 @@ example::
    ...     raise KeyboardInterrupt
    ... finally:
    ...     print 'Goodbye, world!'
-   ... 
+   ...
    Goodbye, world!
    Traceback (most recent call last):
      File "<stdin>", line 2, in ?

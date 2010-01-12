@@ -1,4 +1,4 @@
-# Copyright 2001-2008 by Vinay Sajip. All Rights Reserved.
+# Copyright 2001-2009 by Vinay Sajip. All Rights Reserved.
 #
 # Permission to use, copy, modify, and distribute this software and its
 # documentation for any purpose and without fee is hereby granted,
@@ -18,18 +18,18 @@
 Logging package for Python. Based on PEP 282 and comments thereto in
 comp.lang.python, and influenced by Apache's log4j system.
 
-Should work under Python versions >= 1.5.2, except that source line
-information is not available unless 'sys._getframe()' is.
-
-Copyright (C) 2001-2008 Vinay Sajip. All Rights Reserved.
+Copyright (C) 2001-2009 Vinay Sajip. All Rights Reserved.
 
 To use, simply 'import logging' and log away!
 """
 
 __all__ = ['BASIC_FORMAT', 'BufferingFormatter', 'CRITICAL', 'DEBUG', 'ERROR',
-           'FATAL', 'FileHandler', 'Filter', 'Filterer', 'Formatter', 'Handler',
-           'INFO', 'LogRecord', 'Logger', 'Manager', 'NOTSET', 'PlaceHolder',
-           'RootLogger', 'StreamHandler', 'WARN', 'WARNING']
+           'FATAL', 'FileHandler', 'Filter', 'Formatter', 'Handler', 'INFO',
+           'LogRecord', 'Logger', 'LoggerAdapter', 'NOTSET',
+           'StreamHandler', 'WARN', 'WARNING', 'addLevelName', 'basicConfig',
+           'critical', 'debug', 'disable', 'error',
+           'exception', 'fatal', 'getLevelName', 'getLogger', 'getLoggerClass',
+           'info', 'log', 'makeLogRecord', 'setLoggerClass', 'warn', 'warning']
 
 import sys, os, types, time, string, cStringIO, traceback
 
@@ -47,7 +47,7 @@ except ImportError:
 __author__  = "Vinay Sajip <vinay_sajip@red-dove.com>"
 __status__  = "production"
 __version__ = "0.5.0.5"
-__date__    = "24 January 2008"
+__date__    = "17 February 2009"
 
 #---------------------------------------------------------------------------
 #   Miscellaneous module data
@@ -98,6 +98,11 @@ raiseExceptions = 1
 # If you don't want threading information in the log, set this to zero
 #
 logThreads = 1
+
+#
+# If you don't want multiprocessing information in the log, set this to zero
+#
+logMultiprocessing = 1
 
 #
 # If you don't want process information in the log, set this to zero
@@ -266,6 +271,12 @@ class LogRecord:
         else:
             self.thread = None
             self.threadName = None
+        if not logMultiprocessing:
+            self.processName = None
+        elif 'multiprocessing' not in sys.modules:
+            self.processName = 'MainProcess'
+        else:
+            self.processName = sys.modules['multiprocessing'].current_process().name
         if logProcesses and hasattr(os, 'getpid'):
             self.process = os.getpid()
         else:
@@ -710,8 +721,12 @@ class Handler(Filterer):
         """
         if raiseExceptions:
             ei = sys.exc_info()
-            traceback.print_exception(ei[0], ei[1], ei[2], None, sys.stderr)
-            del ei
+            try:
+                traceback.print_exception(ei[0], ei[1], ei[2], None, sys.stderr)
+            except IOError:
+                pass    # see issue 5971
+            finally:
+                del ei
 
 class StreamHandler(Handler):
     """
@@ -730,7 +745,6 @@ class StreamHandler(Handler):
         if strm is None:
             strm = sys.stderr
         self.stream = strm
-        self.formatter = None
 
     def flush(self):
         """
@@ -752,17 +766,29 @@ class StreamHandler(Handler):
         """
         try:
             msg = self.format(record)
+            stream = self.stream
             fs = "%s\n"
             if not hasattr(types, "UnicodeType"): #if no unicode support...
-                self.stream.write(fs % msg)
+                stream.write(fs % msg)
             else:
                 try:
-                    if getattr(self.stream, 'encoding', None) is not None:
-                        self.stream.write(fs % msg.encode(self.stream.encoding))
+                    if (isinstance(msg, unicode) and
+                        getattr(stream, 'encoding', None)):
+                        fs = fs.decode(stream.encoding)
+                        try:
+                            stream.write(fs % msg)
+                        except UnicodeEncodeError:
+                            #Printing to terminals sometimes fails. For example,
+                            #with an encoding of 'cp1251', the above write will
+                            #work if written to a stream opened or wrapped by
+                            #the codecs module, but fail when writing to a
+                            #terminal even when the codepage is set to cp1251.
+                            #An extra encoding step seems to be needed.
+                            stream.write((fs % msg).encode(stream.encoding))
                     else:
-                        self.stream.write(fs % msg)
+                        stream.write(fs % msg)
                 except UnicodeError:
-                    self.stream.write(fs % msg.encode("UTF-8"))
+                    stream.write(fs % msg.encode("UTF-8"))
             self.flush()
         except (KeyboardInterrupt, SystemExit):
             raise
@@ -785,10 +811,12 @@ class FileHandler(StreamHandler):
         self.mode = mode
         self.encoding = encoding
         if delay:
+            #We don't open the stream, but we still need to call the
+            #Handler constructor to set level, formatter, lock etc.
+            Handler.__init__(self)
             self.stream = None
         else:
-            stream = self._open()
-            StreamHandler.__init__(self, stream)
+            StreamHandler.__init__(self, self._open())
 
     def close(self):
         """
@@ -820,8 +848,7 @@ class FileHandler(StreamHandler):
         constructor, open it before calling the superclass's emit.
         """
         if self.stream is None:
-            stream = self._open()
-            StreamHandler.__init__(self, stream)
+            self.stream = self._open()
         StreamHandler.emit(self, record)
 
 #---------------------------------------------------------------------------
@@ -846,7 +873,7 @@ class PlaceHolder:
         Add the specified logger as a child of this placeholder.
         """
         #if alogger not in self.loggers:
-        if not self.loggerMap.has_key(alogger):
+        if alogger not in self.loggerMap:
             #self.loggers.append(alogger)
             self.loggerMap[alogger] = None
 
@@ -1088,7 +1115,11 @@ class Logger(Filterer):
         Find the stack frame of the caller so that we can note the source
         file name, line number and function name.
         """
-        f = currentframe().f_back
+        f = currentframe()
+        #On some versions of IronPython, currentframe() returns None if
+        #IronPython isn't run with -X:Frames.
+        if f is not None:
+            f = f.f_back
         rv = "(unknown file)", 0, "(unknown function)"
         while hasattr(f, "f_code"):
             co = f.f_code
@@ -1119,7 +1150,12 @@ class Logger(Filterer):
         all the handlers of this logger to handle the record.
         """
         if _srcfile:
-            fn, lno, func = self.findCaller()
+            #IronPython doesn't track Python frames, so findCaller throws an
+            #exception. We trap it here so that IronPython can use logging.
+            try:
+                fn, lno, func = self.findCaller()
+            except ValueError:
+                fn, lno, func = "(unknown file)", 0, "(unknown function)"
         else:
             fn, lno, func = "(unknown file)", 0, "(unknown function)"
         if exc_info:

@@ -52,7 +52,7 @@ The following exceptions are only used as base classes for other exceptions.
    The base class for all built-in exceptions.  It is not meant to be directly
    inherited by user-defined classes (for that use :exc:`Exception`).  If
    :func:`str` or :func:`unicode` is called on an instance of this class, the
-   representation of the argument(s) to the instance are returned or the emptry
+   representation of the argument(s) to the instance are returned or the empty
    string when there were no arguments.  All arguments are  stored in :attr:`args`
    as a tuple.
 
@@ -398,6 +398,11 @@ The following exceptions are the exceptions that are actually raised.
    more precise exception such as :exc:`IndexError`.
 
 
+.. exception:: VMSError
+
+   Only available on VMS.  Raised when a VMS-specific error occurs.
+
+
 .. exception:: WindowsError
 
    Raised when a Windows-specific error occurs or when the error number does not
@@ -472,7 +477,10 @@ module for more information.
 
    .. versionadded:: 2.5
 
-The class hierarchy for built-in exceptions is:
 
+Exception hierarchy
+-------------------
+
+The class hierarchy for built-in exceptions is:
 
 .. literalinclude:: ../../Lib/test/exception_hierarchy.txt

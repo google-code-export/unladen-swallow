@@ -45,7 +45,7 @@ themselves supported; and recursive lists and dictionaries should not be written
 (they will cause infinite loops).
 
 .. warning::
-   
+
    On machines where C's ``long int`` type has more than 32 bits (such as the
    DEC Alpha), it is possible to create plain Python integers that are longer
    than 32 bits. If such an integer is marshaled and read back in on a machine
@@ -85,7 +85,7 @@ The module defines these functions:
    file must be an open file object opened in binary mode (``'rb'`` or
    ``'r+b'``).
 
-   .. warning::
+   .. note::
 
       If an object containing an unsupported type was marshalled with :func:`dump`,
       :func:`load` will substitute ``None`` for the unmarshallable type.

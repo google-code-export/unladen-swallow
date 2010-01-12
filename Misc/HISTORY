@@ -2985,7 +2985,7 @@ Tests
   platforms that use the Makefile.
 
 - SF patch 995225:  The test file testtar.tar accidentally contained
-  CVS keywords (like $Id: HISTORY 60928 2008-02-21 19:46:35Z guido.van.rossum $), which could cause spurious failures in
+  CVS keywords (like $Id: HISTORY 73770 2009-07-02 15:37:21Z jesus.cea $), which could cause spurious failures in
   test_tarfile.py depending on how the test file was checked out.
 
 
@@ -9862,7 +9862,7 @@ Tue Apr  6 19:38:18 1999  Guido van Rossum  <guido@eric.cnri.reston.va.us>
 	Also (quite separately, but strangely related to the philosophical
 	issue above) fix abspath() so that if win32api exists, it doesn't fail
 	when the path doesn't actually exist -- if GetFullPathName() fails,
-	fall back on the old strategy (join with getcwd() if neccessary, and
+	fall back on the old strategy (join with getcwd() if necessary, and
 	then use normpath()).
 
 	* configure.in, configure, config.h.in, acconfig.h:

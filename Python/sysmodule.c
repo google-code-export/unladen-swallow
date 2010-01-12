@@ -1193,7 +1193,7 @@ svnversion_init(void)
 
 
 	svnversion = _Py_svnversion();
-	if (strcmp(svnversion, "exported") != 0)
+	if (strcmp(svnversion, "Unversioned directory") != 0 && strcmp(svnversion, "exported") != 0)
 		svn_revision = svnversion;
 	else if (istag) {
 		len = strlen(_patchlevel_revision);
@@ -1339,8 +1339,13 @@ _PySys_Init(void)
 		PyDict_SetItemString(sysdict, key, v);	\
 	Py_XDECREF(v)
 
+	/* Check that stdin is not a directory
+	Using shell redirection, you can redirect stdin to a directory,
+	crashing the Python interpreter. Catch this common mistake here
+	and output a useful error message. Note that under MS Windows,
+	the shell already prevents that. */
+#if !defined(MS_WINDOWS)
 	{
-		/* XXX: does this work on Win/Win64? (see posix_fstat) */
 		struct stat sb;
 		if (fstat(fileno(stdin), &sb) == 0 &&
 		    S_ISDIR(sb.st_mode)) {
@@ -1350,6 +1355,7 @@ _PySys_Init(void)
 			exit(EXIT_FAILURE);
 		}
 	}
+#endif
 
 	/* Closing the standard FILE* if sys.std* goes aways causes problems
 	 * for embedded Python usages. Closing them when somebody explicitly
@@ -1576,7 +1582,7 @@ PySys_SetArgv(int argc, char **argv)
 {
 #if defined(HAVE_REALPATH)
 	char fullpath[MAXPATHLEN];
-#elif defined(MS_WINDOWS)
+#elif defined(MS_WINDOWS) && !defined(MS_WINCE)
 	char fullpath[MAX_PATH];
 #endif
 	PyObject *av = makeargvobject(argc, argv);
@@ -1621,7 +1627,10 @@ PySys_SetArgv(int argc, char **argv)
 #if SEP == '\\' /* Special case for MS filename syntax */
 		if (argc > 0 && argv0 != NULL && strcmp(argv0, "-c") != 0) {
 			char *q;
-#ifdef MS_WINDOWS
+#if defined(MS_WINDOWS) && !defined(MS_WINCE)
+			/* This code here replaces the first element in argv with the full
+			path that it represents. Under CE, there are no relative paths so
+			the argument must be the full path anyway. */
 			char *ptemp;
 			if (GetFullPathName(argv0,
 					   sizeof(fullpath),

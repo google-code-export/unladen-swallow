@@ -62,7 +62,7 @@ formatting numbers with group separators::
    >>> locale.format("%d", x, grouping=True)
    '1,234,567'
    >>> locale.format("%s%.*f", (conv['currency_symbol'],
-   ...	      conv['frac_digits'], x), grouping=True)
+   ...               conv['frac_digits'], x), grouping=True)
    '$1,234,567.80'
 
 
@@ -360,7 +360,7 @@ becomes significant if the results are rounded to the nearest cent::
 
    >>> from decimal import *
    >>> Decimal('0.70') * Decimal('1.05')
-   Decimal("0.7350")
+   Decimal('0.7350')
    >>> .70 * 1.05
    0.73499999999999999
 
@@ -373,7 +373,7 @@ Exact representation enables the :class:`Decimal` class to perform modulo
 calculations and equality tests that are unsuitable for binary floating point::
 
    >>> Decimal('1.00') % Decimal('.10')
-   Decimal("0.00")
+   Decimal('0.00')
    >>> 1.00 % 0.10
    0.09999999999999995
 
@@ -386,6 +386,6 @@ The :mod:`decimal` module provides arithmetic with as much precision as needed::
 
    >>> getcontext().prec = 36
    >>> Decimal(1) / Decimal(7)
-   Decimal("0.142857142857142857142857142857142857")
+   Decimal('0.142857142857142857142857142857142857')
 
 
