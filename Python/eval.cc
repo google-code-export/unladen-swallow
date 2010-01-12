@@ -181,25 +181,31 @@ public:
 		       << "\n";
 		errs() << "GUARD_FAIL: " << this->guard_fail_ << "\n";
 
-		errs() << "\n" << this->bail_sites_.size() << " bail sites:\n";
-		for (BailData::iterator i = this->bail_sites_.begin(),
-		     end = this->bail_sites_.end(); i != end; ++i) {
-			errs() << "    " << *i << "\n";
+		errs() << "\n" << this->bail_site_freq_.size()
+		       << " bail sites:\n";
+		for (BailData::iterator i = this->bail_site_freq_.begin(),
+		     end = this->bail_site_freq_.end(); i != end; ++i) {
+			errs() << "    " << i->getKey() << " bailed "
+			       << i->getValue() << " times\n";
 		}
 	}
 
 	void RecordBail(PyFrameObject *frame, _PyFrameBailReason bail_reason) {
 		++this->total_;
 
-    		std::string record;
+		std::string record;
 		llvm::raw_string_ostream wrapper(record);
 		wrapper << PyString_AsString(frame->f_code->co_filename) << ":";
 		wrapper << frame->f_code->co_firstlineno << ":";
 		wrapper << PyString_AsString(frame->f_code->co_name) << ":";
-		wrapper << frame->f_lasti;
-    		wrapper.flush();
+		// See the comment in PyEval_EvalFrame about how f->f_lasti is
+		// initialized.
+		wrapper << frame->f_lasti + 1;
+		wrapper.flush();
 
-		this->bail_sites_.insert(record);
+		BailData::value_type &entry =
+			this->bail_site_freq_.GetOrCreateValue(record, 0);
+		entry.setValue(entry.getValue() + 1);
 
 #define BAIL_CASE(name, field) \
 	case name: \
@@ -220,8 +226,8 @@ public:
 	}
 
 private:
-	typedef std::set<std::string> BailData;
-	BailData bail_sites_;
+	typedef llvm::StringMap<unsigned> BailData;
+	BailData bail_site_freq_;
 
 	long total_;
 	long trace_on_entry_;
