@@ -83,7 +83,7 @@ ifneq (@BUILD_LLVM@, disabled)
 	LLVM_CXXFLAGS=	`$(LLVM_CONFIG_CMD) --cxxflags`
 	# Merge the output into a single line.
 	# TODO(collinwinter): fix this in llvm-config and remove this hack.
-	LLVM_LDFLAGS=	`$(LLVM_CONFIG_CMD) --ldflags --libs | awk '{ORS=""} {print $0}'`
+	LLVM_LDFLAGS=	`$(LLVM_CONFIG_CMD) --ldflags --libs | awk '{ORS=" "} {print $0}'`
 	LLVM_LIB_PATHS=	$(shell $(LLVM_CONFIG_CMD) --libfiles)
 	ifeq ($(LLVM_LIB_PATHS), "")
 		LLVM_LIB_PATHS=	llvm

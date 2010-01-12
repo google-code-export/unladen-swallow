@@ -18,6 +18,7 @@
 #include "llvm/Constants.h"
 #include "llvm/DerivedTypes.h"
 #include "llvm/ExecutionEngine/JIT.h"
+#include "llvm/ExecutionEngine/JITEventListener.h"
 #include "llvm/Function.h"
 #include "llvm/GlobalVariable.h"
 #include "llvm/Module.h"
@@ -131,6 +132,8 @@ PyGlobalLlvmData::PyGlobalLlvmData()
     if (engine_ == NULL) {
         Py_FatalError(error.c_str());
     }
+
+    engine_->RegisterJITEventListener(llvm::createOProfileJITEventListener());
 
     // When we ask to JIT a function, we should also JIT other
     // functions that function depends on.  This lets us JIT in a
