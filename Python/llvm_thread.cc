@@ -541,6 +541,13 @@ PyLlvmCompileThread::WaitForJobs()
 Py_CompileResult
 PyLlvmCompileThread::RunCompileJob(CompileToIrJob *job, Py_ShouldBlock block)
 {
+    // The exec statement wants to mess with the frame object in
+    // ways that can inhibit optimizations (or make them harder to
+    // implement), so we refuse to optimize code objects that use
+    // exec.
+    if (job->code_->co_flags & CO_USES_EXEC)
+        return PY_COMPILE_REFUSED;
+
 #ifdef WITH_BACKGROUND_COMPILATION
     if (block == PY_BLOCK) {
         // If we're going to block, then we want to properly report the
