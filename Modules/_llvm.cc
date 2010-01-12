@@ -118,54 +118,43 @@ llvm_clear_feedback(PyObject *self, PyObject *obj)
 PyDoc_STRVAR(llvm_set_jit_control_doc,
 "set_jit_control(string)\n\
 \n\
-Set the JIT control mode. Valid values are 'never', 'whenhot' and 'always'.");
+Set the JIT control mode.  Valid values are 'always', 'never', and 'whenhot'.");
 
 static PyObject *
-llvm_set_jit_control(PyObject *self, PyObject *obj)
+llvm_set_jit_control(PyObject *self, PyObject *flag_obj)
 {
-    if (!PyString_Check(obj)) {
+    if (!PyString_Check(flag_obj)) {
         PyErr_Format(PyExc_TypeError,
                      "expected str, not %.100s object",
-                     Py_TYPE(obj)->tp_name);
+                     Py_TYPE(flag_obj)->tp_name);
         return NULL;
     }
 
-    const char *control = PyString_AsString(obj);
-    if (strcmp(control, "never") == 0)
-        Py_JitControl = PY_JIT_NEVER;
-    else if (strcmp(control, "whenhot") == 0)
-        Py_JitControl = PY_JIT_WHENHOT;
-    else if (strcmp(control, "always") == 0)
-        Py_JitControl = PY_JIT_ALWAYS;
-    else {
+    const char *flag_str = PyString_AsString(flag_obj);
+    if (flag_str == NULL)
+        return NULL;
+    if (Py_JitControlStrToEnum(flag_str, &Py_JitControl) < 0) {
         PyErr_Format(PyExc_ValueError,
-                     "invalid JIT control value: %s",
-                     control);
+                     "invalid jit control value: \"%s\"", flag_str);
         return NULL;
     }
-
     Py_RETURN_NONE;
 }
 
 PyDoc_STRVAR(llvm_get_jit_control_doc,
 "get_jit_control() -> string\n\
 \n\
-Get the JIT control mode. Valid values are 'never', 'whenhot' and 'always'.");
+Returns the current value for the Py_JitControl flag.  This may disagree\n\
+with sys.flags.jit_control because the sys.flags structure is immutable and\n\
+it is initialized at load time, so it reflects the value passed to the\n\
+program on the command line.");
 
 static PyObject *
 llvm_get_jit_control(PyObject *self)
 {
-    if (Py_JitControl == PY_JIT_NEVER)
-        return PyString_FromString("never");
-    else if (Py_JitControl == PY_JIT_WHENHOT)
-        return PyString_FromString("whenhot");
-    else if (Py_JitControl == PY_JIT_ALWAYS)
-        return PyString_FromString("always");
-
-    PyErr_Format(PyExc_SystemError,
-                 "unexpected jit control value: %d",
-                 Py_JitControl);
-    return NULL;
+    const char *flag_str = Py_JitControlEnumToStr(Py_JitControl);
+    assert(flag_str != NULL && "Current JIT control value was invalid!");
+    return PyString_FromString(flag_str);
 }
 
 PyDoc_STRVAR(llvm_get_hotness_threshold_doc,
@@ -176,7 +165,7 @@ Return the threshold for co_hotness before the code is 'hot'.");
 static PyObject *
 llvm_get_hotness_threshold(PyObject *self)
 {
-    return PyLong_FromLong(PY_HOTNESS_THRESHOLD);
+    return PyInt_FromLong(PY_HOTNESS_THRESHOLD);
 }
 
 PyDoc_STRVAR(llvm_collect_unused_globals_doc,

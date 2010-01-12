@@ -4151,12 +4151,26 @@ mark_called_and_maybe_compile(PyCodeObject *co, PyFrameObject *f)
 		return 0;
 	}
 
+	bool is_hot = false;
 	if (co->co_hotness > PY_HOTNESS_THRESHOLD) {
+		is_hot = true;
 #ifdef Py_WITH_INSTRUMENTATION
 		hot_code->AddHotCode(co);
 #endif
-		if (Py_JitControl == PY_JIT_WHENHOT)
+	}
+	switch (Py_JitControl) {
+	default:
+		PyErr_BadInternalCall();
+		return -1;
+	case PY_JIT_WHENHOT:
+		if (is_hot)
 			co->co_use_llvm = f->f_use_llvm = 1;
+		break;
+	case PY_JIT_ALWAYS:
+		co->co_use_llvm = f->f_use_llvm = 1;
+		break;
+	case PY_JIT_NEVER:
+		break;
 	}
 	if (co->co_use_llvm) {
 		if (co->co_llvm_function == NULL) {

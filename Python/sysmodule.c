@@ -1277,6 +1277,7 @@ make_flags(void)
 {
 	int pos = 0;
 	PyObject *seq, *flag;
+	const char *jit_str;
 
 	seq = PyStructSequence_New(&FlagsType);
 	if (seq == NULL)
@@ -1307,16 +1308,12 @@ make_flags(void)
 	/* SetFlag(skipfirstline); */
 	SetFlag(Py_BytesWarningFlag);
 #undef SetFlag
-	if (Py_JitControl == PY_JIT_WHENHOT) {
-		flag = PyString_FromString("whenhot");
-	} else if (Py_JitControl == PY_JIT_NEVER) {
-		flag = PyString_FromString("never");
-	} else if (Py_JitControl == PY_JIT_ALWAYS) {
-		flag = PyString_FromString("always");
-	} else {
+	jit_str = Py_JitControlEnumToStr(Py_JitControl);
+	if (jit_str == NULL) {
 		Py_FatalError("Invalid value for Py_JitControl");
 		return NULL; /* Never reached. */
 	}
+	flag = PyString_FromString(jit_str);
 	PyStructSequence_SET_ITEM(seq, pos++, flag);
 
 	if (PyErr_Occurred()) {

@@ -85,7 +85,7 @@ class ExtraAssertsTestCase(unittest.TestCase):
         except expected_exception_type, real_exception:
             pass
         else:
-            self.fail("%r not raised" % expected_exception)
+            self.fail("%r not raised" % expected_exception_type)
         self.assertEquals(real_exception.args, expected_args)
 
     def assertContains(self, obj, container):
@@ -107,9 +107,12 @@ class LlvmTestCase(unittest.TestCase):
 
     def setUp(self):
         sys.setbailerror(True)
+        self._old_jit_control = _llvm.get_jit_control()
+        _llvm.set_jit_control("whenhot")
 
     def tearDown(self):
         sys.setbailerror(False)
+        _llvm.set_jit_control(self._old_jit_control)
 
 
 class GeneralCompilationTests(ExtraAssertsTestCase, LlvmTestCase):
@@ -2433,7 +2436,6 @@ def unpack(x):
         self.assertRaises(TypeError, f2, {})
 
 
-# These tests are skipped when -j never or -j always is passed to Python.
 class OptimizationTests(LlvmTestCase, ExtraAssertsTestCase):
 
     def test_manual_optimization(self):
@@ -2576,9 +2578,9 @@ def foo(x, callback):
                 __builtin__.len = lambda x: 7
 
             def run_test():
-                sys.setbailerror(True)
                 self.assertEqual(foo.__code__.__use_llvm__, True)
                 self.assertEqual(foo.__code__.co_fatalbailcount, 0)
+                sys.setbailerror(True)
                 try:
                     self.assertRaises(RuntimeError, foo, [], change_builtins)
                 finally:
@@ -3782,17 +3784,44 @@ class LlvmRebindBuiltinsTests(test_dynamic.RebindBuiltinsTests):
         foo()
 
 
+class SetJitControlTests(LlvmTestCase):
+
+    def test_jit_never(self):
+        def foo():
+            pass
+        foo.__code__.__use_llvm__ = False
+        _llvm.set_jit_control("never")
+        for _ in xrange(JIT_SPIN_COUNT):
+            foo()
+        self.assertFalse(foo.__code__.__use_llvm__,
+                         "Foo was JITed despite being run under -j never.")
+
+    def test_jit_always(self):
+        def foo():
+            pass
+        foo.__code__.__use_llvm__ = False
+        foo()
+        self.assertFalse(foo.__code__.__use_llvm__,
+                         "Expected one call not to cause JITing.")
+        _llvm.set_jit_control("always")
+        foo()
+        self.assertTrue(foo.__code__.__use_llvm__,
+                        "Setting -j flag to always had no effect.")
+
+    def test_wrong_type(self):
+        self.assertRaises(TypeError, _llvm.set_jit_control, 1)
+
+    def test_bad_string(self):
+        self.assertRaises(ValueError, _llvm.set_jit_control, "asdf")
+
+
 def test_main():
     tests = [LoopExceptionInteractionTests, GeneralCompilationTests,
-             OperatorTests, LiteralsTests, BailoutTests, InliningTests]
+             OperatorTests, LiteralsTests, BailoutTests, InliningTests,
+             LlvmRebindBuiltinsTests, OptimizationTests, SetJitControlTests]
     if sys.flags.optimize >= 1:
         print >>sys.stderr, "test_llvm -- skipping some tests due to -O flag."
         sys.stderr.flush()
-    if _llvm.get_jit_control() != "whenhot":
-        print >>sys.stderr, "test_llvm -- skipping some tests due to -j flag."
-        sys.stderr.flush()
-    else:
-        tests.extend([OptimizationTests, LlvmRebindBuiltinsTests])
 
     test_support.run_unittest(*tests)
 
