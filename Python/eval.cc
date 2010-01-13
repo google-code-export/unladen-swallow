@@ -181,25 +181,31 @@ public:
 		       << "\n";
 		errs() << "GUARD_FAIL: " << this->guard_fail_ << "\n";
 
-		errs() << "\n" << this->bail_sites_.size() << " bail sites:\n";
-		for (BailData::iterator i = this->bail_sites_.begin(),
-		     end = this->bail_sites_.end(); i != end; ++i) {
-			errs() << "    " << *i << "\n";
+		errs() << "\n" << this->bail_site_freq_.size()
+		       << " bail sites:\n";
+		for (BailData::iterator i = this->bail_site_freq_.begin(),
+		     end = this->bail_site_freq_.end(); i != end; ++i) {
+			errs() << "    " << i->getKey() << " bailed "
+			       << i->getValue() << " times\n";
 		}
 	}
 
 	void RecordBail(PyFrameObject *frame, _PyFrameBailReason bail_reason) {
 		++this->total_;
 
-    		std::string record;
+		std::string record;
 		llvm::raw_string_ostream wrapper(record);
 		wrapper << PyString_AsString(frame->f_code->co_filename) << ":";
 		wrapper << frame->f_code->co_firstlineno << ":";
 		wrapper << PyString_AsString(frame->f_code->co_name) << ":";
-		wrapper << frame->f_lasti;
-    		wrapper.flush();
+		// See the comment in PyEval_EvalFrame about how f->f_lasti is
+		// initialized.
+		wrapper << frame->f_lasti + 1;
+		wrapper.flush();
 
-		this->bail_sites_.insert(record);
+		BailData::value_type &entry =
+			this->bail_site_freq_.GetOrCreateValue(record, 0);
+		entry.setValue(entry.getValue() + 1);
 
 #define BAIL_CASE(name, field) \
 	case name: \
@@ -220,8 +226,8 @@ public:
 	}
 
 private:
-	typedef std::set<std::string> BailData;
-	BailData bail_sites_;
+	typedef llvm::StringMap<unsigned> BailData;
+	BailData bail_site_freq_;
 
 	long total_;
 	long trace_on_entry_;
@@ -885,6 +891,8 @@ PyEval_EvalFrame(PyFrameObject *f)
 	inc_feedback_counter(co, opcode, f->f_lasti, PY_FDO_JUMP_FALSE)
 #define RECORD_NONBOOLEAN() \
 	inc_feedback_counter(co, opcode, f->f_lasti, PY_FDO_JUMP_NON_BOOLEAN)
+#define UPDATE_HOTNESS_JABS() \
+	do { if (oparg <= f->f_lasti) ++co->co_hotness; } while (0)
 #else
 #define RECORD_TYPE(arg_index, obj)
 #define RECORD_OBJECT(arg_index, obj)
@@ -892,6 +900,7 @@ PyEval_EvalFrame(PyFrameObject *f)
 #define RECORD_TRUE()
 #define RECORD_FALSE()
 #define RECORD_NONBOOLEAN()
+#define UPDATE_HOTNESS_JABS()
 #endif  /* WITH_LLVM */
 
 
@@ -2410,6 +2419,7 @@ PyEval_EvalFrame(PyFrameObject *f)
 			if (w == Py_False) {
 				RECORD_FALSE();
 				Py_DECREF(w);
+				UPDATE_HOTNESS_JABS();
 				JUMPTO(oparg);
 				FAST_DISPATCH();
 			}
@@ -2421,6 +2431,7 @@ PyEval_EvalFrame(PyFrameObject *f)
 			}
 			else if (err == 0) {
 				RECORD_FALSE();
+				UPDATE_HOTNESS_JABS();
 				JUMPTO(oparg);
 			}
 			else {
@@ -2440,6 +2451,7 @@ PyEval_EvalFrame(PyFrameObject *f)
 			if (w == Py_True) {
 				RECORD_TRUE();
 				Py_DECREF(w);
+				UPDATE_HOTNESS_JABS();
 				JUMPTO(oparg);
 				FAST_DISPATCH();
 			}
@@ -2451,6 +2463,7 @@ PyEval_EvalFrame(PyFrameObject *f)
 			}
 			else if (err > 0) {
 				RECORD_TRUE();
+				UPDATE_HOTNESS_JABS();
 				JUMPTO(oparg);
 			}
 			else {
@@ -2469,6 +2482,7 @@ PyEval_EvalFrame(PyFrameObject *f)
 			}
 			if (w == Py_False) {
 				RECORD_FALSE();
+				UPDATE_HOTNESS_JABS();
 				JUMPTO(oparg);
 				FAST_DISPATCH();
 			}
@@ -2484,6 +2498,7 @@ PyEval_EvalFrame(PyFrameObject *f)
 			}
 			else {
 				RECORD_FALSE();
+				UPDATE_HOTNESS_JABS();
 				JUMPTO(oparg);
 			}
 			RECORD_NONBOOLEAN();
@@ -2499,6 +2514,7 @@ PyEval_EvalFrame(PyFrameObject *f)
 			}
 			if (w == Py_True) {
 				RECORD_TRUE();
+				UPDATE_HOTNESS_JABS();
 				JUMPTO(oparg);
 				FAST_DISPATCH();
 			}
@@ -2509,6 +2525,7 @@ PyEval_EvalFrame(PyFrameObject *f)
 			}
 			else if (err > 0) {
 				RECORD_TRUE();
+				UPDATE_HOTNESS_JABS();
 				JUMPTO(oparg);
 			}
 			else {
@@ -2521,6 +2538,7 @@ PyEval_EvalFrame(PyFrameObject *f)
 
 		PREDICTED_WITH_ARG(JUMP_ABSOLUTE);
 		TARGET(JUMP_ABSOLUTE)
+			UPDATE_HOTNESS_JABS();
 			JUMPTO(oparg);
 #if FAST_LOOPS
 			/* Enabling this path speeds-up all while and for-loops by bypassing
@@ -2557,11 +2575,6 @@ PyEval_EvalFrame(PyFrameObject *f)
 			RECORD_TYPE(0, v);
 			x = (*v->ob_type->tp_iternext)(v);
 			if (x != NULL) {
-#ifdef WITH_LLVM
-				/* Putting the ++hotness here simulates doing
-				   this on the loop backedge. */
-				++co->co_hotness;
-#endif  /* WITH_LLVM */
 				PUSH(x);
 				PREDICT(STORE_FAST);
 				PREDICT(UNPACK_SEQUENCE);
@@ -2586,6 +2599,9 @@ PyEval_EvalFrame(PyFrameObject *f)
 			goto fast_block_end;
 
 		TARGET(CONTINUE_LOOP)
+#ifdef WITH_LLVM
+			++co->co_hotness;
+#endif
 			retval = PyInt_FromLong(oparg);
 			if (!retval) {
 				why = UNWIND_EXCEPTION;
@@ -4148,53 +4164,79 @@ mark_called_and_maybe_compile(PyCodeObject *co, PyFrameObject *f)
 		return 0;
 	}
 
- 	bool is_hot = false;
+	bool is_hot = false;
 	if (co->co_hotness > PY_HOTNESS_THRESHOLD) {
+		is_hot = true;
 #ifdef Py_WITH_INSTRUMENTATION
 		hot_code->AddHotCode(co);
 #endif
-		if (Py_JitControl == PY_JIT_WHENHOT)
-			is_hot = true;
 	}
- 	// If we decided the function was hot or something else told us to use
- 	// LLVM and there is no native function already, start the JIT
- 	// compilation in the background thread.
- 	if ((is_hot || co->co_use_llvm) && co->co_native_function == NULL &&
- 	    !co->co_being_compiled) {
- 		PY_LOG_TSC_EVENT(EVAL_COMPILE_START);
- 		co->co_being_compiled = 1;
- 		int new_opt_level = co->co_optimization;
- 		if (new_opt_level == -1) {
- 			// Use the default optimization level if the user hasn't
- 			// explicitly set co_optimization.
- 			new_opt_level = std::max(Py_DEFAULT_JIT_OPT_LEVEL,
- 						 Py_OptimizeFlag);
- 		}
+
+	bool should_compile = false;
+	switch (Py_JitControl) {
+	default:
+		PyErr_BadInternalCall();
+		return -1;
+	case PY_JIT_WHENHOT:
+		if (is_hot)
+			should_compile = true;
+		break;
+	case PY_JIT_ALWAYS:
+		co->co_use_llvm = f->f_use_llvm = 1;
+		break;
+	case PY_JIT_NEVER:
+		break;
+	}
+
+	// If we decided the function was hot or something else told us to use
+	// LLVM and there is no native function already, start the JIT
+	// compilation in the background thread.
+	if ((should_compile || co->co_use_llvm) &&
+	    co->co_native_function == NULL && !co->co_being_compiled) {
+		PY_LOG_TSC_EVENT(EVAL_COMPILE_START);
+		co->co_being_compiled = 1;
+		int new_opt_level = co->co_optimization;
+		if (new_opt_level == -1) {
+			// Use the default optimization level if the user hasn't
+			// explicitly set co_optimization.
+			new_opt_level = std::max(Py_DEFAULT_JIT_OPT_LEVEL,
+						 Py_OptimizeFlag);
+		}
 		if (_PyCode_WatchGlobals(co, f->f_globals, f->f_builtins)) {
 			return -1;
 		}
- 		// This call should block when using -j always.
- 		Py_ShouldBlock block = (Py_JitControl == PY_JIT_ALWAYS
- 					? PY_BLOCK : PY_NO_BLOCK);
- 		Py_CompileResult r = PyLlvm_JitInBackground(co, new_opt_level,
- 							    block);
- 		PY_LOG_TSC_EVENT(EVAL_COMPILE_END);
- 		switch (r) {
- 		default: assert(0 && "invalid enum value");
- 		case PY_COMPILE_ERROR:
-                         _PyCode_UnwatchGlobals(co);
- 			return -1;
- 		case PY_COMPILE_SHUTDOWN:
+		// This call should block when using -j always.
+		Py_ShouldBlock block = (Py_JitControl == PY_JIT_ALWAYS
+					? PY_BLOCK : PY_NO_BLOCK);
+		Py_CompileResult r = PyLlvm_JitInBackground(co, new_opt_level,
+							    block);
+		PY_LOG_TSC_EVENT(EVAL_COMPILE_END);
+		switch (r) {
+		default: assert(0 && "invalid enum value");
+		case PY_COMPILE_ERROR:
+			_PyCode_UnwatchGlobals(co);
+			return -1;
+		case PY_COMPILE_SHUTDOWN:
 			// Compilation may fail during shutdown.  Ignore these
 			// errors.
- 			PyErr_Clear();
- 			// FALLTHROUGH
- 		case PY_COMPILE_REFUSED:
- 			_PyCode_UnwatchGlobals(co);
- 			break;
- 		case PY_COMPILE_OK:
- 			break;
- 		}
+			PyErr_Clear();
+			// FALLTHROUGH
+		case PY_COMPILE_REFUSED:
+			_PyCode_UnwatchGlobals(co);
+			break;
+		case PY_COMPILE_OK:
+			break;
+		}
+
+#ifdef WITH_BACKGROUND_COMPILATION
+		// We have to check this again if background compilation is
+		// enabled, because it is possible for the code object to be
+		// invalidated (ie by a global dict assignment from another
+		// thread) while it is being compiled.
+		if (co->co_fatalbailcount >= PY_MAX_FATALBAILCOUNT) {
+			co->co_use_llvm = f->f_use_llvm = 0;
+		}
+#endif
 	}
 	return 0;
 }

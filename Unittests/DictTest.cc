@@ -42,8 +42,7 @@ TEST_F(DictWatcherTest, AddWatcher)
     _PyDict_AddWatcher(this->globals_, code);
 
     PyDictObject *dict = (PyDictObject *)this->globals_;
-    EXPECT_EQ(dict->ma_watchers_used, 1);
-    EXPECT_EQ(dict->ma_watchers_allocated, 64);
+    EXPECT_EQ(1, _PyDict_NumWatchers(dict));
 
     // Drop the watcher to prevent the dict's dealloc from referencing freed
     // memory.
@@ -63,8 +62,8 @@ TEST_F(DictWatcherTest, DropWatcherAddWatcherSequence)
     _PyDict_DropWatcher(this->globals_, code1);
 
     PyDictObject *dict = (PyDictObject *)this->globals_;
-    EXPECT_EQ(dict->ma_watchers_used, 1);
-    EXPECT_EQ(dict->ma_watchers[0], code2);
+    EXPECT_EQ(1, _PyDict_NumWatchers(dict));
+    EXPECT_TRUE(_PyDict_IsWatchedBy(dict, code2));
 
     _PyDict_DropWatcher(this->globals_, code2);
     PyMem_DEL(code1);
@@ -78,15 +77,15 @@ TEST_F(DictWatcherTest, DictDealloc)
     PyCodeObject *code1 = this->FakeCodeObject();
     code1->co_use_llvm = 1;
 
-    EXPECT_EQ(_PyCode_WatchGlobals(code1, globals, builtins), 0);
+    EXPECT_EQ(0, _PyCode_WatchGlobals(code1, globals, builtins));
     Py_DECREF(globals);
 
-    EXPECT_EQ(code1->co_use_llvm, 0);
-    EXPECT_EQ(code1->co_assumed_globals, (PyObject *)NULL);
-    EXPECT_EQ(code1->co_assumed_builtins, (PyObject *)NULL);
+    EXPECT_EQ(0, code1->co_use_llvm);
+    EXPECT_EQ((PyObject *)NULL, code1->co_assumed_globals);
+    EXPECT_EQ((PyObject *)NULL, code1->co_assumed_builtins);
 
     PyDictObject *dict = (PyDictObject *)builtins;
-    EXPECT_EQ(dict->ma_watchers_used, 0);
+    EXPECT_EQ(0, _PyDict_NumWatchers(dict));
 
     Py_DECREF(builtins);
     PyMem_DEL(code1);
@@ -97,20 +96,20 @@ TEST_F(DictWatcherTest, NotifyWatcher)
     PyCodeObject *code1 = this->FakeCodeObject();
     code1->co_use_llvm = 1;
 
-    EXPECT_EQ(_PyCode_WatchGlobals(code1, this->globals_, this->builtins_), 0);
-    EXPECT_EQ(code1->co_use_llvm, 1);
+    EXPECT_EQ(0, _PyCode_WatchGlobals(code1, this->globals_, this->builtins_));
+    EXPECT_EQ(1, code1->co_use_llvm);
 
     // This should notify the watchers.
     PyDict_SetItemString(this->globals_, "hello", Py_None);
 
-    EXPECT_EQ(code1->co_use_llvm, 0);
+    EXPECT_EQ(0, code1->co_use_llvm);
     PyDictObject *globals_dict = (PyDictObject *)this->globals_;
-    EXPECT_EQ(globals_dict->ma_watchers_used, 0);
+    EXPECT_EQ(0, _PyDict_NumWatchers(globals_dict));
     PyDictObject *builtins_dict = (PyDictObject *)this->builtins_;
-    EXPECT_EQ(builtins_dict->ma_watchers_used, 0);
+    EXPECT_EQ(0, _PyDict_NumWatchers(builtins_dict));
 
-    EXPECT_EQ(code1->co_assumed_builtins, (PyObject *)NULL);
-    EXPECT_EQ(code1->co_assumed_globals, (PyObject *)NULL);
+    EXPECT_EQ((PyObject *)NULL, code1->co_assumed_builtins);
+    EXPECT_EQ((PyObject *)NULL, code1->co_assumed_globals);
 
     PyMem_DEL(code1);
 }

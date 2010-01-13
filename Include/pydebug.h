@@ -31,15 +31,20 @@ PyAPI_DATA(int) Py_ShowRefcountFlag;
 
 /* Control when/how to JIT-compile Python functions to machine code. Note that
    if Python was configured with --without-llvm, Py_JitControl is hardwired to
-   PY_JIT_NEVER. */
+   PY_JIT_NEVER.  Keep in sync with jitopts_strs in pythonrun.c.  */
 typedef enum {
     PY_JIT_NEVER,    /* Force use of the eval loop for all functions. */
     PY_JIT_WHENHOT,  /* JIT-compile hot function, optimizing heavily. */
     PY_JIT_ALWAYS,   /* Force use of LLVM for all functions that get run. */
+    PY_JIT_NOPTS     /* Last enum value so we can count them. */
 } Py_JitOpts;
 
 /* Defaults to PY_JIT_WHENHOT. */
 PyAPI_DATA(Py_JitOpts) Py_JitControl;
+
+/* Converts strings to and from enum values.  */
+PyAPI_FUNC(int) Py_JitControlStrToEnum(const char *str, Py_JitOpts *flag);
+PyAPI_FUNC(const char *) Py_JitControlEnumToStr(Py_JitOpts flag);
 
 /* How much debugging info to generate for JITted code. */
 PyAPI_DATA(int) Py_GenerateDebugInfoFlag;

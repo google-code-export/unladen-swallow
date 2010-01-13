@@ -541,6 +541,11 @@ PyLlvmCompileThread::WaitForJobs()
 Py_CompileResult
 PyLlvmCompileThread::RunCompileJob(CompileToIrJob *job, Py_ShouldBlock block)
 {
+    // Large functions take a very long time to translate to LLVM IR, optimize,
+    // and JIT, so we just keep them in the interpreter.
+    if (PyString_GET_SIZE(job->code_->co_code) > 5000)
+        return PY_COMPILE_REFUSED;
+
     // The exec statement wants to mess with the frame object in
     // ways that can inhibit optimizations (or make them harder to
     // implement), so we refuse to optimize code objects that use

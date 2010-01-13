@@ -136,6 +136,44 @@ add_flag(int flag, const char *envs)
 	return flag;
 }
 
+/* Keep in sync with Py_JitOpts in pydebug.h.  */
+
+static const char * const jitopts_strs[] = {
+	"never",
+	"whenhot",
+	"always"
+};
+
+/* Helper function to turn the string argument to the '-j' flag into the
+   Py_JitOpts enum.  Sets *flag to the enum of the flag.  Returns 0 on success
+   and -1 on failure.  */
+
+int
+Py_JitControlStrToEnum(const char *str, Py_JitOpts *flag)
+{
+	int i;
+        assert(PY_JIT_NOPTS == (sizeof(jitopts_strs) /
+                                sizeof(jitopts_strs[0])));
+	for (i = 0; i < PY_JIT_NOPTS; ++i) {
+		if (strcmp(str, jitopts_strs[i]) == 0) {
+			*flag = (Py_JitOpts)i;
+			return 0;  /* Success */
+		}
+	}
+	return -1;  /* Failure */
+}
+
+/* Helper function to turn Py_JitOpts enum values back into strings.  */
+
+const char *
+Py_JitControlEnumToStr(Py_JitOpts flag)
+{
+	if (flag < 0 || flag >= PY_JIT_NOPTS) {
+		return NULL;
+	}
+	return jitopts_strs[flag];
+}
+
 void
 Py_InitializeEx(int install_sigs)
 {
@@ -175,12 +213,8 @@ Py_InitializeEx(int install_sigs)
 	if ((p = Py_GETENV("PYTHONDONTWRITEBYTECODE")) && *p != '\0')
 		Py_DontWriteBytecodeFlag = add_flag(Py_DontWriteBytecodeFlag, p);
 	if ((p = Py_GETENV("PYTHONJITCONTROL")) && *p != '\0') {
-		if (strcmp(p, "never") == 0)
-			Py_JitControl = PY_JIT_NEVER;
-		else if (strcmp(p, "whenhot") == 0)
-			Py_JitControl = PY_JIT_WHENHOT;
-		else if (strcmp(p, "always") == 0)
-			Py_JitControl = PY_JIT_ALWAYS;
+                /* No error checking.  If it's invalid, we ignore it.  */
+                Py_JitControlStrToEnum(p, &Py_JitControl);
 	}
 
 	interp = PyInterpreterState_New();

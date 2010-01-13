@@ -82,6 +82,7 @@ consts: ("'doc string'", 'None')
 
 import unittest
 import weakref
+import _llvm
 
 try:
     import _llvm
@@ -127,12 +128,20 @@ class CodeWeakRefTests(unittest.TestCase):
         coderef = weakref.ref(f.__code__, callback)
         self.assertTrue(bool(coderef()))
 
+        del f
+
         if _llvm:
             # The JIT will hold a ref to the code object while it is being
             # compiled.  We need to wait for it to finish to drop the reference.
             _llvm.wait_for_jit()
 
-        del f
+            # Because f's code object is a constant of the code object we
+            # exec'd, when we run this test under -j always the constant is
+            # used to make an LLVM global variable.  This holds a reference to
+            # f's code object, which makes this test fail, unless we collect
+            # unused globals here.
+            _llvm.collect_unused_globals()
+
         self.assertFalse(bool(coderef()))
         self.assertTrue(self.called)
 

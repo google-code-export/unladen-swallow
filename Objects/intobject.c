@@ -482,6 +482,7 @@ int_hash(PyIntObject *v)
 static PyObject *
 int_add(PyIntObject *v, PyIntObject *w)
 {
+	/* If you change this, also change llvm_inline_functions.cc */
 	register long a, b, x;
 	CONVERT_TO_LONG(v, a);
 	CONVERT_TO_LONG(w, b);
@@ -494,6 +495,7 @@ int_add(PyIntObject *v, PyIntObject *w)
 static PyObject *
 int_sub(PyIntObject *v, PyIntObject *w)
 {
+	/* If you change this, also change llvm_inline_functions.cc */
 	register long a, b, x;
 	CONVERT_TO_LONG(v, a);
 	CONVERT_TO_LONG(w, b);
@@ -533,6 +535,7 @@ product that must have overflowed.
 static PyObject *
 int_mul(PyObject *v, PyObject *w)
 {
+	/* If you change this, also change llvm_inline_functions.cc */
 	long a, b;
 	long longprod;			/* a*b in native long arithmetic */
 	double doubled_longprod;	/* (double)longprod */
@@ -590,6 +593,7 @@ static enum divmod_result
 i_divmod(register long x, register long y,
          long *p_xdivy, long *p_xmody)
 {
+	/* If you change this, also change llvm_inline_functions.c */
 	long xdivy, xmody;
 
 	if (y == 0) {
@@ -620,6 +624,7 @@ i_divmod(register long x, register long y,
 static PyObject *
 int_div(PyIntObject *x, PyIntObject *y)
 {
+	/* If you change this, also change llvm_inline_functions.c */
 	long xi, yi;
 	long d, m;
 	CONVERT_TO_LONG(x, xi);
@@ -672,6 +677,7 @@ int_true_divide(PyObject *v, PyObject *w)
 static PyObject *
 int_mod(PyIntObject *x, PyIntObject *y)
 {
+	/* If you change this, also change llvm_inline_functions.cc */
 	long xi, yi;
 	long d, m;
 	CONVERT_TO_LONG(x, xi);

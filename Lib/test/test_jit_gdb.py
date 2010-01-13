@@ -9,6 +9,11 @@ import unittest
 from test.test_support import run_unittest, TestSkipped
 
 try:
+    import _llvm
+except ImportError:
+    raise TestSkipped("Built without JIT support")
+
+try:
     gdb_version, _ = subprocess.Popen(["gdb", "--version"],
                                       stdout=subprocess.PIPE).communicate()
 except OSError:

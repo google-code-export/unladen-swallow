@@ -373,18 +373,10 @@ Py_Main(int argc, char **argv)
 
                 case 'j':
 #ifdef WITH_LLVM
-                        if (strcmp(_PyOS_optarg, "whenhot") == 0) {
-                                Py_JitControl = PY_JIT_WHENHOT;
-                                break;
-                        }
-                        if (strcmp(_PyOS_optarg, "never") == 0) {
-                                Py_JitControl = PY_JIT_NEVER;
-                                break;
-                        }
-                        if (strcmp(_PyOS_optarg, "always") == 0) {
-                                Py_JitControl = PY_JIT_ALWAYS;
-                                break;
-                        }
+			if (Py_JitControlStrToEnum(_PyOS_optarg,
+						   &Py_JitControl) >= 0) {
+				break;  /* Success */
+			}
 			fprintf(stderr,
 				"-j option should be `-j whenhot', "
 				"`-j always`, or `-j never' only\n");

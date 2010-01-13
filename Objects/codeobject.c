@@ -112,10 +112,7 @@ PyCode_New(int argcount, int nlocals, int stacksize, int flags,
 		co->co_native_function = NULL;
 		co->co_runtime_feedback = PyFeedbackMap_New();
 		co->co_being_compiled = 0;
-		/* Py_JitControl defaults to PY_JIT_WHENHOT. In the case of
-		   PY_JIT_ALWAYS, this code object will be compiled to LLVM IR
-		   and then to machine code when it is first invoked. */
-		co->co_use_llvm = (Py_JitControl == PY_JIT_ALWAYS);
+		co->co_use_llvm = 0;
 		co->co_optimization = -1;
 		co->co_hotness = 0;
 		co->co_fatalbailcount = 0;
@@ -172,8 +169,8 @@ code_set_optimization(PyCodeObject *code, PyObject *new_opt_level_obj)
         case PY_COMPILE_OK:
                 return 0;
         case PY_COMPILE_REFUSED:
-                PyErr_SetString(PyExc_ValueError, "Compilation refused,"
-                                " is the code string too big?");
+                PyErr_SetString(PyExc_ValueError, "Compilation refused, "
+                                "is the code too big or does it use exec?");
                 return -1;
         case PY_COMPILE_ERROR:
         case PY_COMPILE_SHUTDOWN:

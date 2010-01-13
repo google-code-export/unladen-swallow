@@ -66,13 +66,16 @@ public:
     llvm::DIFactory *DebugInfo() { return this->debug_info_.get(); }
 
     // Runs globaldce to remove unreferenced global variables.
-    // Globals still used in machine code must be referenced from IR
-    // or this pass will delete them and crash.  This function uses
-    // the same strategy as Python's gc to avoid running the
-    // collection "too often"; see long_lived_pending and
-    // long_lived_total in Modules/gcmodule.c for details.  Running
-    // MaybeCollectUnusedGlobals() for the second time in a row with
-    // no allocation in between should be a no-op.
+    // Globals still used in machine code must be referenced from IR or this
+    // pass will delete them and crash.
+    void CollectUnusedGlobals();
+
+    // Run globaldce if we've allocated a significant number of globals between
+    // calls to this function.  This function uses the same strategy as
+    // Python's gc to avoid running the collection "too often"; see
+    // long_lived_pending and long_lived_total in Modules/gcmodule.c for
+    // details.  Running MaybeCollectUnusedGlobals() for the second time in a
+    // row with no allocation in between should be a no-op.
     void MaybeCollectUnusedGlobals();
 
     // Helper functions for building functions in IR.

@@ -235,6 +235,14 @@ def get_makefile_filename():
     return os.path.join(lib_dir, "config", "Makefile")
 
 
+def get_sysconfig_filename():
+    """Return absolute pathname of the installed sysconfig file."""
+    if python_build:
+        return os.path.join(os.path.dirname(sys.executable), "sysconfig")
+    lib_dir = get_python_lib(plat_specific=1, standard_lib=1)
+    return os.path.join(lib_dir, "config", "sysconfig")
+
+
 def parse_config_h(fp, g=None):
     """Parse a config.h-style file.
 
@@ -263,6 +271,13 @@ def parse_config_h(fp, g=None):
                 g[m.group(1)] = 0
     return g
 
+
+# There's almost certainly something out there that expects parse_config_h() to
+# take a file-like object. Sigh. Create a simple wrapper for our own nefarious
+# purposes.
+def _parse_config_h_filename(filename, g=None):
+    with open(filename) as fp:
+        return parse_config_h(fp, g)
 
 # Regexes needed for parsing Makefile (and similar syntaxes,
 # like old-style Setup files).
@@ -366,36 +381,45 @@ def expand_makefile_vars(s, vars):
     return s
 
 
+def _parse_config_file(filename, parse_func, config_dict):
+    """Parse a config file into a common dict.
+
+    Args:
+        filename: name of the config file.
+        parse_func: function to use to parse the file. This will be given
+            `filename` and `config_dict` as arguments, and should update
+            `config_dict` in-place.
+        config_dict: dictionary to update in-place.
+
+    Raises:
+        DistutilsPlatformError: if the file could not be opened.
+    """
+    try:
+        parse_func(filename, config_dict)
+    except IOError, msg:
+        my_msg = "invalid Python installation: unable to open %s" % filename
+        if hasattr(msg, "strerror"):
+            my_msg = my_msg + " (%s)" % msg.strerror
+
+        # Delay import to improve interpreter-startup time.
+        from distutils.errors import DistutilsPlatformError
+        raise DistutilsPlatformError(my_msg)
+
+
 _config_vars = None
 
 def _init_posix():
     """Initialize the module as appropriate for POSIX systems."""
     g = {}
     # load the installed Makefile:
-    try:
-        filename = get_makefile_filename()
-        parse_makefile(filename, g)
-    except IOError, msg:
-        my_msg = "invalid Python installation: unable to open %s" % filename
-        if hasattr(msg, "strerror"):
-            my_msg = my_msg + " (%s)" % msg.strerror
-
-        # Delay import to improve interpreter-startup time.
-        from distutils.errors import DistutilsPlatformError
-        raise DistutilsPlatformError(my_msg)
+    _parse_config_file(get_makefile_filename(), parse_makefile, g)
 
     # load the installed pyconfig.h:
-    try:
-        filename = get_config_h_filename()
-        parse_config_h(file(filename), g)
-    except IOError, msg:
-        my_msg = "invalid Python installation: unable to open %s" % filename
-        if hasattr(msg, "strerror"):
-            my_msg = my_msg + " (%s)" % msg.strerror
+    _parse_config_file(get_config_h_filename(), _parse_config_h_filename, g)
 
-        # Delay import to improve interpreter-startup time.
-        from distutils.errors import DistutilsPlatformError
-        raise DistutilsPlatformError(my_msg)
+    # Load the sysconfig config file; this contains variables that are
+    # calculated while building Python.
+    _parse_config_file(get_sysconfig_filename(), parse_makefile, g)
 
     # On MacOSX we need to check the setting of the environment variable
     # MACOSX_DEPLOYMENT_TARGET: configure bases some choices on it so

@@ -441,6 +441,7 @@ list_contains(PyListObject *a, PyObject *el)
 static PyObject *
 list_item(PyListObject *a, Py_ssize_t i)
 {
+	/* If you change this, also change llvm_inline_functions.c */
 	if (i < 0 || i >= Py_SIZE(a)) {
 		if (indexerr == NULL)
 			indexerr = PyString_FromString(
@@ -749,6 +750,7 @@ list_inplace_repeat(PyListObject *self, Py_ssize_t n)
 static int
 list_ass_item(PyListObject *a, Py_ssize_t i, PyObject *v)
 {
+	/* If you change this, also change llvm_inline_functions.c */
 	PyObject *old_value;
 	if (i < 0 || i >= Py_SIZE(a)) {
 		PyErr_SetString(PyExc_IndexError,
