@@ -29,10 +29,10 @@ verbose = test.test_support.verbose
 # Retrieve some helpers from other test cases
 from test import test_doctest, sample_doctest
 from test.test_importhooks import ImportHooksBaseTestCase
-from test.test_cmd_line_script import temp_dir, _run_python,        \
-                                      _spawn_python, _kill_python,  \
-                                      _make_test_script,            \
-                                      _compile_test_script,         \
+from test.test_cmd_line_script import temp_dir, _run_python,           \
+                                      _spawn_python, _exhaust_python,  \
+                                      _make_test_script,               \
+                                      _compile_test_script,            \
                                       _make_test_zip, _make_test_pkg
 
 
@@ -214,13 +214,13 @@ class ZipSupportTests(ImportHooksBaseTestCase):
             script_name = _make_test_script(d, 'script', test_src)
             p = _spawn_python(script_name)
             p.stdin.write('l\n')
-            data = _kill_python(p)
+            data, returncode = _exhaust_python(p)
             self.assert_(script_name in data)
             zip_name, run_name = _make_test_zip(d, "test_zip",
                                                 script_name, '__main__.py')
             p = _spawn_python(zip_name)
             p.stdin.write('l\n')
-            data = _kill_python(p)
+            data, returncode = _exhaust_python(p)
             self.assert_(run_name in data)
 
 
