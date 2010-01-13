@@ -9,12 +9,17 @@ import xmlrpclib
 
 PORT = None
 
-def server(evt, numrequests):
+def server(started, finished, numrequests):
     serv = DocXMLRPCServer(("localhost", 0), logRequests=False)
 
     try:
-        global PORT
-        PORT = serv.socket.getsockname()[1]
+        # Tell setUp that we've started listening on this port, or that we've
+        # failed.
+        try:
+            global PORT
+            PORT = serv.socket.getsockname()[1]
+        finally:
+            started.set()
 
         # Add some documentation
         serv.set_server_title("DocXMLRPCServer Test Documentation")
@@ -51,28 +56,27 @@ POSTing to /RPC2. Try self.add, too.""")
     finally:
         serv.server_close()
         PORT = None
-        evt.set()
+        finished.set()
 
 class DocXMLRPCHTTPGETServer(unittest.TestCase):
     def setUp(self):
         # Enable server feedback
         DocXMLRPCServer._send_traceback_header = True
 
-        self.evt = threading.Event()
-        threading.Thread(target=server, args=(self.evt, 1)).start()
+        self.finished = threading.Event()
+        started = threading.Event()
+        threading.Thread(target=server,
+                         args=(started, self.finished, 1)).start()
 
         # wait for port to be assigned
-        n = 1000
-        while n > 0 and PORT is None:
-            time.sleep(0.001)
-            n -= 1
+        started.wait()
 
         self.client = httplib.HTTPConnection("localhost:%d" % PORT)
 
     def tearDown(self):
         self.client.close()
 
-        self.evt.wait()
+        self.finished.wait()
 
         # Disable server feedback
         DocXMLRPCServer._send_traceback_header = False
