@@ -24,6 +24,7 @@
 #include "llvm/Module.h"
 #include "llvm/ModuleProvider.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/ValueHandle.h"
@@ -375,6 +376,12 @@ PyGlobalLlvmData::CollectUnusedGlobals()
 #endif
 }
 
+void
+PyGlobalLlvmData_CollectUnusedGlobals(struct PyGlobalLlvmData *global_data)
+{
+    global_data->CollectUnusedGlobals();
+}
+
 llvm::Value *
 PyGlobalLlvmData::GetGlobalStringPtr(const std::string &value)
 {
@@ -422,4 +429,16 @@ void
 _PyLlvm_Fini()
 {
     llvm::llvm_shutdown();
+}
+
+int
+PyLlvm_SetDebug(int on)
+{
+#ifdef NDEBUG
+    if (on)
+        return 0;
+#else
+    llvm::DebugFlag = on;
+#endif
+    return 1;
 }

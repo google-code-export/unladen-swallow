@@ -42,8 +42,7 @@
 			/>
 			<Tool
 				Name="VCCLCompilerTool"
-				AdditionalIncludeDirectories="..;..\Util\llvm\include;..\Util\llvm\obj\include"
-				DisableSpecificWarnings="4146;4355;4800"
+				AdditionalIncludeDirectories=".."
 			/>
 			<Tool
 				Name="VCManagedResourceCompilerTool"
@@ -56,8 +55,6 @@
 			/>
 			<Tool
 				Name="VCLinkerTool"
-				AdditionalDependencies="LLVMSupport.lib LLVMSystem.lib"
-				AdditionalLibraryDirectories="..\Util\llvm\obj\lib\Debug"
 			/>
 			<Tool
 				Name="VCALinkTool"
@@ -105,8 +102,7 @@
 			/>
 			<Tool
 				Name="VCCLCompilerTool"
-				AdditionalIncludeDirectories="..;..\Util\llvm\include;..\Util\llvm\obj-x64\include"
-				DisableSpecificWarnings="4146;4355;4800"
+				AdditionalIncludeDirectories=".."
 			/>
 			<Tool
 				Name="VCManagedResourceCompilerTool"
@@ -119,8 +115,6 @@
 			/>
 			<Tool
 				Name="VCLinkerTool"
-				AdditionalDependencies="LLVMSupport.lib LLVMSystem.lib"
-				AdditionalLibraryDirectories="..\Util\llvm\obj-x64\lib\Debug"
 			/>
 			<Tool
 				Name="VCALinkTool"
@@ -168,8 +162,7 @@
 			/>
 			<Tool
 				Name="VCCLCompilerTool"
-				AdditionalIncludeDirectories="..;..\Util\llvm\include;..\Util\llvm\obj\include"
-				DisableSpecificWarnings="4146;4355;4800"
+				AdditionalIncludeDirectories=".."
 			/>
 			<Tool
 				Name="VCManagedResourceCompilerTool"
@@ -182,8 +175,6 @@
 			/>
 			<Tool
 				Name="VCLinkerTool"
-				AdditionalDependencies="LLVMSupport.lib LLVMSystem.lib"
-				AdditionalLibraryDirectories="..\Util\llvm\obj\lib\Release"
 			/>
 			<Tool
 				Name="VCALinkTool"
@@ -232,8 +223,7 @@
 			/>
 			<Tool
 				Name="VCCLCompilerTool"
-				AdditionalIncludeDirectories="..;..\Util\llvm\include;..\Util\llvm\obj-x64\include"
-				DisableSpecificWarnings="4146;4355;4800"
+				AdditionalIncludeDirectories=".."
 			/>
 			<Tool
 				Name="VCManagedResourceCompilerTool"
@@ -246,8 +236,6 @@
 			/>
 			<Tool
 				Name="VCLinkerTool"
-				AdditionalDependencies="LLVMSupport.lib LLVMSystem.lib"
-				AdditionalLibraryDirectories="..\Util\llvm\obj-x64\lib\Release"
 			/>
 			<Tool
 				Name="VCALinkTool"
@@ -295,8 +283,7 @@
 			/>
 			<Tool
 				Name="VCCLCompilerTool"
-				AdditionalIncludeDirectories="..;..\Util\llvm\include;..\Util\llvm\obj\include"
-				DisableSpecificWarnings="4146;4355;4800"
+				AdditionalIncludeDirectories=".."
 			/>
 			<Tool
 				Name="VCManagedResourceCompilerTool"
@@ -309,8 +296,6 @@
 			/>
 			<Tool
 				Name="VCLinkerTool"
-				AdditionalDependencies="LLVMSupport.lib LLVMSystem.lib"
-				AdditionalLibraryDirectories="..\Util\llvm\obj\lib\Release"
 			/>
 			<Tool
 				Name="VCALinkTool"
@@ -359,8 +344,7 @@
 			/>
 			<Tool
 				Name="VCCLCompilerTool"
-				AdditionalIncludeDirectories="..;..\Util\llvm\include;..\Util\llvm\obj-x64\include"
-				DisableSpecificWarnings="4146;4355;4800"
+				AdditionalIncludeDirectories=".."
 			/>
 			<Tool
 				Name="VCManagedResourceCompilerTool"
@@ -373,8 +357,6 @@
 			/>
 			<Tool
 				Name="VCLinkerTool"
-				AdditionalDependencies="LLVMSupport.lib LLVMSystem.lib"
-				AdditionalLibraryDirectories="..\Util\llvm\obj-x64\lib\Release"
 				TargetMachine="17"
 			/>
 			<Tool
@@ -423,8 +405,7 @@
 			/>
 			<Tool
 				Name="VCCLCompilerTool"
-				AdditionalIncludeDirectories="..;..\Util\llvm\include;..\Util\llvm\obj\include"
-				DisableSpecificWarnings="4146;4355;4800"
+				AdditionalIncludeDirectories=".."
 			/>
 			<Tool
 				Name="VCManagedResourceCompilerTool"
@@ -437,8 +418,6 @@
 			/>
 			<Tool
 				Name="VCLinkerTool"
-				AdditionalDependencies="LLVMSupport.lib LLVMSystem.lib"
-				AdditionalLibraryDirectories="..\Util\llvm\obj\lib\Release"
 			/>
 			<Tool
 				Name="VCALinkTool"
@@ -487,8 +466,7 @@
 			/>
 			<Tool
 				Name="VCCLCompilerTool"
-				AdditionalIncludeDirectories="..;..\Util\llvm\include;..\Util\llvm\obj-x64\include"
-				DisableSpecificWarnings="4146;4355;4800"
+				AdditionalIncludeDirectories=".."
 			/>
 			<Tool
 				Name="VCManagedResourceCompilerTool"
@@ -501,8 +479,6 @@
 			/>
 			<Tool
 				Name="VCLinkerTool"
-				AdditionalDependencies="LLVMSupport.lib LLVMSystem.lib"
-				AdditionalLibraryDirectories="..\Util\llvm\obj-x64\lib\Release"
 				TargetMachine="17"
 			/>
 			<Tool
@@ -535,7 +511,7 @@
 			Name="Source Files"
 			>
 			<File
-				RelativePath="..\Modules\_llvm.cc"
+				RelativePath="..\Modules\_llvm.c"
 				>
 			</File>
 		</Filter>

@@ -9,10 +9,8 @@ LLVM-py.
 #include "Python.h"
 #include "_llvmfunctionobject.h"
 #include "llvm_compile.h"
-#include "Python/global_llvm_data.h"
+#include "Python/global_llvm_data_fwd.h"
 #include "Util/RuntimeFeedback_fwd.h"
-
-#include "llvm/Support/Debug.h"
 
 PyDoc_STRVAR(llvm_module_doc,
 "Defines thin wrappers around fundamental LLVM types.");
@@ -23,17 +21,13 @@ static PyObject *
 llvm_setdebug(PyObject *self, PyObject *on_obj)
 {
     int on = PyObject_IsTrue(on_obj);
-    if (on == -1)  // Error.
+    if (on == -1)  /* Error. */
         return NULL;
 
-#ifdef NDEBUG
-    if (on) {
+    if (!PyLlvm_SetDebug(on)) {
         PyErr_SetString(PyExc_ValueError, "llvm debugging not available");
         return NULL;
     }
-#else
-    llvm::DebugFlag = on;
-#endif
     Py_RETURN_NONE;
 }
 
@@ -49,7 +43,6 @@ llvm_compile(PyObject *self, PyObject *args)
     PyObject *obj;
     PyCodeObject *code;
     long opt_level;
-    struct PyGlobalLlvmData *global_llvm_data;
 
     if (!PyArg_ParseTuple(args, "O!l:compile",
                           &PyCode_Type, &obj, &opt_level))
@@ -66,9 +59,8 @@ llvm_compile(PyObject *self, PyObject *args)
     code->co_llvm_function = _PyCode_ToLlvmIr(code);
     if (code->co_llvm_function == NULL)
         return NULL;
-    global_llvm_data = PyThreadState_GET()->interp->global_llvm_data;
     if (code->co_optimization < opt_level &&
-        PyGlobalLlvmData_Optimize(global_llvm_data,
+        PyGlobalLlvmData_Optimize(PyGlobalLlvmData_GET(),
                                   code->co_llvm_function, opt_level) < 0) {
         PyErr_Format(PyExc_ValueError,
                      "Failed to optimize to level %ld", opt_level);
@@ -93,14 +85,14 @@ llvm_clear_feedback(PyObject *self, PyObject *obj)
         code = (PyCodeObject *)func->func_code;
     }
     else if (PyMethod_Check(obj)) {
-        // Methods contain other callable objects, including, potentially other
-        // methods.
+        /* Methods contain other callable objects, including, potentially other
+           methods. */
         return llvm_clear_feedback(self, ((PyMethodObject *)obj)->im_func);
     }
     else if (PyCode_Check(obj)) {
         code = (PyCodeObject *)obj;
     }
-    else if (PyCFunction_Check(obj)) {  // No feedback; this is a no-op.
+    else if (PyCFunction_Check(obj)) {  /* No feedback; this is a no-op. */
         Py_RETURN_NONE;
     }
     else {
@@ -123,6 +115,7 @@ Set the JIT control mode.  Valid values are 'always', 'never', and 'whenhot'.");
 static PyObject *
 llvm_set_jit_control(PyObject *self, PyObject *flag_obj)
 {
+    const char *flag_str;
     if (!PyString_Check(flag_obj)) {
         PyErr_Format(PyExc_TypeError,
                      "expected str, not %.100s object",
@@ -130,7 +123,7 @@ llvm_set_jit_control(PyObject *self, PyObject *flag_obj)
         return NULL;
     }
 
-    const char *flag_str = PyString_AsString(flag_obj);
+    flag_str = PyString_AsString(flag_obj);
     if (flag_str == NULL)
         return NULL;
     if (Py_JitControlStrToEnum(flag_str, &Py_JitControl) < 0) {
@@ -177,7 +170,7 @@ Python objects.");
 static PyObject *
 llvm_collect_unused_globals(PyObject *self)
 {
-    PyGlobalLlvmData::Get()->CollectUnusedGlobals();
+    PyGlobalLlvmData_CollectUnusedGlobals(PyGlobalLlvmData_GET());
     Py_RETURN_NONE;
 }
 

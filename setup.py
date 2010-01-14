@@ -639,10 +639,7 @@ class PyBuildExt(build_ext):
 
         # LLVM wrappers
         if sysconfig.get_config_var("WITH_LLVM"):
-            (llvm_cxxflags,) = sysconfig.get_config_vars('LLVM_CXXFLAGS')
-            exts.append( Extension('_llvm', ['_llvm.cc'],
-                                   # Yeah, this is intuitive. Go distutils.
-                                   extra_compile_args=llvm_cxxflags.split()) )
+            exts.append( Extension('_llvm', ['_llvm.c']))
         else:
             missing.append('_llvm')
 
