@@ -470,7 +470,7 @@ class _TestQueue(BaseTestCase):
             queue.put(i)
 
         # wait to make sure thread starts before we fork a new process
-        time.sleep(DELTA + 10.0)
+        time.sleep(DELTA)
 
         # fork process
         p = self.Process(target=self._test_fork, args=(queue,))
