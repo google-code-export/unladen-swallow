@@ -160,7 +160,7 @@ grouped under the reserved :attr:`system` member:
 .. method:: ServerProxy.system.methodSignature(name)
 
    This method takes one parameter, the name of a method implemented by the XML-RPC
-   server.It returns an array of possible signatures for this method. A signature
+   server. It returns an array of possible signatures for this method. A signature
    is an array of types. The first of these types is the return type of the method,
    the rest are parameters.
 
@@ -174,7 +174,7 @@ grouped under the reserved :attr:`system` member:
 
    If no signature is defined for the method, a non-array value is returned. In
    Python this means that the type of the returned  value will be something other
-   that list.
+   than list.
 
 
 .. method:: ServerProxy.system.methodHelp(name)
@@ -318,9 +318,8 @@ XMLRPC::
    import xmlrpclib
 
    def python_logo():
-        handle = open("python_logo.jpg")
-        return xmlrpclib.Binary(handle.read())
-        handle.close()
+        with open("python_logo.jpg") as handle:
+            return xmlrpclib.Binary(handle.read())
 
    server = SimpleXMLRPCServer(("localhost", 8000))
    print "Listening on port 8000..."
@@ -333,9 +332,8 @@ The client gets the image and saves it to a file::
    import xmlrpclib
 
    proxy = xmlrpclib.ServerProxy("http://localhost:8000/")
-   handle = open("fetched_python_logo.jpg", "w")
-   handle.write(proxy.python_logo().data)
-   handle.close()
+   with open("fetched_python_logo.jpg", "w") as handle:
+       handle.write(proxy.python_logo().data)
 
 .. _fault-objects:
 
@@ -560,8 +558,8 @@ transport.  The following example shows how:
            self.proxy = proxy
        def make_connection(self, host):
            self.realhost = host
-   	h = httplib.HTTP(self.proxy)
-   	return h
+           h = httplib.HTTP(self.proxy)
+           return h
        def send_request(self, connection, handler, request_body):
            connection.putrequest("POST", 'http://%s%s' % (self.realhost, handler))
        def send_host(self, connection, host):

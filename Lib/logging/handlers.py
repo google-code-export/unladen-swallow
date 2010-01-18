@@ -19,12 +19,9 @@ Additional handlers for the logging package for Python. The core package is
 based on PEP 282 and comments thereto in comp.lang.python, and influenced by
 Apache's log4j system.
 
-Should work under Python versions >= 1.5.2, except that source line
-information is not available unless 'sys._getframe()' is.
+Copyright (C) 2001-2009 Vinay Sajip. All Rights Reserved.
 
-Copyright (C) 2001-2008 Vinay Sajip. All Rights Reserved.
-
-To use, simply 'import logging' and log away!
+To use, simply 'import logging.handlers' and log away!
 """
 
 import logging, socket, types, os, string, cPickle, struct, time, re
@@ -141,6 +138,8 @@ class RotatingFileHandler(BaseRotatingHandler):
         Basically, see if the supplied record would cause the file to exceed
         the size limit we have.
         """
+        if self.stream is None:                 # delay was set...
+            self.stream = self._open()
         if self.maxBytes > 0:                   # are we rolling over?
             msg = "%s\n" % self.format(record)
             self.stream.seek(0, 2)  #due to non-posix-compliant Windows feature
@@ -204,8 +203,15 @@ class TimedRotatingFileHandler(BaseRotatingHandler):
 
         self.extMatch = re.compile(self.extMatch)
         self.interval = self.interval * interval # multiply by units requested
-        self.rolloverAt = currentTime + self.interval
+        self.rolloverAt = self.computeRollover(int(time.time()))
 
+        #print "Will rollover at %d, %d seconds from now" % (self.rolloverAt, self.rolloverAt - currentTime)
+
+    def computeRollover(self, currentTime):
+        """
+        Work out the rollover time based on the specified time.
+        """
+        result = currentTime + self.interval
         # If we are rolling over at midnight or weekly, then the interval is already known.
         # What we need to figure out is WHEN the next interval is.  In other words,
         # if you are rolling over at midnight, then your base interval is 1 day,
@@ -215,7 +221,7 @@ class TimedRotatingFileHandler(BaseRotatingHandler):
         # the rest.  Note that this code doesn't care about leap seconds. :)
         if self.when == 'MIDNIGHT' or self.when.startswith('W'):
             # This could be done with less code, but I wanted it to be clear
-            if utc:
+            if self.utc:
                 t = time.gmtime(currentTime)
             else:
                 t = time.localtime(currentTime)
@@ -225,7 +231,7 @@ class TimedRotatingFileHandler(BaseRotatingHandler):
             # r is the number of seconds left between now and midnight
             r = _MIDNIGHT - ((currentHour * 60 + currentMinute) * 60 +
                     currentSecond)
-            self.rolloverAt = currentTime + r
+            result = currentTime + r
             # If we are rolling over on a certain day, add in the number of days until
             # the next rollover, but offset by 1 since we just calculated the time
             # until the next day starts.  There are three cases:
@@ -241,15 +247,15 @@ class TimedRotatingFileHandler(BaseRotatingHandler):
             # The calculations described in 2) and 3) above need to have a day added.
             # This is because the above time calculation takes us to midnight on this
             # day, i.e. the start of the next day.
-            if when.startswith('W'):
+            if self.when.startswith('W'):
                 day = t[6] # 0 is Monday
                 if day != self.dayOfWeek:
                     if day < self.dayOfWeek:
                         daysToWait = self.dayOfWeek - day
                     else:
                         daysToWait = 6 - day + self.dayOfWeek + 1
-                    newRolloverAt = self.rolloverAt + (daysToWait * (60 * 60 * 24))
-                    if not utc:
+                    newRolloverAt = result + (daysToWait * (60 * 60 * 24))
+                    if not self.utc:
                         dstNow = t[-1]
                         dstAtRollover = time.localtime(newRolloverAt)[-1]
                         if dstNow != dstAtRollover:
@@ -257,9 +263,8 @@ class TimedRotatingFileHandler(BaseRotatingHandler):
                                 newRolloverAt = newRolloverAt - 3600
                             else:           # DST bows out before next rollover, so we need to add an hour
                                 newRolloverAt = newRolloverAt + 3600
-                    self.rolloverAt = newRolloverAt
-
-        #print "Will rollover at %d, %d seconds from now" % (self.rolloverAt, self.rolloverAt - currentTime)
+                    result = newRolloverAt
+        return result
 
     def shouldRollover(self, record):
         """
@@ -305,7 +310,8 @@ class TimedRotatingFileHandler(BaseRotatingHandler):
         then we have to get a list of matching filenames, sort them and remove
         the one with the oldest suffix.
         """
-        self.stream.close()
+        if self.stream:
+            self.stream.close()
         # get the time that this sequence started at and make it a TimeTuple
         t = self.rolloverAt - self.interval
         if self.utc:
@@ -327,8 +333,8 @@ class TimedRotatingFileHandler(BaseRotatingHandler):
         #print "%s -> %s" % (self.baseFilename, dfn)
         self.mode = 'w'
         self.stream = self._open()
-        newRolloverAt = self.rolloverAt + self.interval
         currentTime = int(time.time())
+        newRolloverAt = self.computeRollover(currentTime)
         while newRolloverAt <= currentTime:
             newRolloverAt = newRolloverAt + self.interval
         #If DST changes and midnight or weekly rollover, adjust for this.

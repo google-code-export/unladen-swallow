@@ -17,6 +17,7 @@ import copy
 import socket
 import random
 import logging
+from StringIO import StringIO
 
 
 # Work around broken sem_open implementations
@@ -60,6 +61,8 @@ else:
 
 HAVE_GETVALUE = not getattr(_multiprocessing,
                             'HAVE_BROKEN_SEM_GETVALUE', False)
+
+WIN32 = (sys.platform == "win32")
 
 #
 # Creates a wrapper for a function which records the time it takes to finish
@@ -467,7 +470,7 @@ class _TestQueue(BaseTestCase):
             queue.put(i)
 
         # wait to make sure thread starts before we fork a new process
-        time.sleep(DELTA)
+        time.sleep(DELTA + 10.0)
 
         # fork process
         p = self.Process(target=self._test_fork, args=(queue,))
@@ -545,6 +548,10 @@ class _TestLock(BaseTestCase):
         self.assertEqual(lock.release(), None)
         self.assertEqual(lock.release(), None)
         self.assertRaises((AssertionError, RuntimeError), lock.release)
+
+    def test_lock_context(self):
+        with self.Lock():
+            pass
 
 
 class _TestSemaphore(BaseTestCase):
@@ -829,9 +836,15 @@ class _TestValue(BaseTestCase):
         obj3 = val3.get_obj()
         self.assertEqual(lock, lock3)
 
-        arr4 = self.RawValue('i', 5)
+        arr4 = self.Value('i', 5, lock=False)
         self.assertFalse(hasattr(arr4, 'get_lock'))
         self.assertFalse(hasattr(arr4, 'get_obj'))
+
+        self.assertRaises(AttributeError, self.Value, 'i', 5, lock='navalue')
+
+        arr5 = self.RawValue('i', 5)
+        self.assertFalse(hasattr(arr5, 'get_lock'))
+        self.assertFalse(hasattr(arr5, 'get_obj'))
 
 
 class _TestArray(BaseTestCase):
@@ -887,9 +900,15 @@ class _TestArray(BaseTestCase):
         obj3 = arr3.get_obj()
         self.assertEqual(lock, lock3)
 
-        arr4 = self.RawArray('i', range(10))
+        arr4 = self.Array('i', range(10), lock=False)
         self.assertFalse(hasattr(arr4, 'get_lock'))
         self.assertFalse(hasattr(arr4, 'get_obj'))
+        self.assertRaises(AttributeError,
+                          self.Array, 'i', range(10), lock='notalock')
+
+        arr5 = self.RawArray('i', range(10))
+        self.assertFalse(hasattr(arr5, 'get_lock'))
+        self.assertFalse(hasattr(arr5, 'get_obj'))
 
 #
 #
@@ -1172,6 +1191,32 @@ class _TestRemoteManager(BaseTestCase):
 
         # Make queue finalizer run before the server is stopped
         del queue
+        manager.shutdown()
+
+class _TestManagerRestart(BaseTestCase):
+
+    def _putter(self, address, authkey):
+        manager = QueueManager(
+            address=address, authkey=authkey, serializer=SERIALIZER)
+        manager.connect()
+        queue = manager.get_queue()
+        queue.put('hello world')
+
+    def test_rapid_restart(self):
+        authkey = os.urandom(32)
+        manager = QueueManager(
+            address=('localhost', 9999), authkey=authkey, serializer=SERIALIZER)
+        manager.start()
+
+        p = self.Process(target=self._putter, args=(manager.address, authkey))
+        p.start()
+        queue = manager.get_queue()
+        self.assertEqual(queue.get(), 'hello world')
+        del queue
+        manager.shutdown()
+        manager = QueueManager(
+            address=('localhost', 9999), authkey=authkey, serializer=SERIALIZER)
+        manager.start()
         manager.shutdown()
 
 #
@@ -1670,6 +1715,18 @@ class _TestLogging(BaseTestCase):
         logger.setLevel(level=LOG_LEVEL)
 
 #
+# Test to verify handle verification, see issue 3321
+#
+
+class TestInvalidHandle(unittest.TestCase):
+
+    def test_invalid_handles(self):
+        if WIN32:
+            return
+        conn = _multiprocessing.Connection(44977608)
+        self.assertRaises(IOError, conn.poll)
+        self.assertRaises(IOError, _multiprocessing.Connection, -1)
+#
 # Functions used to create test cases from the base ones in this module
 #
 
@@ -1773,7 +1830,73 @@ class OtherTest(unittest.TestCase):
                           multiprocessing.connection.answer_challenge,
                           _FakeConnection(), b'abc')
 
-testcases_other = [OtherTest]
+#
+# Issue 5155, 5313, 5331: Test process in processes
+# Verifies os.close(sys.stdin.fileno) vs. sys.stdin.close() behavior
+#
+
+def _ThisSubProcess(q):
+    try:
+        item = q.get(block=False)
+    except Queue.Empty:
+        pass
+
+def _TestProcess(q):
+    queue = multiprocessing.Queue()
+    subProc = multiprocessing.Process(target=_ThisSubProcess, args=(queue,))
+    subProc.start()
+    subProc.join()
+
+def _afunc(x):
+    return x*x
+
+def pool_in_process():
+    pool = multiprocessing.Pool(processes=4)
+    x = pool.map(_afunc, [1, 2, 3, 4, 5, 6, 7])
+
+class _file_like(object):
+    def __init__(self, delegate):
+        self._delegate = delegate
+        self._pid = None
+
+    @property
+    def cache(self):
+        pid = os.getpid()
+        # There are no race conditions since fork keeps only the running thread
+        if pid != self._pid:
+            self._pid = pid
+            self._cache = []
+        return self._cache
+
+    def write(self, data):
+        self.cache.append(data)
+
+    def flush(self):
+        self._delegate.write(''.join(self.cache))
+        self._cache = []
+
+class TestStdinBadfiledescriptor(unittest.TestCase):
+
+    def test_queue_in_process(self):
+        queue = multiprocessing.Queue()
+        proc = multiprocessing.Process(target=_TestProcess, args=(queue,))
+        proc.start()
+        proc.join()
+
+    def test_pool_in_process(self):
+        p = multiprocessing.Process(target=pool_in_process)
+        p.start()
+        p.join()
+
+    def test_flushing(self):
+        sio = StringIO()
+        flike = _file_like(sio)
+        flike.write('foo')
+        proc = multiprocessing.Process(target=lambda: flike.flush())
+        flike.flush()
+        assert sio.getvalue() == 'foo'
+
+testcases_other = [OtherTest, TestInvalidHandle, TestStdinBadfiledescriptor]
 
 #
 #

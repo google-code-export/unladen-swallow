@@ -224,8 +224,8 @@ def test_password_manager_default_port(self):
 
 class MockOpener:
     addheaders = []
-    def open(self, req, data=None):
-        self.req, self.data = req, data
+    def open(self, req, data=None,timeout=socket._GLOBAL_DEFAULT_TIMEOUT):
+        self.req, self.data, self.timeout  = req, data, timeout
     def error(self, proto, *args):
         self.proto, self.args = proto, args
 
@@ -850,6 +850,7 @@ class HandlerTests(unittest.TestCase):
                 method = getattr(h, "http_error_%s" % code)
                 req = Request(from_url, data)
                 req.add_header("Nonsense", "viking=withhold")
+                req.timeout = socket._GLOBAL_DEFAULT_TIMEOUT
                 if data is not None:
                     req.add_header("Content-Length", str(len(data)))
                 req.add_unredirected_header("Spam", "spam")
@@ -878,6 +879,7 @@ class HandlerTests(unittest.TestCase):
 
         # loop detection
         req = Request(from_url)
+        req.timeout = socket._GLOBAL_DEFAULT_TIMEOUT
         def redirect(h, req, url=to_url):
             h.http_error_302(req, MockFile(), 302, "Blah",
                              MockHeaders({"location": url}))
@@ -887,6 +889,7 @@ class HandlerTests(unittest.TestCase):
         # detect infinite loop redirect of a URL to itself
         req = Request(from_url, origin_req_host="example.com")
         count = 0
+        req.timeout = socket._GLOBAL_DEFAULT_TIMEOUT
         try:
             while 1:
                 redirect(h, req, "http://example.com/")
@@ -898,6 +901,7 @@ class HandlerTests(unittest.TestCase):
         # detect endless non-repeating chain of redirects
         req = Request(from_url, origin_req_host="example.com")
         count = 0
+        req.timeout = socket._GLOBAL_DEFAULT_TIMEOUT
         try:
             while 1:
                 redirect(h, req, "http://example.com/%d" % count)
@@ -937,6 +941,37 @@ class HandlerTests(unittest.TestCase):
         self.assertEqual(req.get_host(), "proxy.example.com:3128")
 
         self.assertEqual([(handlers[0], "http_open")],
+                         [tup[0:2] for tup in o.calls])
+
+    def test_proxy_no_proxy(self):
+        os.environ['no_proxy'] = 'python.org'
+        o = OpenerDirector()
+        ph = urllib2.ProxyHandler(dict(http="proxy.example.com"))
+        o.add_handler(ph)
+        req = Request("http://www.perl.org/")
+        self.assertEqual(req.get_host(), "www.perl.org")
+        r = o.open(req)
+        self.assertEqual(req.get_host(), "proxy.example.com")
+        req = Request("http://www.python.org")
+        self.assertEqual(req.get_host(), "www.python.org")
+        r = o.open(req)
+        self.assertEqual(req.get_host(), "www.python.org")
+        del os.environ['no_proxy']
+
+
+    def test_proxy_https(self):
+        o = OpenerDirector()
+        ph = urllib2.ProxyHandler(dict(https='proxy.example.com:3128'))
+        o.add_handler(ph)
+        meth_spec = [
+            [("https_open","return response")]
+        ]
+        handlers = add_ordered_mock_handlers(o, meth_spec)
+        req = Request("https://www.example.com/")
+        self.assertEqual(req.get_host(), "www.example.com")
+        r = o.open(req)
+        self.assertEqual(req.get_host(), "proxy.example.com:3128")
+        self.assertEqual([(handlers[0], "https_open")],
                          [tup[0:2] for tup in o.calls])
 
     def test_basic_auth(self, quote_char='"'):
@@ -1104,6 +1139,51 @@ class MiscTests(unittest.TestCase):
         else:
             self.assert_(False)
 
+class RequestTests(unittest.TestCase):
+
+    def setUp(self):
+        self.get = urllib2.Request("http://www.python.org/~jeremy/")
+        self.post = urllib2.Request("http://www.python.org/~jeremy/",
+                                    "data",
+                                    headers={"X-Test": "test"})
+
+    def test_method(self):
+        self.assertEqual("POST", self.post.get_method())
+        self.assertEqual("GET", self.get.get_method())
+
+    def test_add_data(self):
+        self.assert_(not self.get.has_data())
+        self.assertEqual("GET", self.get.get_method())
+        self.get.add_data("spam")
+        self.assert_(self.get.has_data())
+        self.assertEqual("POST", self.get.get_method())
+
+    def test_get_full_url(self):
+        self.assertEqual("http://www.python.org/~jeremy/",
+                         self.get.get_full_url())
+
+    def test_selector(self):
+        self.assertEqual("/~jeremy/", self.get.get_selector())
+        req = urllib2.Request("http://www.python.org/")
+        self.assertEqual("/", req.get_selector())
+
+    def test_get_type(self):
+        self.assertEqual("http", self.get.get_type())
+
+    def test_get_host(self):
+        self.assertEqual("www.python.org", self.get.get_host())
+
+    def test_get_host_unquote(self):
+        req = urllib2.Request("http://www.%70ython.org/")
+        self.assertEqual("www.python.org", req.get_host())
+
+    def test_proxy(self):
+        self.assert_(not self.get.has_proxy())
+        self.get.set_proxy("www.perl.org", "http")
+        self.assert_(self.get.has_proxy())
+        self.assertEqual("www.python.org", self.get.get_origin_req_host())
+        self.assertEqual("www.perl.org", self.get.get_host())
+
 
 def test_main(verbose=None):
     from test import test_urllib2
@@ -1112,7 +1192,8 @@ def test_main(verbose=None):
     tests = (TrivialTests,
              OpenerDirectorTests,
              HandlerTests,
-             MiscTests)
+             MiscTests,
+             RequestTests)
     test_support.run_unittest(*tests)
 
 if __name__ == "__main__":

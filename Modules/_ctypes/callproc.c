@@ -546,6 +546,7 @@ PyTypeObject PyCArg_Type = {
  * C function call.
  *
  * 1. Python integers are converted to C int and passed by value.
+ *    Py_None is converted to a C NULL pointer.
  *
  * 2. 3-tuples are expected to have a format character in the first
  *    item, which must be 'i', 'f', 'd', 'q', or 'P'.
@@ -664,6 +665,7 @@ static int ConvParam(PyObject *obj, Py_ssize_t index, struct argument *pa)
 		return 0;
 #else
 		int size = PyUnicode_GET_SIZE(obj);
+		pa->ffi_type = &ffi_type_pointer;
 		size += 1; /* terminating NUL */
 		size *= sizeof(wchar_t);
 		pa->value.p = PyMem_Malloc(size);

@@ -88,7 +88,7 @@ static char *usage_3 = "\
 ";
 #ifdef WITH_PY3K_WARNINGS
 static char *usage_4 = "\
--3     : warn about Python 3.x incompatibilitie that 2to3 cannot trivially fix\n";
+-3     : warn about Python 3.x incompatibilities that 2to3 cannot trivially fix\n";
 #else
 static char *usage_4 = "";
 #endif
@@ -308,6 +308,8 @@ Py_Main(int argc, char **argv)
 		case '3':
 #ifdef WITH_PY3K_WARNINGS
 			Py_Py3kWarningFlag++;
+			if (!Py_DivisionWarningFlag)
+				Py_DivisionWarningFlag = 1;
 #else
 			Py_FatalError("Py3k warnings are disabled in this "
 				      "build of Python");

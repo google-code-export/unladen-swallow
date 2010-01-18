@@ -1,6 +1,7 @@
 import unittest
 from test import test_support
-from weakref import proxy
+import gc
+import weakref
 import operator
 import copy
 import pickle
@@ -79,6 +80,10 @@ class TestJointOps(unittest.TestCase):
             self.assertEqual(self.thetype('abcba').union(C('ccb')), set('abc'))
             self.assertEqual(self.thetype('abcba').union(C('ef')), set('abcef'))
             self.assertEqual(self.thetype('abcba').union(C('ef'), C('fg')), set('abcefg'))
+
+        # Issue #6573
+        x = self.thetype()
+        self.assertEqual(x.union(set([1]), x, set([2])), self.thetype([1, 2]))
 
     def test_or(self):
         i = self.s.union(self.otherword)
@@ -221,7 +226,7 @@ class TestJointOps(unittest.TestCase):
         self.failIf(set('cbs').issuperset('a'))
 
     def test_pickling(self):
-        for i in (0, 1, 2):
+        for i in range(pickle.HIGHEST_PROTOCOL + 1):
             p = pickle.dumps(self.s, i)
             dup = pickle.loads(p)
             self.assertEqual(self.s, dup, "%s != %s" % (self.s, dup))
@@ -321,6 +326,18 @@ class TestJointOps(unittest.TestCase):
         d3 = dict.fromkeys(frozenset(d), 123)
         self.assertEqual(sum(elem.hash_count for elem in d), n)
         self.assertEqual(d3, dict.fromkeys(d, 123))
+
+    def test_container_iterator(self):
+        # Bug #3680: tp_traverse was not implemented for set iterator object
+        class C(object):
+            pass
+        obj = C()
+        ref = weakref.ref(obj)
+        container = set([obj, 1])
+        obj.x = iter(container)
+        del obj, container
+        gc.collect()
+        self.assert_(ref() is None, "Cycle was not collected")
 
 class TestSet(TestJointOps):
     thetype = set
@@ -538,7 +555,7 @@ class TestSet(TestJointOps):
 
     def test_weakref(self):
         s = self.thetype('gallahad')
-        p = proxy(s)
+        p = weakref.proxy(s)
         self.assertEqual(str(p), str(s))
         s = None
         self.assertRaises(ReferenceError, str, p)

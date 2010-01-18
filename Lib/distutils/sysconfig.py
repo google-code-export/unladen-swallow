@@ -9,7 +9,7 @@ Written by:   Fred L. Drake, Jr.
 Email:        <fdrake@acm.org>
 """
 
-__revision__ = "$Id: sysconfig.py 63955 2008-06-05 12:58:24Z ronald.oussoren $"
+__revision__ = "$Id: sysconfig.py 75023 2009-09-22 19:31:34Z ronald.oussoren $"
 
 import os
 import re
@@ -131,7 +131,7 @@ def get_python_lib(plat_specific=0, standard_lib=0, prefix=None):
             if get_python_version() < "2.2":
                 return prefix
             else:
-                return os.path.join(PREFIX, "Lib", "site-packages")
+                return os.path.join(prefix, "Lib", "site-packages")
 
     elif os.name == "mac":
         if plat_specific:
@@ -147,9 +147,9 @@ def get_python_lib(plat_specific=0, standard_lib=0, prefix=None):
 
     elif os.name == "os2":
         if standard_lib:
-            return os.path.join(PREFIX, "Lib")
+            return os.path.join(prefix, "Lib")
         else:
-            return os.path.join(PREFIX, "Lib", "site-packages")
+            return os.path.join(prefix, "Lib", "site-packages")
 
     else:
         # Delay import to improve interpreter-startup time.
@@ -302,18 +302,25 @@ def parse_makefile(fn, g=None):
 
     while 1:
         line = fp.readline()
-        if line is None:                # eof
+        if line is None:  # eof
             break
         m = _variable_rx.match(line)
         if m:
             n, v = m.group(1, 2)
             v = v.strip()
-            if "$" in v:
+            # `$$' is a literal `$' in make
+            tmpv = v.replace('$$', '')
+
+            if "$" in tmpv:
                 notdone[n] = v
             else:
-                try: v = int(v)
-                except ValueError: pass
-                done[n] = v
+                try:
+                    v = int(v)
+                except ValueError:
+                    # insert literal `$'
+                    done[n] = v.replace('$$', '$')
+                else:
+                    done[n] = v
 
     # do variable interpolation here
     while notdone:
@@ -603,6 +610,29 @@ def get_config_vars(*args):
                         flags = re.sub('-arch\s+\w+\s', ' ', flags)
                         flags = flags + ' ' + arch
                         _config_vars[key] = flags
+
+                # If we're on OSX 10.5 or later and the user tries to
+                # compiles an extension using an SDK that is not present
+                # on the current machine it is better to not use an SDK
+                # than to fail.
+                #
+                # The major usecase for this is users using a Python.org
+                # binary installer  on OSX 10.6: that installer uses
+                # the 10.4u SDK, but that SDK is not installed by default
+                # when you install Xcode.
+                #
+                m = re.search('-isysroot\s+(\S+)', _config_vars['CFLAGS'])
+                if m is not None:
+                    sdk = m.group(1)
+                    if not os.path.exists(sdk):
+                        for key in ('LDFLAGS', 'BASECFLAGS',
+                             # a number of derived variables. These need to be
+                             # patched up as well.
+                            'CFLAGS', 'PY_CFLAGS', 'BLDSHARED'):
+
+                            flags = _config_vars[key]
+                            flags = re.sub('-isysroot\s+\S+(\s|$)', ' ', flags)
+                            _config_vars[key] = flags
 
     if args:
         vals = []

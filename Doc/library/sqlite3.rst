@@ -15,7 +15,7 @@ SQLite for internal data storage.  It's also possible to prototype an
 application using SQLite and then port the code to a larger database such as
 PostgreSQL or Oracle.
 
-pysqlite was written by Gerhard Häring and provides a SQL interface compliant
+sqlite3 was written by Gerhard Häring and provides a SQL interface compliant
 with the DB-API 2.0 specification described by :pep:`249`.
 
 To use the module, you must first create a :class:`Connection` object that
@@ -52,8 +52,9 @@ is insecure; it makes your program vulnerable to an SQL injection attack.
 
 Instead, use the DB-API's parameter substitution.  Put ``?`` as a placeholder
 wherever you want to use a value, and then provide a tuple of values as the
-second argument to the cursor's :meth:`~Cursor.execute` method.  (Other database modules
-may use a different placeholder, such as ``%s`` or ``:1``.) For example::
+second argument to the cursor's :meth:`~Cursor.execute` method.  (Other database
+modules may use a different placeholder, such as ``%s`` or ``:1``.) For
+example::
 
    # Never do this -- insecure!
    symbol = 'IBM'
@@ -92,11 +93,12 @@ This example uses the iterator form::
 .. seealso::
 
    http://www.pysqlite.org
-      The pysqlite web page.
+      The pysqlite web page -- sqlite3 is developed externally under the name
+      "pysqlite".
 
    http://www.sqlite.org
-      The SQLite web page; the documentation describes the syntax and the available
-      data types for the supported SQL dialect.
+      The SQLite web page; the documentation describes the syntax and the
+      available data types for the supported SQL dialect.
 
    :pep:`249` - Database API Specification 2.0
       PEP written by Marc-André Lemburg.
@@ -223,8 +225,8 @@ Connection Objects
 
 .. attribute:: Connection.isolation_level
 
-   Get or set the current isolation level. :const:`None` for autocommit mode or one of
-   "DEFERRED", "IMMEDIATE" or "EXLUSIVE". See section
+   Get or set the current isolation level. :const:`None` for autocommit mode or
+   one of "DEFERRED", "IMMEDIATE" or "EXCLUSIVE". See section
    :ref:`sqlite3-controlling-transactions` for a more detailed explanation.
 
 
@@ -244,7 +246,7 @@ Connection Objects
 
 .. method:: Connection.rollback()
 
-   This method rolls back any changes to the database since the last call to 
+   This method rolls back any changes to the database since the last call to
    :meth:`commit`.
 
 .. method:: Connection.close()
@@ -487,29 +489,29 @@ Cursor Objects
    .. literalinclude:: ../includes/sqlite3/executescript.py
 
 
-.. method:: Cursor.fetchone() 
-          
+.. method:: Cursor.fetchone()
+
    Fetches the next row of a query result set, returning a single sequence,
    or :const:`None` when no more data is available.
 
 
 .. method:: Cursor.fetchmany([size=cursor.arraysize])
-          
+
    Fetches the next set of rows of a query result, returning a list.  An empty
    list is returned when no more rows are available.
-   
+
    The number of rows to fetch per call is specified by the *size* parameter.
    If it is not given, the cursor's arraysize determines the number of rows
    to be fetched. The method should try to fetch as many rows as indicated by
    the size parameter. If this is not possible due to the specified number of
    rows not being available, fewer rows may be returned.
-   
+
    Note there are performance considerations involved with the *size* parameter.
    For optimal performance, it is usually best to use the arraysize attribute.
    If the *size* parameter is used, then it is best for it to retain the same
    value from one :meth:`fetchmany` call to the next.
-            
-.. method:: Cursor.fetchall() 
+
+.. method:: Cursor.fetchall()
 
    Fetches all (remaining) rows of a query result, returning a list.  Note that
    the cursor's arraysize attribute can affect the performance of this operation.
@@ -546,8 +548,8 @@ Cursor Objects
 
    This read-only attribute provides the column names of the last query. To
    remain compatible with the Python DB API, it returns a 7-tuple for each
-   column where the last six items of each tuple are :const:`None`. 
-   
+   column where the last six items of each tuple are :const:`None`.
+
    It is set for ``SELECT`` statements without any matching rows as well.
 
 .. _sqlite3-row-objects:
@@ -558,7 +560,7 @@ Row Objects
 .. class:: Row
 
    A :class:`Row` instance serves as a highly optimized
-   :attr:`~Connection.row_factory` for :class:`Connection` objects. 
+   :attr:`~Connection.row_factory` for :class:`Connection` objects.
    It tries to mimic a tuple in most of its features.
 
    It supports mapping access by column name and index, iteration,
@@ -566,7 +568,7 @@ Row Objects
 
    If two :class:`Row` objects have exactly the same columns and their
    members are equal, they compare equal.
-   
+
    .. versionchanged:: 2.6
       Added iteration and equality (hashability).
 
@@ -793,7 +795,7 @@ Controlling Transactions
 ------------------------
 
 By default, the :mod:`sqlite3` module opens transactions implicitly before a
-Data Modification Language (DML)  statement (i.e. 
+Data Modification Language (DML)  statement (i.e.
 ``INSERT``/``UPDATE``/``DELETE``/``REPLACE``), and commits transactions
 implicitly before a non-DML, non-query statement (i. e.
 anything other than ``SELECT`` or the aforementioned).
@@ -802,10 +804,10 @@ So if you are within a transaction and issue a command like ``CREATE TABLE
 ...``, ``VACUUM``, ``PRAGMA``, the :mod:`sqlite3` module will commit implicitly
 before executing that command. There are two reasons for doing that. The first
 is that some of these commands don't work within transactions. The other reason
-is that pysqlite needs to keep track of the transaction state (if a transaction
+is that sqlite3 needs to keep track of the transaction state (if a transaction
 is active or not).
 
-You can control which kind of ``BEGIN`` statements pysqlite implicitly executes
+You can control which kind of ``BEGIN`` statements sqlite3 implicitly executes
 (or none at all) via the *isolation_level* parameter to the :func:`connect`
 call, or via the :attr:`isolation_level` property of connections.
 
@@ -817,8 +819,8 @@ statement, or set it to one of SQLite's supported isolation levels: "DEFERRED",
 
 
 
-Using pysqlite efficiently
---------------------------
+Using :mod:`sqlite3` efficiently
+--------------------------------
 
 
 Using shortcut methods

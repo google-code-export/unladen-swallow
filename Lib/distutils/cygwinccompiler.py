@@ -47,7 +47,7 @@ cygwin in no-cygwin mode).
 
 # This module should be kept compatible with Python 2.1.
 
-__revision__ = "$Id: cygwinccompiler.py 65834 2008-08-18 19:23:47Z amaury.forgeotdarc $"
+__revision__ = "$Id: cygwinccompiler.py 73349 2009-06-11 09:17:19Z tarek.ziade $"
 
 import os,sys,copy
 from distutils.ccompiler import gen_preprocess_options, gen_lib_options
@@ -76,7 +76,7 @@ def get_msvcr():
             # VS2008 / MSVC 9.0
             return ['msvcr90']
         else:
-            raise ValueError("Unknown MS Compiler version %i " % msc_Ver)
+            raise ValueError("Unknown MS Compiler version %s " % msc_ver)
 
 
 class CygwinCCompiler (UnixCCompiler):

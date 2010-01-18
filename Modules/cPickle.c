@@ -16,6 +16,14 @@ PyDoc_STRVAR(cPickle_module_documentation,
 #define HIGHEST_PROTOCOL 2
 
 /*
+ * Note: The UNICODE macro controls the TCHAR meaning of the win32 API. Since
+ * all headers have already been included here, we can safely redefine it.
+ */
+#ifdef UNICODE
+#  undef UNICODE
+#endif
+
+/*
  * Pickle opcodes.  These must be kept in synch with pickle.py.  Extensive
  * docs are in pickletools.py.
  */
@@ -1578,41 +1586,90 @@ save_string(Picklerobject *self, PyObject *args, int doput)
 /* A copy of PyUnicode_EncodeRawUnicodeEscape() that also translates
    backslash and newline characters to \uXXXX escapes. */
 static PyObject *
-modified_EncodeRawUnicodeEscape(const Py_UNICODE *s, int size)
+modified_EncodeRawUnicodeEscape(const Py_UNICODE *s, Py_ssize_t size)
 {
-	PyObject *repr;
-	char *p;
-	char *q;
+    PyObject *repr;
+    char *p;
+    char *q;
 
-	static const char *hexdigit = "0123456789ABCDEF";
+    static const char *hexdigit = "0123456789abcdef";
+#ifdef Py_UNICODE_WIDE
+    const Py_ssize_t expandsize = 10;
+#else
+    const Py_ssize_t expandsize = 6;
+#endif
 
-	repr = PyString_FromStringAndSize(NULL, 6 * size);
-	if (repr == NULL)
-		return NULL;
-	if (size == 0)
-		return repr;
+    if (size > PY_SSIZE_T_MAX / expandsize)
+        return PyErr_NoMemory();
 
-	p = q = PyString_AS_STRING(repr);
-	while (size-- > 0) {
-		Py_UNICODE ch = *s++;
-		/* Map 16-bit characters to '\uxxxx' */
-		if (ch >= 256 || ch == '\\' || ch == '\n') {
-			*p++ = '\\';
-			*p++ = 'u';
-			*p++ = hexdigit[(ch >> 12) & 0xf];
-			*p++ = hexdigit[(ch >> 8) & 0xf];
-			*p++ = hexdigit[(ch >> 4) & 0xf];
-			*p++ = hexdigit[ch & 15];
-		}
-		/* Copy everything else as-is */
-		else
-			*p++ = (char) ch;
-	}
-	*p = '\0';
-	_PyString_Resize(&repr, p - q);
+    repr = PyString_FromStringAndSize(NULL, expandsize * size);
+    if (repr == NULL)
+        return NULL;
+    if (size == 0)
 	return repr;
-}
 
+    p = q = PyString_AS_STRING(repr);
+    while (size-- > 0) {
+        Py_UNICODE ch = *s++;
+#ifdef Py_UNICODE_WIDE
+	/* Map 32-bit characters to '\Uxxxxxxxx' */
+	if (ch >= 0x10000) {
+            *p++ = '\\';
+            *p++ = 'U';
+            *p++ = hexdigit[(ch >> 28) & 0xf];
+            *p++ = hexdigit[(ch >> 24) & 0xf];
+            *p++ = hexdigit[(ch >> 20) & 0xf];
+            *p++ = hexdigit[(ch >> 16) & 0xf];
+            *p++ = hexdigit[(ch >> 12) & 0xf];
+            *p++ = hexdigit[(ch >> 8) & 0xf];
+            *p++ = hexdigit[(ch >> 4) & 0xf];
+            *p++ = hexdigit[ch & 15];
+        }
+        else
+#else
+	/* Map UTF-16 surrogate pairs to '\U00xxxxxx' */
+	if (ch >= 0xD800 && ch < 0xDC00) {
+	    Py_UNICODE ch2;
+	    Py_UCS4 ucs;
+
+	    ch2 = *s++;
+	    size--;
+	    if (ch2 >= 0xDC00 && ch2 <= 0xDFFF) {
+		ucs = (((ch & 0x03FF) << 10) | (ch2 & 0x03FF)) + 0x00010000;
+		*p++ = '\\';
+		*p++ = 'U';
+		*p++ = hexdigit[(ucs >> 28) & 0xf];
+		*p++ = hexdigit[(ucs >> 24) & 0xf];
+		*p++ = hexdigit[(ucs >> 20) & 0xf];
+		*p++ = hexdigit[(ucs >> 16) & 0xf];
+		*p++ = hexdigit[(ucs >> 12) & 0xf];
+		*p++ = hexdigit[(ucs >> 8) & 0xf];
+		*p++ = hexdigit[(ucs >> 4) & 0xf];
+		*p++ = hexdigit[ucs & 0xf];
+		continue;
+	    }
+	    /* Fall through: isolated surrogates are copied as-is */
+	    s--;
+	    size++;
+	}
+#endif
+	/* Map 16-bit characters to '\uxxxx' */
+	if (ch >= 256 || ch == '\\' || ch == '\n') {
+            *p++ = '\\';
+            *p++ = 'u';
+            *p++ = hexdigit[(ch >> 12) & 0xf];
+            *p++ = hexdigit[(ch >> 8) & 0xf];
+            *p++ = hexdigit[(ch >> 4) & 0xf];
+            *p++ = hexdigit[ch & 15];
+        }
+	/* Copy everything else as-is */
+	else
+            *p++ = (char) ch;
+    }
+    *p = '\0';
+    _PyString_Resize(&repr, p - q);
+    return repr;
+}
 
 static int
 save_unicode(Picklerobject *self, PyObject *args, int doput)
@@ -3903,7 +3960,8 @@ load_float(Unpicklerobject *self)
 	errno = 0;
 	d = PyOS_ascii_strtod(s, &endptr);
 
-	if (errno || (endptr[0] != '\n') || (endptr[1] != '\0')) {
+	if ((errno == ERANGE && !(fabs(d) <= 1.0)) ||
+	    (endptr[0] != '\n') || (endptr[1] != '\0')) {
 		PyErr_SetString(PyExc_ValueError,
 				"could not convert string to float");
 		goto finally;
@@ -4453,25 +4511,24 @@ load_binpersid(Unpicklerobject *self)
 static int
 load_pop(Unpicklerobject *self)
 {
-	int len;
-
-	if (!( (len=self->stack->length) > 0 ))  return stackUnderflow();
+	int len = self->stack->length;
 
 	/* Note that we split the (pickle.py) stack into two stacks,
 	   an object stack and a mark stack. We have to be clever and
 	   pop the right one. We do this by looking at the top of the
-	   mark stack.
+	   mark stack first, and only signalling a stack underflow if
+	   the object stack is empty and the mark stack doesn't match
+	   our expectations.
 	*/
-
-	if ((self->num_marks > 0) &&
-	    (self->marks[self->num_marks - 1] == len))
+	if (self->num_marks > 0 && self->marks[self->num_marks - 1] == len) {
 		self->num_marks--;
-	else {
+	} else if (len >= 0) {
 		len--;
 		Py_DECREF(self->stack->data[len]);
-		self->stack->length=len;
+		self->stack->length = len;
+	} else {
+		return stackUnderflow();
 	}
-
 	return 0;
 }
 

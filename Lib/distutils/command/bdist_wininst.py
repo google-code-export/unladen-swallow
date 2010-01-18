@@ -5,7 +5,7 @@ exe-program."""
 
 # This module should be kept compatible with Python 2.1.
 
-__revision__ = "$Id: bdist_wininst.py 63755 2008-05-28 01:54:55Z mark.hammond $"
+__revision__ = "$Id: bdist_wininst.py 71422 2009-04-09 22:48:19Z tarek.ziade $"
 
 import sys, os, string
 from distutils.core import Command
@@ -344,10 +344,15 @@ class bdist_wininst (Command):
         directory = os.path.dirname(__file__)
         # we must use a wininst-x.y.exe built with the same C compiler
         # used for python.  XXX What about mingw, borland, and so on?
-        if self.plat_name == 'win32':
-            sfix = ''
+
+        # if plat_name starts with "win" but is not "win32"
+        # we want to strip "win" and leave the rest (e.g. -amd64)
+        # for all other cases, we don't want any suffix
+        if self.plat_name != 'win32' and self.plat_name[:3] == 'win':
+            sfix = self.plat_name[3:]
         else:
-            sfix = self.plat_name[3:] # strip 'win' - leaves eg '-amd64'
+            sfix = ''
+
         filename = os.path.join(directory, "wininst-%.1f%s.exe" % (bv, sfix))
         return open(filename, "rb").read()
 # class bdist_wininst

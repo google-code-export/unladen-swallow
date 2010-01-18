@@ -513,7 +513,7 @@ _PyLong_FromByteArray(const unsigned char* bytes, size_t n,
 			/* Because we're going LSB to MSB, thisbyte is
 			   more significant than what's already in accum,
 			   so needs to be prepended to accum. */
-			accum |= thisbyte << accumbits;
+			accum |= (twodigits)thisbyte << accumbits;
 			accumbits += 8;
 			if (accumbits >= PyLong_SHIFT) {
 				/* There's enough to fill a Python digit. */
@@ -542,12 +542,12 @@ _PyLong_AsByteArray(PyLongObject* v,
 		    unsigned char* bytes, size_t n,
 		    int little_endian, int is_signed)
 {
-	int i;			/* index into v->ob_digit */
+	Py_ssize_t i;		/* index into v->ob_digit */
 	Py_ssize_t ndigits;		/* |v->ob_size| */
 	twodigits accum;	/* sliding register */
 	unsigned int accumbits; /* # bits in accum */
 	int do_twos_comp;	/* store 2's-comp?  is_signed and v < 0 */
-	twodigits carry;	/* for computing 2's-comp */
+	digit carry;		/* for computing 2's-comp */
 	size_t j;		/* # bytes filled */
 	unsigned char* p;	/* pointer to next byte in bytes */
 	int pincr;		/* direction to move p */
@@ -587,7 +587,7 @@ _PyLong_AsByteArray(PyLongObject* v,
 	accumbits = 0;
 	carry = do_twos_comp ? 1 : 0;
 	for (i = 0; i < ndigits; ++i) {
-		twodigits thisdigit = v->ob_digit[i];
+		digit thisdigit = v->ob_digit[i];
 		if (do_twos_comp) {
 			thisdigit = (thisdigit ^ PyLong_MASK) + carry;
 			carry = thisdigit >> PyLong_SHIFT;
@@ -596,26 +596,23 @@ _PyLong_AsByteArray(PyLongObject* v,
 		/* Because we're going LSB to MSB, thisdigit is more
 		   significant than what's already in accum, so needs to be
 		   prepended to accum. */
-		accum |= thisdigit << accumbits;
-		accumbits += PyLong_SHIFT;
+		accum |= (twodigits)thisdigit << accumbits;
 
 		/* The most-significant digit may be (probably is) at least
 		   partly empty. */
 		if (i == ndigits - 1) {
 			/* Count # of sign bits -- they needn't be stored,
 			 * although for signed conversion we need later to
-			 * make sure at least one sign bit gets stored.
-			 * First shift conceptual sign bit to real sign bit.
-			 */
-			stwodigits s = (stwodigits)(thisdigit <<
-				(8*sizeof(stwodigits) - PyLong_SHIFT));
-			unsigned int nsignbits = 0;
-			while ((s < 0) == do_twos_comp && nsignbits < PyLong_SHIFT) {
-				++nsignbits;
-				s <<= 1;
+			 * make sure at least one sign bit gets stored. */
+			digit s = do_twos_comp ? thisdigit ^ PyLong_MASK :
+				                thisdigit;
+			while (s != 0) {
+				s >>= 1;
+				accumbits++;
 			}
-			accumbits -= nsignbits;
 		}
+		else
+			accumbits += PyLong_SHIFT;
 
 		/* Store as many bytes as possible. */
 		while (accumbits >= 8) {
@@ -1079,7 +1076,7 @@ convert_binop(PyObject *v, PyObject *w, PyLongObject **a, PyLongObject **b) {
 static digit
 v_iadd(digit *x, Py_ssize_t m, digit *y, Py_ssize_t n)
 {
-	int i;
+	Py_ssize_t i;
 	digit carry = 0;
 
 	assert(m >= n);
@@ -1105,7 +1102,7 @@ v_iadd(digit *x, Py_ssize_t m, digit *y, Py_ssize_t n)
 static digit
 v_isub(digit *x, Py_ssize_t m, digit *y, Py_ssize_t n)
 {
-	int i;
+	Py_ssize_t i;
 	digit borrow = 0;
 
 	assert(m >= n);
@@ -1171,7 +1168,7 @@ inplace_divrem1(digit *pout, digit *pin, Py_ssize_t size, digit n)
 		digit hi;
 		rem = (rem << PyLong_SHIFT) + *--pin;
 		*--pout = hi = (digit)(rem / n);
-		rem -= hi * n;
+		rem -= (twodigits)hi * n;
 	}
 	return (digit)rem;
 }
@@ -1204,7 +1201,7 @@ _PyLong_Format(PyObject *aa, int base, int addL, int newstyle)
 {
 	register PyLongObject *a = (PyLongObject *)aa;
 	PyStringObject *str;
-	Py_ssize_t i, j, sz;
+	Py_ssize_t i, sz;
 	Py_ssize_t size_a;
 	char *p;
 	int bits;
@@ -1225,20 +1222,21 @@ _PyLong_Format(PyObject *aa, int base, int addL, int newstyle)
 		i >>= 1;
 	}
 	i = 5 + (addL ? 1 : 0);
-	j = size_a*PyLong_SHIFT + bits-1;
-	sz = i + j / bits;
-	if (j / PyLong_SHIFT < size_a || sz < i) {
+	/* ensure we don't get signed overflow in sz calculation */
+	if (size_a > (PY_SSIZE_T_MAX - i) / PyLong_SHIFT) {
 		PyErr_SetString(PyExc_OverflowError,
 				"long is too large to format");
 		return NULL;
 	}
+	sz = i + 1 + (size_a * PyLong_SHIFT - 1) / bits;
+	assert(sz >= 0);
 	str = (PyStringObject *) PyString_FromStringAndSize((char *)0, sz);
 	if (str == NULL)
 		return NULL;
 	p = PyString_AS_STRING(str) + sz;
 	*p = '\0';
-        if (addL)
-                *--p = 'L';
+	if (addL)
+		*--p = 'L';
 	if (a->ob_size < 0)
 		sign = '-';
 
@@ -1266,7 +1264,7 @@ _PyLong_Format(PyObject *aa, int base, int addL, int newstyle)
 				accumbits -= basebits;
 				accum >>= basebits;
 			} while (i < size_a-1 ? accumbits >= basebits :
-					 	accum > 0);
+						accum > 0);
 		}
 	}
 	else {
@@ -1281,7 +1279,8 @@ _PyLong_Format(PyObject *aa, int base, int addL, int newstyle)
 		int power = 1;
 		for (;;) {
 			unsigned long newpow = powbase * (unsigned long)base;
-			if (newpow >> PyLong_SHIFT)  /* doesn't fit in a digit */
+			if (newpow >> PyLong_SHIFT)
+				/* doesn't fit in a digit */
 				break;
 			powbase = (digit)newpow;
 			++power;
@@ -1331,7 +1330,7 @@ _PyLong_Format(PyObject *aa, int base, int addL, int newstyle)
 		*--p = '0';
 	}
 	else if (base == 8) {
- 		if (newstyle) {
+		if (newstyle) {
 			*--p = 'o';
 			*--p = '0';
 		}
@@ -1412,7 +1411,6 @@ long_from_binary_base(char **str, int base)
 	for (bits_per_char = -1; n; ++bits_per_char)
 		n >>= 1;
 	/* n <- total # of bits needed, while setting p to end-of-string */
-	n = 0;
 	while (_PyLong_DigitValue[Py_CHARMASK(*p)] < base)
 		++p;
 	*str = p;
@@ -1436,11 +1434,11 @@ long_from_binary_base(char **str, int base)
 	while (--p >= start) {
 		int k = _PyLong_DigitValue[Py_CHARMASK(*p)];
 		assert(k >= 0 && k < base);
-		accum |= (twodigits)(k << bits_in_accum);
+		accum |= (twodigits)k << bits_in_accum;
 		bits_in_accum += bits_per_char;
 		if (bits_in_accum >= PyLong_SHIFT) {
 			*pdigit++ = (digit)(accum & PyLong_MASK);
-			assert(pdigit - z->ob_digit <= (int)n);
+			assert(pdigit - z->ob_digit <= n);
 			accum >>= PyLong_SHIFT;
 			bits_in_accum -= PyLong_SHIFT;
 			assert(bits_in_accum < PyLong_SHIFT);
@@ -1449,7 +1447,7 @@ long_from_binary_base(char **str, int base)
 	if (bits_in_accum) {
 		assert(bits_in_accum <= PyLong_SHIFT);
 		*pdigit++ = (digit)accum;
-		assert(pdigit - z->ob_digit <= (int)n);
+		assert(pdigit - z->ob_digit <= n);
 	}
 	while (pdigit - z->ob_digit < n)
 		*pdigit++ = 0;
@@ -1846,7 +1844,7 @@ x_divrem(PyLongObject *v1, PyLongObject *w1, PyLongObject **prem)
 		digit vj = (j >= size_v) ? 0 : v->ob_digit[j];
 		twodigits q;
 		stwodigits carry = 0;
-		int i;
+		Py_ssize_t i;
 
 		SIGCHECK({
 			Py_DECREF(a);
@@ -1874,7 +1872,7 @@ x_divrem(PyLongObject *v1, PyLongObject *w1, PyLongObject **prem)
 			carry += v->ob_digit[i+k] - z
 				+ ((twodigits)zz << PyLong_SHIFT);
 			v->ob_digit[i+k] = (digit)(carry & PyLong_MASK);
-			carry = Py_ARITHMETIC_RIGHT_SHIFT(PyLong_BASE_TWODIGITS_TYPE,
+			carry = Py_ARITHMETIC_RIGHT_SHIFT(BASE_TWODIGITS_TYPE,
 							  carry, PyLong_SHIFT);
 			carry -= zz;
 		}
@@ -1894,7 +1892,7 @@ x_divrem(PyLongObject *v1, PyLongObject *w1, PyLongObject **prem)
 				carry += v->ob_digit[i+k] + w->ob_digit[i];
 				v->ob_digit[i+k] = (digit)(carry & PyLong_MASK);
 				carry = Py_ARITHMETIC_RIGHT_SHIFT(
-						PyLong_BASE_TWODIGITS_TYPE,
+						BASE_TWODIGITS_TYPE,
 						carry, PyLong_SHIFT);
 			}
 		}
@@ -1965,7 +1963,7 @@ long_compare(PyLongObject *a, PyLongObject *b)
 static long
 long_hash(PyLongObject *v)
 {
-	long x;
+	unsigned long x;
 	Py_ssize_t i;
 	int sign;
 
@@ -1980,17 +1978,18 @@ long_hash(PyLongObject *v)
 		i = -(i);
 	}
 #define LONG_BIT_PyLong_SHIFT	(8*sizeof(long) - PyLong_SHIFT)
-	/* The following loop produces a C long x such that (unsigned long)x
-	   is congruent to the absolute value of v modulo ULONG_MAX.  The
+	/* The following loop produces a C unsigned long x such that x is
+	   congruent to the absolute value of v modulo ULONG_MAX.  The
 	   resulting x is nonzero if and only if v is. */
 	while (--i >= 0) {
 		/* Force a native long #-bits (32 or 64) circular shift */
-		x = ((x << PyLong_SHIFT) & ~PyLong_MASK) | ((x >> LONG_BIT_PyLong_SHIFT) & PyLong_MASK);
+		x = ((x << PyLong_SHIFT) & ~PyLong_MASK) |
+			((x >> LONG_BIT_PyLong_SHIFT) & PyLong_MASK);
 		x += v->ob_digit[i];
-		/* If the addition above overflowed (thinking of x as
-		   unsigned), we compensate by incrementing.  This preserves
-		   the value modulo ULONG_MAX. */
-		if ((unsigned long)x < v->ob_digit[i])
+		/* If the addition above overflowed we compensate by
+		   incrementing.  This preserves the value modulo
+		   ULONG_MAX. */
+		if (x < v->ob_digit[i])
 			x++;
 	}
 #undef LONG_BIT_PyLong_SHIFT
@@ -2008,7 +2007,7 @@ x_add(PyLongObject *a, PyLongObject *b)
 {
 	Py_ssize_t size_a = ABS(Py_SIZE(a)), size_b = ABS(Py_SIZE(b));
 	PyLongObject *z;
-	int i;
+	Py_ssize_t i;
 	digit carry = 0;
 
 	/* Ensure a is the larger of the two: */

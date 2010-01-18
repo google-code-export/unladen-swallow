@@ -54,7 +54,7 @@ Long Integer Objects
    Return a new :ctype:`PyLongObject` object from a C :ctype:`Py_ssize_t`, or
    *NULL* on failure.
 
-   .. versionadded:: 2.5
+   .. versionadded:: 2.6
 
 
 .. cfunction:: PyObject* PyLong_FromSize_t(size_t v)
@@ -62,7 +62,7 @@ Long Integer Objects
    Return a new :ctype:`PyLongObject` object from a C :ctype:`size_t`, or
    *NULL* on failure.
 
-   .. versionadded:: 2.5
+   .. versionadded:: 2.6
 
 
 .. cfunction:: PyObject* PyLong_FromLongLong(PY_LONG_LONG v)
@@ -106,6 +106,10 @@ Long Integer Objects
 
    .. versionadded:: 1.6
 
+   .. versionchanged:: 2.5
+      This function used an :ctype:`int` for *length*. This might require
+      changes in your code for properly supporting 64-bit systems.
+
 
 .. cfunction:: PyObject* PyLong_FromVoidPtr(void *p)
 
@@ -126,7 +130,7 @@ Long Integer Objects
 
    Return a C :ctype:`long` representation of the contents of *pylong*.  If
    *pylong* is greater than :const:`LONG_MAX`, an :exc:`OverflowError` is raised
-   and ``-1`` will be returned. 
+   and ``-1`` will be returned.
 
 
 .. cfunction:: Py_ssize_t PyLong_AsSsize_t(PyObject *pylong)
@@ -139,7 +143,7 @@ Long Integer Objects
    *pylong* is greater than :const:`PY_SSIZE_T_MAX`, an :exc:`OverflowError` is raised
    and ``-1`` will be returned.
 
-   .. versionadded:: 2.5
+   .. versionadded:: 2.6
 
 
 .. cfunction:: unsigned long PyLong_AsUnsignedLong(PyObject *pylong)

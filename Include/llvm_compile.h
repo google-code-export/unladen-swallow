@@ -8,8 +8,9 @@
 // Python exceptions are not thread safe, so we wrap them up in this structure
 // and define functions similar to the standard exception raising functions
 // that take this wrapper, so that we have a place to put exceptions in the
-// LLVM compilation thread.
-class PyLlvmError {
+// LLVM compilation thread.  Declare this a struct to once again make both C
+// and MSVC++ happy.
+struct PyLlvmError {
 public:
     // Initialize a PyLlvm_Error struct to NULL.
     PyLlvmError() {
@@ -68,9 +69,11 @@ private:
 extern "C" {
 #endif /* __cplusplus */
 
+struct PyLlvmError;
+
 PyAPI_FUNC(_LlvmFunction *) _PyCode_ToLlvmIr(PyCodeObject *code,
-                                             PyLlvmError *err,
-                                             PyGlobalLlvmData *llvm_data);
+                                             struct PyLlvmError *err,
+                                             struct PyGlobalLlvmData *llvm_data);
 
 #ifdef __cplusplus
 }

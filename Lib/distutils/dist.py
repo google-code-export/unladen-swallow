@@ -6,7 +6,7 @@ being built/installed/distributed.
 
 # This module should be kept compatible with Python 2.1.
 
-__revision__ = "$Id: dist.py 66181 2008-09-03 11:13:56Z marc-andre.lemburg $"
+__revision__ = "$Id: dist.py 68035 2008-12-29 22:36:22Z tarek.ziade $"
 
 import sys, os, string, re
 from types import *
@@ -235,7 +235,7 @@ Common commands: (see '--help-commands' for more)
             # command options will override any supplied redundantly
             # through the general options dictionary.
             options = attrs.get('options')
-            if options:
+            if options is not None:
                 del attrs['options']
                 for (command, cmd_options) in options.items():
                     opt_dict = self.get_option_dict(command)

@@ -11,9 +11,9 @@
 
 .. note::
 
-   The :mod:`ConfigParser` module has been renamed to `configparser` in Python
-   3.0.  The :term:`2to3` tool will automatically adapt imports when converting
-   your sources to 3.0.
+   The :mod:`ConfigParser` module has been renamed to :mod:`configparser` in
+   Python 3.0.  The :term:`2to3` tool will automatically adapt imports when
+   converting your sources to 3.0.
 
 .. index::
    pair: .ini; file
@@ -27,10 +27,10 @@ structure similar to what you would find on Microsoft Windows INI files.  You
 can use this to write Python programs which can be customized by end users
 easily.
 
-.. warning::
+.. note::
 
-   This library does *not* interpret or write the value-type prefixes used in the
-   Windows Registry extended version of INI syntax.
+   This library does *not* interpret or write the value-type prefixes used in
+   the Windows Registry extended version of INI syntax.
 
 The configuration file consists of sections, led by a ``[section]`` header and
 followed by ``name: value`` entries, with continuations in the style of
@@ -76,7 +76,7 @@ write-back, as will be the keys within each section.
       *dict_type* was added.
 
 
-.. class:: ConfigParser([defaults])
+.. class:: ConfigParser([defaults[, dict_type]])
 
    Derived class of :class:`RawConfigParser` that implements the magical
    interpolation feature and adds optional arguments to the :meth:`get` and
@@ -92,7 +92,7 @@ write-back, as will be the keys within each section.
    equivalent.
 
 
-.. class:: SafeConfigParser([defaults])
+.. class:: SafeConfigParser([defaults[, dict_type]])
 
    Derived class of :class:`ConfigParser` that implements a more-sane variant of
    the magical interpolation feature.  This implementation is more predictable as

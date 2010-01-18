@@ -417,12 +417,12 @@ always available.
    does not have to hold true for third-party extensions as it is implementation
    specific.
 
-   The *default* argument allows to define a value which will be returned
-   if the object type does not provide means to retrieve the size and would
-   cause a `TypeError`. 
+   If given, *default* will be returned if the object does not provide means to
+   retrieve the size.  Otherwise a `TypeError` will be raised.
 
-   func:`getsizeof` calls the object's __sizeof__ method and adds an additional
-   garbage collector overhead if the object is managed by the garbage collector.
+   :func:`getsizeof` calls the object's ``__sizeof__`` method and adds an
+   additional garbage collector overhead if the object is managed by the garbage
+   collector.
 
    .. versionadded:: 2.6
 
@@ -552,6 +552,22 @@ always available.
    characters are stored as UCS-2 or UCS-4.
 
 
+.. data:: meta_path
+
+    A list of :term:`finder` objects that have their :meth:`find_module`
+    methods called to see if one of the objects can find the module to be
+    imported. The :meth:`find_module` method is called at least with the
+    absolute name of the module being imported. If the module to be imported is
+    contained in package then the parent package's :attr:`__path__` attribute
+    is passed in as a second argument. The method returns :keyword:`None` if
+    the module cannot be found, else returns a :term:`loader`.
+
+    :data:`sys.meta_path` is searched before any implicit default finders or
+    :data:`sys.path`.
+
+    See :pep:`302` for the original specification.
+
+
 .. data:: modules
 
    .. index:: builtin: reload
@@ -583,6 +599,31 @@ always available.
    .. versionchanged:: 2.3
       Unicode strings are no longer ignored.
 
+   .. seealso::
+      Module :mod:`site` This describes how to use .pth files to extend
+      :data:`sys.path`.
+
+
+.. data:: path_hooks
+
+    A list of callables that take a path argument to try to create a
+    :term:`finder` for the path. If a finder can be created, it is to be
+    returned by the callable, else raise :exc:`ImportError`.
+
+    Originally specified in :pep:`302`.
+
+
+.. data:: path_importer_cache
+
+    A dictionary acting as a cache for :term:`finder` objects. The keys are
+    paths that have been passed to :data:`sys.path_hooks` and the values are
+    the finders that are found. If a path is a valid file system path but no
+    explicit finder is found on :data:`sys.path_hooks` then :keyword:`None` is
+    stored to represent the implicit default finder should be used. If the path
+    is not an existing path then :class:`imp.NullImporter` is set.
+
+    Originally specified in :pep:`302`.
+
 
 .. data:: platform
 
@@ -600,7 +641,6 @@ always available.
    Windows          ``'win32'``
    Windows/Cygwin   ``'cygwin'``
    Mac OS X         ``'darwin'``
-   Mac OS 9         ``'mac'``
    OS/2             ``'os2'``
    OS/2 EMX         ``'os2emx'``
    RiscOS           ``'riscos'``
@@ -638,7 +678,9 @@ always available.
 .. data:: py3kwarning
 
    Bool containing the status of the Python 3.0 warning flag. It's ``True``
-   when Python is started with the -3 option.
+   when Python is started with the -3 option.  (This should be considered
+   read-only; setting it to a different value doesn't have an effect on
+   Python 3.0 warnings.)
 
    .. versionadded:: 2.6
 
@@ -738,8 +780,7 @@ always available.
       single: debugger
 
    Set the system's trace function, which allows you to implement a Python
-   source code debugger in Python.  See section :ref:`debugger-hooks` in the
-   chapter on the Python debugger.  The function is thread-specific; for a
+   source code debugger in Python.  The function is thread-specific; for a
    debugger to support multiple threads, it must be registered using
    :func:`settrace` for each thread being debugged.
 
@@ -828,7 +869,7 @@ always available.
    prompts of :func:`input` and :func:`raw_input`. The interpreter's own prompts
    and (almost all of) its error messages go to ``stderr``.  ``stdout`` and
    ``stderr`` needn't be built-in file objects: any object is acceptable as long
-   as it has a :meth:`write` method that takes a string argument.  (Changing these 
+   as it has a :meth:`write` method that takes a string argument.  (Changing these
    objects doesn't affect the standard I/O streams of processes executed by
    :func:`os.popen`, :func:`os.system` or the :func:`exec\*` family of functions in
    the :mod:`os` module.)
@@ -839,9 +880,14 @@ always available.
           __stderr__
 
    These objects contain the original values of ``stdin``, ``stderr`` and
-   ``stdout`` at the start of the program.  They are used during finalization, and
-   could be useful to restore the actual files to known working file objects in
-   case they have been overwritten with a broken object.
+   ``stdout`` at the start of the program.  They are used during finalization,
+   and could be useful to print to the actual standard stream no matter if the
+   ``sys.std*`` object has been redirected.
+
+   It can also be used to restore the actual files to known working file objects
+   in case they have been overwritten with a broken object.  However, the
+   preferred way to do this is to explicitly save the previous stream before
+   replacing it, and restore the saved object.
 
 
 .. data:: tracebacklimit
@@ -898,10 +944,3 @@ always available.
    first three characters of :const:`version`.  It is provided in the :mod:`sys`
    module for informational purposes; modifying this value has no effect on the
    registry keys used by Python. Availability: Windows.
-
-
-.. seealso::
-
-   Module :mod:`site`
-      This describes how to use .pth files to extend ``sys.path``.
-

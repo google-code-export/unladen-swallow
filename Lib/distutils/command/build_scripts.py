@@ -4,7 +4,7 @@ Implements the Distutils 'build_scripts' command."""
 
 # This module should be kept compatible with Python 2.1.
 
-__revision__ = "$Id: build_scripts.py 61000 2008-02-23 17:40:11Z christian.heimes $"
+__revision__ = "$Id: build_scripts.py 69599 2009-02-13 23:02:44Z tarek.ziade $"
 
 import os, re
 from stat import ST_MODE
@@ -104,8 +104,8 @@ class build_scripts (Command):
                         outf.write("#!%s%s\n" %
                                    (os.path.join(
                             sysconfig.get_config_var("BINDIR"),
-                            "python" + sysconfig.get_config_var("VERSION")
-                                     + sysconfig.get_config_var("EXE")),
+                           "python%s%s" % (sysconfig.get_config_var("VERSION"),
+                                           sysconfig.get_config_var("EXE"))),
                                     post_interp))
                     outf.writelines(f.readlines())
                     outf.close()

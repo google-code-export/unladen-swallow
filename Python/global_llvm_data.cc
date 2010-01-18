@@ -19,11 +19,13 @@
 #include "llvm/Constants.h"
 #include "llvm/DerivedTypes.h"
 #include "llvm/ExecutionEngine/JIT.h"
+#include "llvm/ExecutionEngine/JITEventListener.h"
 #include "llvm/Function.h"
 #include "llvm/GlobalVariable.h"
 #include "llvm/Module.h"
 #include "llvm/ModuleProvider.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/ValueHandle.h"
@@ -125,6 +127,8 @@ PyGlobalLlvmData::PyGlobalLlvmData()
     if (engine_ == NULL) {
         Py_FatalError(error.c_str());
     }
+
+    engine_->RegisterJITEventListener(llvm::createOProfileJITEventListener());
 
     // When we ask to JIT a function, we should also JIT other
     // functions that function depends on.  This lets us JIT in a
@@ -365,6 +369,12 @@ PyGlobalLlvmData::CollectUnusedGlobals()
 #endif
 }
 
+void
+PyGlobalLlvmData_CollectUnusedGlobals()
+{
+    PyGlobalLlvmData::Get()->CollectUnusedGlobals();
+}
+
 llvm::Value *
 PyGlobalLlvmData::GetGlobalStringPtr(const std::string &value)
 {
@@ -416,4 +426,16 @@ _PyLlvm_Fini()
     delete global_llvm_data;
     global_llvm_data = NULL;
     llvm::llvm_shutdown();
+}
+
+int
+PyLlvm_SetDebug(int on)
+{
+#ifdef NDEBUG
+    if (on)
+        return 0;
+#else
+    llvm::DebugFlag = on;
+#endif
+    return 1;
 }

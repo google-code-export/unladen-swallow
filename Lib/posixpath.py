@@ -216,7 +216,8 @@ def walk(top, func, arg):
     a filename pattern, or a mutable object designed to accumulate
     statistics.  Passing None for arg is common."""
     import warnings
-    warnings.warnpy3k("In 3.x, os.path.walk is removed in favor of os.walk.")
+    warnings.warnpy3k("In 3.x, os.path.walk is removed in favor of os.walk.",
+                      stacklevel=2)
     try:
         names = os.listdir(top)
     except os.error:
@@ -262,7 +263,7 @@ def expanduser(path):
         except KeyError:
             return path
         userhome = pwent.pw_dir
-    userhome = userhome.rstrip('/')
+    userhome = userhome.rstrip('/') or userhome
     return userhome + path[i:]
 
 

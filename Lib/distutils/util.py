@@ -4,7 +4,7 @@ Miscellaneous utility functions -- anything that doesn't fit into
 one of the other *util.py modules.
 """
 
-__revision__ = "$Id: util.py 63955 2008-06-05 12:58:24Z ronald.oussoren $"
+__revision__ = "$Id: util.py 74807 2009-09-15 19:14:37Z ronald.oussoren $"
 
 import sys, os, re
 
@@ -96,7 +96,11 @@ def get_platform ():
         if not macver:
             macver = cfgvars.get('MACOSX_DEPLOYMENT_TARGET')
 
-        if not macver:
+        if 1:
+            # Always calculate the release of the running machine,
+            # needed to determine if we can build fat binaries or not.
+
+            macrelease = macver
             # Get the system version. Reading this plist is a documented
             # way to get the system version (see the documentation for
             # the Gestalt Manager)
@@ -112,16 +116,18 @@ def get_platform ():
                         r'<string>(.*?)</string>', f.read())
                 f.close()
                 if m is not None:
-                    macver = '.'.join(m.group(1).split('.')[:2])
+                    macrelease = '.'.join(m.group(1).split('.')[:2])
                 # else: fall back to the default behaviour
+
+        if not macver:
+            macver = macrelease
 
         if macver:
             from distutils.sysconfig import get_config_vars
             release = macver
             osname = "macosx"
 
-
-            if (release + '.') >= '10.4.' and \
+            if (macrelease + '.') >= '10.4.' and \
                     '-arch' in get_config_vars().get('CFLAGS', '').strip():
                 # The universal build will build fat binaries, but not on
                 # systems before 10.4
@@ -130,9 +136,28 @@ def get_platform ():
                 # 'universal' instead of 'fat'.
 
                 machine = 'fat'
+                cflags = get_config_vars().get('CFLAGS')
 
-                if '-arch x86_64' in get_config_vars().get('CFLAGS'):
+                archs = re.findall('-arch\s+(\S+)', cflags)
+                archs.sort()
+                archs = tuple(archs)
+
+                if len(archs) == 1:
+                    machine = archs[0]
+                elif archs == ('i386', 'ppc'):
+                    machine = 'fat'
+                elif archs == ('i386', 'x86_64'):
+                    machine = 'intel'
+                elif archs == ('i386', 'ppc', 'x86_64'):
+                    machine = 'fat3'
+                elif archs == ('ppc64', 'x86_64'):
+                    machine = 'fat64'
+                elif archs == ('i386', 'ppc', 'ppc64', 'x86_64'):
                     machine = 'universal'
+                else:
+                    raise ValueError(
+                       "Don't know machine value for archs=%r"%(archs,))
+
 
             elif machine in ('PowerPC', 'Power_Macintosh'):
                 # Pick a sane name for the PPC architecture.

@@ -24,6 +24,10 @@
 #include <signal.h>
 #endif
 
+#ifdef MS_WINDOWS
+#include "malloc.h" /* for alloca */
+#endif
+
 #ifdef HAVE_LANGINFO_H
 #include <locale.h>
 #include <langinfo.h>
@@ -993,7 +997,7 @@ PyRun_SimpleFileExFlags(FILE *fp, const char *filename, int closeit,
 {
 	PyObject *m, *d, *v;
 	const char *ext;
-	int set_file_name = 0, ret;
+	int set_file_name = 0, ret, len;
 
 	m = PyImport_AddModule("__main__");
 	if (m == NULL)
@@ -1010,7 +1014,8 @@ PyRun_SimpleFileExFlags(FILE *fp, const char *filename, int closeit,
 		set_file_name = 1;
 		Py_DECREF(f);
 	}
-	ext = filename + strlen(filename) - 4;
+	len = strlen(filename);
+	ext = filename + len - (len > 4 ? 4 : 0);
 	if (maybe_pyc_file(fp, filename, ext, closeit)) {
 		/* Try to run a pyc file. First, re-open in binary */
 		if (closeit)
@@ -1729,10 +1734,24 @@ void
 Py_FatalError(const char *msg)
 {
 	fprintf(stderr, "Fatal Python error: %s\n", msg);
+	fflush(stderr); /* it helps in Windows debug build */
+
 #ifdef MS_WINDOWS
-	OutputDebugString("Fatal Python error: ");
-	OutputDebugString(msg);
-	OutputDebugString("\n");
+	{
+		size_t len = strlen(msg);
+		WCHAR* buffer;
+		size_t i;
+
+		/* Convert the message to wchar_t. This uses a simple one-to-one
+		conversion, assuming that the this error message actually uses ASCII
+		only. If this ceases to be true, we will have to convert. */
+		buffer = alloca( (len+1) * (sizeof *buffer));
+		for( i=0; i<=len; ++i)
+			buffer[i] = msg[i];
+		OutputDebugStringW(L"Fatal Python error: ");
+		OutputDebugStringW(buffer);
+		OutputDebugStringW(L"\n");
+	}
 #ifdef _DEBUG
 	DebugBreak();
 #endif

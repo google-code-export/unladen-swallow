@@ -336,7 +336,7 @@ Maildir, mbox, MH, Babyl, and MMDF.
       Return a list of the names of all folders.
 
 
-   .. method:: .et_folder(folder)
+   .. method:: get_folder(folder)
 
       Return a :class:`Maildir` instance representing the folder whose name is
       *folder*. A :exc:`NoSuchMailboxError` exception is raised if the folder
@@ -1686,7 +1686,7 @@ due to malformed messages in the mailbox::
                # that's better than losing a message completely.
                box.lock()
                box.add(message)
-               box.flush()         
+               box.flush()
                box.unlock()
 
                # Remove original message

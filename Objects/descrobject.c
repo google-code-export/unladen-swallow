@@ -456,7 +456,7 @@ static PyTypeObject PyClassMethodDescr_Type = {
 	0,					/* tp_descr_set */
 };
 
-static PyTypeObject PyMemberDescr_Type = {
+PyTypeObject PyMemberDescr_Type = {
 	PyVarObject_HEAD_INIT(&PyType_Type, 0)
 	"member_descriptor",
 	sizeof(PyMemberDescrObject),
@@ -493,7 +493,7 @@ static PyTypeObject PyMemberDescr_Type = {
 	(descrsetfunc)member_set,		/* tp_descr_set */
 };
 
-static PyTypeObject PyGetSetDescr_Type = {
+PyTypeObject PyGetSetDescr_Type = {
 	PyVarObject_HEAD_INIT(&PyType_Type, 0)
 	"getset_descriptor",
 	sizeof(PyGetSetDescrObject),
@@ -819,7 +819,7 @@ proxy_richcompare(proxyobject *v, PyObject *w, int op)
 	return PyObject_RichCompare(v->dict, w, op);
 }
 
-static PyTypeObject proxytype = {
+PyTypeObject PyDictProxy_Type = {
 	PyVarObject_HEAD_INIT(&PyType_Type, 0)
 	"dictproxy",				/* tp_name */
 	sizeof(proxyobject),			/* tp_basicsize */
@@ -862,7 +862,7 @@ PyDictProxy_New(PyObject *dict)
 {
 	proxyobject *pp;
 
-	pp = PyObject_GC_New(proxyobject, &proxytype);
+	pp = PyObject_GC_New(proxyobject, &PyDictProxy_Type);
 	if (pp != NULL) {
 		Py_INCREF(dict);
 		pp->dict = dict;
@@ -1212,7 +1212,6 @@ property_copy(PyObject *old, PyObject *get, PyObject *set, PyObject *del,
 		PyObject *doc)
 {
 	propertyobject *pold = (propertyobject *)old;
-	propertyobject *pnew = NULL;
 	PyObject *new, *type;
 
 	type = PyObject_Type(old);
@@ -1233,25 +1232,19 @@ property_copy(PyObject *old, PyObject *get, PyObject *set, PyObject *del,
 	}
 	if (doc == NULL || doc == Py_None) {
 		Py_XDECREF(doc);
-		doc = pold->prop_doc ? pold->prop_doc : Py_None;
+		if (pold->getter_doc && get != Py_None) {
+			/* make _init use __doc__ from getter */
+			doc = Py_None;
+		}
+		else {
+			doc = pold->prop_doc ? pold->prop_doc : Py_None;
+		}
 	}
-	
+
 	new =  PyObject_CallFunction(type, "OOOO", get, set, del, doc);
 	Py_DECREF(type);
 	if (new == NULL)
 		return NULL;
-	pnew = (propertyobject *)new;
-	
-	if (pold->getter_doc && get != Py_None) {
-		PyObject *get_doc = PyObject_GetAttrString(get, "__doc__");
-		if (get_doc != NULL) {
-			Py_XDECREF(pnew->prop_doc);
-			pnew->prop_doc = get_doc;  /* get_doc already INCREF'd by GetAttr */
-			pnew->getter_doc = 1;
-		} else {
-			PyErr_Clear();
-		}
-	}
 	return new;
 }
 
@@ -1288,8 +1281,21 @@ property_init(PyObject *self, PyObject *args, PyObject *kwds)
 	if ((doc == NULL || doc == Py_None) && get != NULL) {
 		PyObject *get_doc = PyObject_GetAttrString(get, "__doc__");
 		if (get_doc != NULL) {
-			Py_XDECREF(prop->prop_doc);
-			prop->prop_doc = get_doc;  /* get_doc already INCREF'd by GetAttr */
+			/* get_doc already INCREF'd by GetAttr */
+			if (Py_TYPE(self)==&PyProperty_Type) {
+				Py_XDECREF(prop->prop_doc);
+				prop->prop_doc = get_doc;
+			} else {
+				/* Put __doc__ in dict of the subclass instance instead,
+				otherwise it gets shadowed by class's __doc__. */
+				if (PyObject_SetAttrString(self, "__doc__", get_doc) != 0)
+				{
+					/* DECREF for props handled by _dealloc */
+					Py_DECREF(get_doc);
+					return -1;
+	                        }
+                                Py_DECREF(get_doc);
+			}
 			prop->getter_doc = 1;
 		} else {
 			PyErr_Clear();

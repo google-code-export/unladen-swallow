@@ -13,7 +13,7 @@ the "typical" Unix-style command-line C compiler:
   * link shared library handled by 'cc -shared'
 """
 
-__revision__ = "$Id: unixccompiler.py 65012 2008-07-16 13:24:06Z jesse.noller $"
+__revision__ = "$Id: unixccompiler.py 74729 2009-09-09 08:34:06Z tarek.ziade $"
 
 import os, sys
 from types import StringType, NoneType
@@ -284,7 +284,9 @@ class UnixCCompiler(CCompiler):
             # MacOSX's linker doesn't understand the -R flag at all
             return "-L" + dir
         elif sys.platform[:5] == "hp-ux":
-            return "+s -L" + dir
+            if "gcc" in compiler or "g++" in compiler:
+                return ["-Wl,+s", "-L" + dir]
+            return ["+s", "-L" + dir]
         elif sys.platform[:7] == "irix646" or sys.platform[:6] == "osf1V5":
             return ["-rpath", dir]
         elif "gcc" in compiler or "g++" in compiler:

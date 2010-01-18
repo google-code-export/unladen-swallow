@@ -53,36 +53,34 @@ ABC                        Inherits               Abstract Methods        Mixin 
 :class:`Hashable`                                 ``__hash__``
 :class:`Iterable`                                 ``__iter__``
 :class:`Iterator`          :class:`Iterable`      ``__next__``            ``__iter__``
-:class:`Sized`          			  ``__len__``
+:class:`Sized`                                    ``__len__``
 :class:`Callable`                                 ``__call__``
-                                                  
+
 :class:`Sequence`          :class:`Sized`,        ``__getitem__``         ``__contains__``. ``__iter__``, ``__reversed__``.
-                           :class:`Iterable`,     and ``__len__``         ``index``, and ``count``
-                           :class:`Container`     
-                                                  
-:class:`MutableSequnce`    :class:`Sequence`      ``__getitem__``         Inherited Sequence methods and
+                           :class:`Iterable`,                             ``index``, and ``count``
+                           :class:`Container`
+
+:class:`MutableSequence`   :class:`Sequence`      ``__setitem__``         Inherited Sequence methods and
                                                   ``__delitem__``,        ``append``, ``reverse``, ``extend``, ``pop``,
-                                                  ``insert``,             ``remove``, and ``__iadd__``
-                                                  and ``__len__``
-                                                  
-:class:`Set`               :class:`Sized`,        ``__len__``,            ``__le__``, ``__lt__``, ``__eq__``, ``__ne__``,
-                           :class:`Iterable`,     ``__iter__``, and       ``__gt__``, ``__ge__``, ``__and__``, ``__or__``
-                           :class:`Container`     ``__contains__``        ``__sub__``, ``__xor__``, and ``isdisjoint``
-                                                  
+                                                  and ``insert``          ``remove``, and ``__iadd__``
+
+:class:`Set`               :class:`Sized`,                                ``__le__``, ``__lt__``, ``__eq__``, ``__ne__``,
+                           :class:`Iterable`,                             ``__gt__``, ``__ge__``, ``__and__``, ``__or__``
+                           :class:`Container`                             ``__sub__``, ``__xor__``, and ``isdisjoint``
+
 :class:`MutableSet`        :class:`Set`           ``add`` and             Inherited Set methods and
                                                   ``discard``             ``clear``, ``pop``, ``remove``, ``__ior__``,
                                                                           ``__iand__``, ``__ixor__``, and ``__isub__``
-                                                  
-:class:`Mapping`           :class:`Sized`,        ``__getitem__``,        ``__contains__``, ``keys``, ``items``, ``values``,
-                           :class:`Iterable`,     ``__len__``. and        ``get``, ``__eq__``, and ``__ne__``
-                           :class:`Container`     ``__iter__``
-                                                  
-:class:`MutableMapping`    :class:`Mapping`       ``__getitem__``         Inherited Mapping methods and
-                                                  ``__setitem__``,        ``pop``, ``popitem``, ``clear``, ``update``,
-                                                  ``__delitem__``,        and ``setdefault``
-						  ``__iter__``, and
-                                                  ``__len__``
-                                                  
+
+:class:`Mapping`           :class:`Sized`,        ``__getitem__``         ``__contains__``, ``keys``, ``items``, ``values``,
+                           :class:`Iterable`,                             ``get``, ``__eq__``, and ``__ne__``
+                           :class:`Container`
+
+:class:`MutableMapping`    :class:`Mapping`       ``__setitem__`` and     Inherited Mapping methods and
+                                                  ``__delitem__``         ``pop``, ``popitem``, ``clear``, ``update``,
+                                                                          and ``setdefault``
+
+
 :class:`MappingView`       :class:`Sized`                                 ``__len__``
 :class:`KeysView`          :class:`MappingView`,                          ``__contains__``,
                            :class:`Set`                                   ``__iter__``
@@ -96,7 +94,7 @@ particular functionality, for example::
 
     size = None
     if isinstance(myvar, collections.Sized):
-	size = len(myvar)
+        size = len(myvar)
 
 Several of the ABCs are also useful as mixins that make it easier to develop
 classes supporting container APIs.  For example, to write a class supporting
@@ -149,8 +147,12 @@ Notes on using :class:`Set` and :class:`MutableSet` as a mixin:
    inherit from both :meth:`Set` and :meth:`Hashable`, then define
    ``__hash__ = Set._hash``.
 
-(For more about ABCs, see the :mod:`abc` module and :pep:`3119`.)
+.. seealso::
 
+   * `OrderedSet recipe <http://code.activestate.com/recipes/576694/>`_ for an
+     example built on :class:`MutableSet`.
+
+   * For more about ABCs, see the :mod:`abc` module and :pep:`3119`.
 
 
 .. _deque-objects:
@@ -314,6 +316,28 @@ Example:
 
 This section shows various approaches to working with deques.
 
+Bounded length deques provide functionality similar to the ``tail`` filter
+in Unix::
+
+   def tail(filename, n=10):
+       'Return the last n lines of a file'
+       return deque(open(filename), n)
+
+Another approach to using deques is to maintain a sequence of recently
+added elements by appending to the right and popping to the left::
+
+    def moving_average(iterable, n=3):
+        # moving_average([40, 30, 50, 46, 39, 44]) --> 40.0 42.0 45.0 43.0
+        # http://en.wikipedia.org/wiki/Moving_average
+        it = iter(iterable)
+        d = deque(itertools.islice(it, n-1))
+        d.appendleft(0)
+        s = sum(d)
+        for elem in it:
+            s += elem - d.popleft()
+            d.append(elem)
+            yield s / float(n)
+
 The :meth:`rotate` method provides a way to implement :class:`deque` slicing and
 deletion.  For example, a pure python implementation of ``del d[n]`` relies on
 the :meth:`rotate` method to position elements to be popped::
@@ -330,31 +354,6 @@ reverse the rotation.
 With minor variations on that approach, it is easy to implement Forth style
 stack manipulations such as ``dup``, ``drop``, ``swap``, ``over``, ``pick``,
 ``rot``, and ``roll``.
-
-Multi-pass data reduction algorithms can be succinctly expressed and efficiently
-coded by extracting elements with multiple calls to :meth:`popleft`, applying
-a reduction function, and calling :meth:`append` to add the result back to the
-deque.
-
-For example, building a balanced binary tree of nested lists entails reducing
-two adjacent nodes into one by grouping them in a list:
-
-   >>> def maketree(iterable):
-   ...     d = deque(iterable)
-   ...     while len(d) > 1:
-   ...         pair = [d.popleft(), d.popleft()]
-   ...         d.append(pair)
-   ...     return list(d)
-   ...
-   >>> print maketree('abcdefgh')
-   [[[['a', 'b'], ['c', 'd']], [['e', 'f'], ['g', 'h']]]]
-
-Bounded length deques provide functionality similar to the ``tail`` filter
-in Unix::
-
-   def tail(filename, n=10):
-       'Return the last n lines of a file'
-       return deque(open(filename), n)
 
 .. _defaultdict-objects:
 
@@ -487,16 +486,16 @@ Named tuples assign meaning to each position in a tuple and allow for more reada
 self-documenting code.  They can be used wherever regular tuples are used, and
 they add the ability to access fields by name instead of position index.
 
-.. function:: namedtuple(typename, fieldnames, [verbose])
+.. function:: namedtuple(typename, field_names, [verbose])
 
    Returns a new tuple subclass named *typename*.  The new subclass is used to
    create tuple-like objects that have fields accessible by attribute lookup as
    well as being indexable and iterable.  Instances of the subclass also have a
-   helpful docstring (with typename and fieldnames) and a helpful :meth:`__repr__`
+   helpful docstring (with typename and field_names) and a helpful :meth:`__repr__`
    method which lists the tuple contents in a ``name=value`` format.
 
-   The *fieldnames* are a single string with each fieldname separated by whitespace
-   and/or commas, for example ``'x y'`` or ``'x, y'``.  Alternatively, *fieldnames*
+   The *field_names* are a single string with each fieldname separated by whitespace
+   and/or commas, for example ``'x y'`` or ``'x, y'``.  Alternatively, *field_names*
    can be a sequence of strings such as ``['x', 'y']``.
 
    Any valid Python identifier may be used for a fieldname except for names
@@ -525,8 +524,8 @@ Example:
    <BLANKLINE>
            _fields = ('x', 'y')
    <BLANKLINE>
-           def __new__(cls, x, y):
-               return tuple.__new__(cls, (x, y))
+           def __new__(_cls, x, y):
+               return _tuple.__new__(_cls, (x, y))
    <BLANKLINE>
            @classmethod
            def _make(cls, iterable, new=tuple.__new__, len=len):
@@ -543,18 +542,18 @@ Example:
                'Return a new dict which maps field names to their values'
                return {'x': t[0], 'y': t[1]}
    <BLANKLINE>
-           def _replace(self, **kwds):
+           def _replace(_self, **kwds):
                'Return a new Point object replacing specified fields with new values'
-               result = self._make(map(kwds.pop, ('x', 'y'), self))
+               result = _self._make(map(kwds.pop, ('x', 'y'), _self))
                if kwds:
                    raise ValueError('Got unexpected field names: %r' % kwds.keys())
                return result
-   <BLANKLINE>            
-           def __getnewargs__(self): 
+   <BLANKLINE>
+           def __getnewargs__(self):
                return tuple(self)
    <BLANKLINE>
-           x = property(itemgetter(0))
-           y = property(itemgetter(1))
+           x = _property(_itemgetter(0))
+           y = _property(_itemgetter(1))
 
    >>> p = Point(11, y=22)     # instantiate with positional or keyword arguments
    >>> p[0] + p[1]             # indexable like the plain tuple (11, 22)
@@ -639,7 +638,8 @@ function:
     >>> getattr(p, 'x')
     11
 
-To convert a dictionary to a named tuple, use the double-star-operator [#]_:
+To convert a dictionary to a named tuple, use the double-star-operator
+(as described in :ref:`tut-unpacking-arguments`):
 
    >>> d = {'x': 11, 'y': 22}
    >>> Point(**d)
@@ -686,7 +686,7 @@ and more efficient to use a simple class declaration:
     >>> class Status:
     ...     open, pending, closed = range(3)
 
-.. rubric:: Footnotes
+.. seealso::
 
-.. [#] For information on the double-star-operator see
-   :ref:`tut-unpacking-arguments` and :ref:`calls`.
+   `Named tuple recipe <http://code.activestate.com/recipes/500261/>`_
+   adapted for Python 2.4.

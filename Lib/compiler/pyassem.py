@@ -349,7 +349,7 @@ class PyFlowGraph(FlowGraph):
         seen = {}
 
         def max_depth(b, d):
-            if seen.has_key(b):
+            if b in seen:
                 return d
             seen[b] = 1
             d = d + depth[b]
@@ -425,7 +425,7 @@ class PyFlowGraph(FlowGraph):
         for name in self.cellvars:
             cells[name] = 1
         self.cellvars = [name for name in self.varnames
-                         if cells.has_key(name)]
+                         if name in cells]
         for name in self.cellvars:
             del cells[name]
         self.cellvars = self.cellvars + cells.keys()

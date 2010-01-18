@@ -696,7 +696,7 @@ All of the following opcodes expect arguments.  An argument is 31 bits.
    opcode finds the keyword parameters first.  For each keyword argument, the value
    is on top of the key.  Below the keyword parameters, the positional parameters
    are on the stack, with the right-most parameter on top.  Below the parameters,
-   the function object to call is on the stack.  Pops all function arguments, and 
+   the function object to call is on the stack.  Pops all function arguments, and
    the function itself off the stack, and pushes the return value.
 
 

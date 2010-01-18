@@ -49,7 +49,7 @@ High-level interface
    .. index:: module: mimetools
 
    The :meth:`info` method returns an instance of the class
-   :class:`mimetools.Message` containing meta-information associated with the
+   :class:`httplib.HTTPMessage` containing meta-information associated with the
    URL.  When the method is HTTP, these headers are those returned by the server
    at the head of the retrieved HTML page (including Content-Length and
    Content-Type).  When the method is FTP, a Content-Length header will be
@@ -96,8 +96,10 @@ High-level interface
 
    .. index:: single: Internet Config
 
-   In a Macintosh environment, :func:`urlopen` will retrieve proxy information from
-   Internet Config.
+   In a Mac OS X  environment, :func:`urlopen` will retrieve proxy information
+   from the OS X System Configuration Framework, which can be managed with
+   Network System Preferences panel.
+
 
    Alternatively, the optional *proxies* argument may be used to explicitly specify
    proxies.  It must be a dictionary mapping scheme names to proxy URLs, where an
@@ -123,7 +125,7 @@ High-level interface
    .. versionchanged:: 2.6
       Added :meth:`getcode` to returned object and support for the
       :envvar:`no_proxy` environment variable.
-      
+
    .. deprecated:: 2.6
       The :func:`urlopen` function has been removed in Python 3.0 in favor
       of :func:`urllib2.urlopen`.
