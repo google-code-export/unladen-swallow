@@ -418,7 +418,23 @@ class SysModuleTest(unittest.TestCase):
             bar.__code__.__use_llvm__ = True
 
             def run_test():
+                # Once bailerror and tracing have been turned on, they cannot
+                # be turned off by generated machine code, because running
+                # generated machine code under tracing will cause another bail
+                # before we can turn either setting off.  Under -j always, any
+                # finally or except clauses we write to catch the bail
+                # exception will use the compiled machine code unless we
+                # circumvent the JIT.  The only reliable way at this time to
+                # guarantee execution from the interpreter is to cause a bail
+                # in the function body while bailerror is turned off.  We do
+                # this here by setting tracing and then turning it back off.
+                sys.settrace(lambda *args: None)  # Causes a bail.
+                sys.settrace(tracer)
                 try:
+                    # We need to indirect the settrace through at least one
+                    # function because bailerror doesn't currently respect
+                    # the block stack of the bailing function, so no finally or
+                    # except clauses will be run.
                     bar()
                 except RuntimeError:
                     pass
@@ -427,10 +443,6 @@ class SysModuleTest(unittest.TestCase):
                 finally:
                     sys.settrace(tracer)
                     sys.setbailerror(bail)
-            # Force use of the interpreter; otherwise we can't catch the
-            # RuntimeError if run with -j always (line tracing triggers on the
-            # except, raising another RuntimeError).
-            run_test.__code__.__use_llvm__ = False
             run_test()
 
 
