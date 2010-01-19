@@ -208,7 +208,7 @@ ExecutionEngine *JIT::createJIT(ModuleProvider *MP,
                                 JITMemoryManager *JMM,
                                 CodeGenOpt::Level OptLevel,
                                 bool GVsWithCode,
-				CodeModel::Model CMM) {
+                                CodeModel::Model CMM) {
   // Make sure we can resolve symbols in the program as well. The zero arg
   // to the function tells DynamicLibrary to load the program, not a library.
   if (sys::DynamicLibrary::LoadLibraryPermanently(0, ErrorStr))
@@ -366,6 +366,32 @@ void JIT::deleteModuleProvider(ModuleProvider *MP, std::string *E) {
   }    
 }
 
+/// materializeFunction - make sure the given function is fully read.  If the
+/// module is corrupt, this returns true and fills in the optional string with
+/// information about the problem.  If successful, this returns false.
+bool JIT::materializeFunction(Function *F, std::string *ErrInfo) {
+  // Read in the function if it exists in this Module.
+  if (F->hasNotBeenReadFromBitcode()) {
+    // Determine the module provider this function is provided by.
+    Module *M = F->getParent();
+    ModuleProvider *MP = 0;
+    for (unsigned i = 0, e = Modules.size(); i != e; ++i) {
+      if (Modules[i]->getModule() == M) {
+        MP = Modules[i];
+        break;
+      }
+    }
+    if (MP)
+      return MP->materializeFunction(F, ErrInfo);
+
+    if (ErrInfo)
+      *ErrInfo = "Function isn't in a module we know about!";
+    return true;
+  }
+  // Succeed if the function is already read.
+  return false;
+}
+
 /// run - Start execution with the specified function and arguments.
 ///
 GenericValue JIT::runFunction(Function *F,
@@ -385,11 +411,10 @@ GenericValue JIT::runFunction(Function *F,
 
   // Handle some common cases first.  These cases correspond to common `main'
   // prototypes.
-  if (RetTy == Type::getInt32Ty(F->getContext()) ||
-      RetTy == Type::getVoidTy(F->getContext())) {
+  if (RetTy->isInteger(32) || RetTy->isVoidTy()) {
     switch (ArgValues.size()) {
     case 3:
-      if (FTy->getParamType(0) == Type::getInt32Ty(F->getContext()) &&
+      if (FTy->getParamType(0)->isInteger(32) &&
           isa<PointerType>(FTy->getParamType(1)) &&
           isa<PointerType>(FTy->getParamType(2))) {
         int (*PF)(int, char **, const char **) =
@@ -404,7 +429,7 @@ GenericValue JIT::runFunction(Function *F,
       }
       break;
     case 2:
-      if (FTy->getParamType(0) == Type::getInt32Ty(F->getContext()) &&
+      if (FTy->getParamType(0)->isInteger(32) &&
           isa<PointerType>(FTy->getParamType(1))) {
         int (*PF)(int, char **) = (int(*)(int, char **))(intptr_t)FPtr;
 
@@ -417,7 +442,7 @@ GenericValue JIT::runFunction(Function *F,
       break;
     case 1:
       if (FTy->getNumParams() == 1 &&
-          FTy->getParamType(0) == Type::getInt32Ty(F->getContext())) {
+          FTy->getParamType(0)->isInteger(32)) {
         GenericValue rv;
         int (*PF)(int) = (int(*)(int))(intptr_t)FPtr;
         rv.IntVal = APInt(32, PF(ArgValues[0].IntVal.getZExtValue()));
@@ -522,7 +547,7 @@ GenericValue JIT::runFunction(Function *F,
                                        "", StubBB);
   TheCall->setCallingConv(F->getCallingConv());
   TheCall->setTailCall();
-  if (TheCall->getType() != Type::getVoidTy(F->getContext()))
+  if (!TheCall->getType()->isVoidTy())
     // Return result of the call.
     ReturnInst::Create(F->getContext(), TheCall, StubBB);
   else
@@ -585,11 +610,13 @@ void JIT::runJITOnFunction(Function *F, MachineCodeInfo *MCI) {
     }
   };
   MCIListener MCIL(MCI);
-  RegisterJITEventListener(&MCIL);
+  if (MCI)
+    RegisterJITEventListener(&MCIL);
 
   runJITOnFunctionUnlocked(F, locked);
 
-  UnregisterJITEventListener(&MCIL);
+  if (MCI)
+    UnregisterJITEventListener(&MCIL);
 }
 
 void JIT::runJITOnFunctionUnlocked(Function *F, const MutexGuard &locked) {
@@ -606,6 +633,9 @@ void JIT::runJITOnFunctionUnlocked(Function *F, const MutexGuard &locked) {
   while (!jitstate->getPendingFunctions(locked).empty()) {
     Function *PF = jitstate->getPendingFunctions(locked).back();
     jitstate->getPendingFunctions(locked).pop_back();
+
+    assert(!PF->hasAvailableExternallyLinkage() &&
+           "Externally-defined function should not be in pending list.");
 
     // JIT the function
     isAlreadyCodeGenerating = true;
@@ -627,35 +657,18 @@ void *JIT::getPointerToFunction(Function *F) {
     return Addr;   // Check if function already code gen'd
 
   MutexGuard locked(lock);
-  
-  // Now that this thread owns the lock, check if another thread has already
-  // code gen'd the function.
-  if (void *Addr = getPointerToGlobalIfAvailable(F))
-    return Addr;  
 
-  // Make sure we read in the function if it exists in this Module.
-  if (F->hasNotBeenReadFromBitcode()) {
-    // Determine the module provider this function is provided by.
-    Module *M = F->getParent();
-    ModuleProvider *MP = 0;
-    for (unsigned i = 0, e = Modules.size(); i != e; ++i) {
-      if (Modules[i]->getModule() == M) {
-        MP = Modules[i];
-        break;
-      }
-    }
-    assert(MP && "Function isn't in a module we know about!");
-    
-    std::string ErrorMsg;
-    if (MP->materializeFunction(F, &ErrorMsg)) {
-      llvm_report_error("Error reading function '" + F->getName()+
-                        "' from bitcode file: " + ErrorMsg);
-    }
-
-    // Now retry to get the address.
-    if (void *Addr = getPointerToGlobalIfAvailable(F))
-      return Addr;
+  // Now that this thread owns the lock, make sure we read in the function if it
+  // exists in this Module.
+  std::string ErrorMsg;
+  if (materializeFunction(F, &ErrorMsg)) {
+    llvm_report_error("Error reading function '" + F->getName()+
+                      "' from bitcode file: " + ErrorMsg);
   }
+
+  // ... and check if another thread has already code gen'd the function.
+  if (void *Addr = getPointerToGlobalIfAvailable(F))
+    return Addr;
 
   if (F->isDeclaration() || F->hasAvailableExternallyLinkage()) {
     bool AbortOnFailure = !F->hasExternalWeakLinkage();
@@ -681,7 +694,7 @@ void *JIT::getOrEmitGlobalVariable(const GlobalVariable *GV) {
   if (Ptr) return Ptr;
 
   // If the global is external, just remember the address.
-  if (GV->isDeclaration()) {
+  if (GV->isDeclaration() || GV->hasAvailableExternallyLinkage()) {
 #if HAVE___DSO_HANDLE
     if (GV->getName() == "__dso_handle")
       return (void*)&__dso_handle;

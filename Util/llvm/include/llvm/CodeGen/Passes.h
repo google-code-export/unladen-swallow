@@ -129,17 +129,16 @@ namespace llvm {
   /// branches.
   FunctionPass *createBranchFoldingPass(bool DefaultEnableTailMerge);
 
+  /// TailDuplicate Pass - Duplicate blocks with unconditional branches
+  /// into tails of their predecessors.
+  FunctionPass *createTailDuplicatePass(bool PreRegAlloc = false);
+
   /// IfConverter Pass - This pass performs machine code if conversion.
   FunctionPass *createIfConverterPass();
 
   /// Code Placement Pass - This pass optimize code placement and aligns loop
   /// headers to target specific alignment boundary.
   FunctionPass *createCodePlacementOptPass();
-
-  /// DebugLabelFoldingPass - This pass prunes out redundant debug labels.  This
-  /// allows a debug emitter to determine if the range of two labels is empty,
-  /// by seeing if the labels map to the same reduced label.
-  FunctionPass *createDebugLabelFoldingPass();
 
   /// getRegisterAllocator - This creates an instance of the register allocator
   /// for the Sparc.
@@ -171,6 +170,10 @@ namespace llvm {
   /// instructions.
   FunctionPass *createMachineSinkingPass();
 
+  /// createOptimizeExtsPass - This pass performs sign / zero extension
+  /// optimization by increasing uses of extended values.
+  FunctionPass *createOptimizeExtsPass();
+
   /// createStackSlotColoringPass - This pass performs stack slot coloring.
   FunctionPass *createStackSlotColoringPass(bool);
 
@@ -191,6 +194,10 @@ namespace llvm {
   /// createSjLjEHPass - This pass adapts exception handling code to use
   /// the GCC-style builtin setjmp/longjmp (sjlj) to handling EH control flow.
   FunctionPass *createSjLjEHPass(const TargetLowering *tli);
+
+  /// createMaxStackAlignmentCalculatorPass() - Determine the maximum required
+  /// alignment for a function.
+  FunctionPass* createMaxStackAlignmentCalculatorPass();
 
 } // End llvm namespace
 

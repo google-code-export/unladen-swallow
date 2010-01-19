@@ -448,6 +448,16 @@ public:
                            unsigned &SrcReg, unsigned &DstReg,
                            unsigned &SrcSubIdx, unsigned &DstSubIdx) const;
 
+  /// isCoalescableExtInstr - Return true if the instruction is a "coalescable"
+  /// extension instruction. That is, it's like a copy where it's legal for the
+  /// source to overlap the destination. e.g. X86::MOVSX64rr32. If this returns
+  /// true, then it's expected the pre-extension value is available as a subreg
+  /// of the result register. This also returns the sub-register index in
+  /// SubIdx.
+  virtual bool isCoalescableExtInstr(const MachineInstr &MI,
+                                     unsigned &SrcReg, unsigned &DstReg,
+                                     unsigned &SubIdx) const;
+
   unsigned isLoadFromStackSlot(const MachineInstr *MI, int &FrameIndex) const;
   /// isLoadFromStackSlotPostFE - Check for post-frame ptr elimination
   /// stack locations as well.  This uses a heuristic so it isn't
@@ -457,11 +467,14 @@ public:
 
   /// hasLoadFromStackSlot - If the specified machine instruction has
   /// a load from a stack slot, return true along with the FrameIndex
-  /// of the loaded stack slot.  If not, return false.  Unlike
+  /// of the loaded stack slot and the machine mem operand containing
+  /// the reference.  If not, return false.  Unlike
   /// isLoadFromStackSlot, this returns true for any instructions that
   /// loads from the stack.  This is a hint only and may not catch all
   /// cases.
-  bool hasLoadFromStackSlot(const MachineInstr *MI, int &FrameIndex) const;
+  bool hasLoadFromStackSlot(const MachineInstr *MI,
+                            const MachineMemOperand *&MMO,
+                            int &FrameIndex) const;
 
   unsigned isStoreToStackSlot(const MachineInstr *MI, int &FrameIndex) const;
   /// isStoreToStackSlotPostFE - Check for post-frame ptr elimination
@@ -472,11 +485,13 @@ public:
 
   /// hasStoreToStackSlot - If the specified machine instruction has a
   /// store to a stack slot, return true along with the FrameIndex of
-  /// the loaded stack slot.  If not, return false.  Unlike
-  /// isStoreToStackSlot, this returns true for any instructions that
-  /// loads from the stack.  This is a hint only and may not catch all
-  /// cases.
-  bool hasStoreToStackSlot(const MachineInstr *MI, int &FrameIndex) const;
+  /// the loaded stack slot and the machine mem operand containing the
+  /// reference.  If not, return false.  Unlike isStoreToStackSlot,
+  /// this returns true for any instructions that loads from the
+  /// stack.  This is a hint only and may not catch all cases.
+  bool hasStoreToStackSlot(const MachineInstr *MI,
+                           const MachineMemOperand *&MMO,
+                           int &FrameIndex) const;
 
   bool isReallyTriviallyReMaterializable(const MachineInstr *MI,
                                          AliasAnalysis *AA) const;
@@ -595,7 +610,6 @@ public:
                                       bool UnfoldLoad, bool UnfoldStore,
                                       unsigned *LoadRegIndex = 0) const;
   
-  virtual bool BlockHasNoFallThrough(const MachineBasicBlock &MBB) const;
   virtual
   bool ReverseBranchCondition(SmallVectorImpl<MachineOperand> &Cond) const;
 
@@ -633,6 +647,11 @@ public:
   unsigned getGlobalBaseReg(MachineFunction *MF) const;
 
 private:
+  MachineInstr * convertToThreeAddressWithLEA(unsigned MIOpc,
+                                              MachineFunction::iterator &MFI,
+                                              MachineBasicBlock::iterator &MBBI,
+                                              LiveVariables *LV) const;
+
   MachineInstr* foldMemoryOperandImpl(MachineFunction &MF,
                                      MachineInstr* MI,
                                      unsigned OpNum,

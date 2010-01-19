@@ -1,6 +1,7 @@
 add_llvm_library(LLVMCodeGen
   AggressiveAntiDepBreaker.cpp
   BranchFolding.cpp
+  CalcSpillWeights.cpp
   CodePlacementOpt.cpp
   CriticalAntiDepBreaker.cpp
   DeadMachineInstructionElim.cpp
@@ -34,10 +35,13 @@ add_llvm_library(LLVMCodeGen
   MachineModuleInfoImpls.cpp
   MachinePassRegistry.cpp
   MachineRegisterInfo.cpp
+  MachineSSAUpdater.cpp
   MachineSink.cpp
   MachineVerifier.cpp
+  MaxStackAlignment.cpp
   ObjectCodeEmitter.cpp
   OcamlGC.cpp
+  OptimizeExts.cpp
   PHIElimination.cpp
   Passes.cpp
   PostRASchedulerList.cpp
@@ -63,6 +67,7 @@ add_llvm_library(LLVMCodeGen
   StackProtector.cpp
   StackSlotColoring.cpp
   StrongPHIElimination.cpp
+  TailDuplication.cpp
   TargetInstrInfoImpl.cpp
   TwoAddressInstructionPass.cpp
   UnreachableBlockElim.cpp

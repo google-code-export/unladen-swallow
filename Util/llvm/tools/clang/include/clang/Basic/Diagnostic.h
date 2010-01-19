@@ -45,7 +45,7 @@ namespace clang {
       DIAG_START_PARSE    = DIAG_START_LEX      +  300,
       DIAG_START_AST      = DIAG_START_PARSE    +  300,
       DIAG_START_SEMA     = DIAG_START_AST      +  100,
-      DIAG_START_ANALYSIS = DIAG_START_SEMA     + 1100,
+      DIAG_START_ANALYSIS = DIAG_START_SEMA     + 1500,
       DIAG_UPPER_LIMIT    = DIAG_START_ANALYSIS +  100
     };
 
@@ -76,7 +76,10 @@ namespace clang {
 
       /// Map this diagnostic to "warning", but make it immune to -Werror.  This
       /// happens when you specify -Wno-error=foo.
-      MAP_WARNING_NO_WERROR = 5
+      MAP_WARNING_NO_WERROR = 5,
+      /// Map this diagnostic to "error", but make it immune to -Wfatal-errors.
+      /// This happens for -Wno-fatal-errors=foo.
+      MAP_ERROR_NO_WFATAL = 6
     };
   }
 
@@ -178,6 +181,7 @@ private:
   unsigned char AllExtensionsSilenced; // Used by __extension__
   bool IgnoreAllWarnings;        // Ignore all warnings: -w
   bool WarningsAsErrors;         // Treat warnings like errors:
+  bool ErrorsAsFatal;            // Treat errors like fatal errors.
   bool SuppressSystemWarnings;   // Suppress warnings in system headers.
   bool SuppressAllDiagnostics;   // Suppress all diagnostics.
   ExtensionHandling ExtBehavior; // Map extensions onto warnings or errors?
@@ -238,7 +242,6 @@ public:
   DiagnosticClient *getClient() { return Client; }
   const DiagnosticClient *getClient() const { return Client; }
 
-
   /// pushMappings - Copies the current DiagMappings and pushes the new copy
   /// onto the top of the stack.
   void pushMappings();
@@ -260,6 +263,11 @@ public:
   /// as errors.
   void setWarningsAsErrors(bool Val) { WarningsAsErrors = Val; }
   bool getWarningsAsErrors() const { return WarningsAsErrors; }
+
+  /// setErrorsAsFatal - When set to true, any error reported is made a
+  /// fatal error.
+  void setErrorsAsFatal(bool Val) { ErrorsAsFatal = Val; }
+  bool getErrorsAsFatal() const { return ErrorsAsFatal; }
 
   /// setSuppressSystemWarnings - When set to true mask warnings that
   /// come from system headers.
@@ -319,7 +327,7 @@ public:
   /// getCustomDiagID - Return an ID for a diagnostic with the specified message
   /// and level.  If this is the first request for this diagnosic, it is
   /// registered and created, otherwise the existing ID is returned.
-  unsigned getCustomDiagID(Level L, const char *Message);
+  unsigned getCustomDiagID(Level L, llvm::StringRef Message);
 
 
   /// ConvertArgToString - This method converts a diagnostic argument (as an
@@ -773,6 +781,11 @@ public:
   /// formal arguments into the %0 slots.  The result is appended onto the Str
   /// array.
   void FormatDiagnostic(llvm::SmallVectorImpl<char> &OutStr) const;
+
+  /// FormatDiagnostic - Format the given format-string into the
+  /// output buffer using the arguments stored in this diagnostic.
+  void FormatDiagnostic(const char *DiagStr, const char *DiagEnd,
+                        llvm::SmallVectorImpl<char> &OutStr) const;
 };
 
 /// DiagnosticClient - This is an abstract interface implemented by clients of

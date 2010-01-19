@@ -20,10 +20,9 @@
 #include "llvm/Instructions.h"
 #include "llvm/Intrinsics.h"
 #include "llvm/IntrinsicInst.h"
-#include "llvm/LLVMContext.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Analysis/ConstantFolding.h"
-#include "llvm/Analysis/DebugInfo.h"
 #include "llvm/Analysis/InstructionSimplify.h"
 #include "llvm/Analysis/ProfileInfo.h"
 #include "llvm/Target/TargetData.h"
@@ -31,6 +30,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/GetElementPtrTypeIterator.h"
 #include "llvm/Support/MathExtras.h"
+#include "llvm/Support/ValueHandle.h"
 #include "llvm/Support/raw_ostream.h"
 using namespace llvm;
 
@@ -268,16 +268,17 @@ bool llvm::isInstructionTriviallyDead(Instruction *I) {
 
 /// RecursivelyDeleteTriviallyDeadInstructions - If the specified value is a
 /// trivially dead instruction, delete it.  If that makes any of its operands
-/// trivially dead, delete them too, recursively.
-void llvm::RecursivelyDeleteTriviallyDeadInstructions(Value *V) {
+/// trivially dead, delete them too, recursively.  Return true if any
+/// instructions were deleted.
+bool llvm::RecursivelyDeleteTriviallyDeadInstructions(Value *V) {
   Instruction *I = dyn_cast<Instruction>(V);
   if (!I || !I->use_empty() || !isInstructionTriviallyDead(I))
-    return;
+    return false;
   
   SmallVector<Instruction*, 16> DeadInsts;
   DeadInsts.push_back(I);
   
-  while (!DeadInsts.empty()) {
+  do {
     I = DeadInsts.pop_back_val();
 
     // Null out all of the instruction's operands to see if any operand becomes
@@ -297,22 +298,25 @@ void llvm::RecursivelyDeleteTriviallyDeadInstructions(Value *V) {
     }
     
     I->eraseFromParent();
-  }
+  } while (!DeadInsts.empty());
+
+  return true;
 }
 
 /// RecursivelyDeleteDeadPHINode - If the specified value is an effectively
 /// dead PHI node, due to being a def-use chain of single-use nodes that
 /// either forms a cycle or is terminated by a trivially dead instruction,
 /// delete it.  If that makes any of its operands trivially dead, delete them
-/// too, recursively.
-void
+/// too, recursively.  Return true if the PHI node is actually deleted.
+bool
 llvm::RecursivelyDeleteDeadPHINode(PHINode *PN) {
   // We can remove a PHI if it is on a cycle in the def-use graph
   // where each node in the cycle has degree one, i.e. only one use,
   // and is an instruction with no side effects.
   if (!PN->hasOneUse())
-    return;
+    return false;
 
+  bool Changed = false;
   SmallPtrSet<PHINode *, 4> PHIs;
   PHIs.insert(PN);
   for (Instruction *J = cast<Instruction>(*PN->use_begin());
@@ -324,9 +328,35 @@ llvm::RecursivelyDeleteDeadPHINode(PHINode *PN) {
       if (!PHIs.insert(cast<PHINode>(JP))) {
         // Break the cycle and delete the PHI and its operands.
         JP->replaceAllUsesWith(UndefValue::get(JP->getType()));
-        RecursivelyDeleteTriviallyDeadInstructions(JP);
+        (void)RecursivelyDeleteTriviallyDeadInstructions(JP);
+        Changed = true;
         break;
       }
+  return Changed;
+}
+
+/// SimplifyInstructionsInBlock - Scan the specified basic block and try to
+/// simplify any instructions in it and recursively delete dead instructions.
+///
+/// This returns true if it changed the code, note that it can delete
+/// instructions in other blocks as well in this block.
+bool llvm::SimplifyInstructionsInBlock(BasicBlock *BB, const TargetData *TD) {
+  bool MadeChange = false;
+  for (BasicBlock::iterator BI = BB->begin(), E = BB->end(); BI != E; ) {
+    Instruction *Inst = BI++;
+    
+    if (Value *V = SimplifyInstruction(Inst, TD)) {
+      WeakVH BIHandle(BI);
+      ReplaceAndSimplifyAllUses(Inst, V, TD);
+      MadeChange = true;
+      if (BIHandle == 0)
+        BI = BB->begin();
+      continue;
+    }
+    
+    MadeChange |= RecursivelyDeleteTriviallyDeadInstructions(Inst);
+  }
+  return MadeChange;
 }
 
 //===----------------------------------------------------------------------===//
@@ -421,7 +451,7 @@ void llvm::MergeBasicBlockIntoOnlyPred(BasicBlock *DestBB, Pass *P) {
 static bool CanPropagatePredecessorsForPHIs(BasicBlock *BB, BasicBlock *Succ) {
   assert(*succ_begin(BB) == Succ && "Succ is not successor of BB!");
 
-  DEBUG(errs() << "Looking to fold " << BB->getName() << " into " 
+  DEBUG(dbgs() << "Looking to fold " << BB->getName() << " into " 
         << Succ->getName() << "\n");
   // Shortcut, if there is only a single predecessor it must be BB and merging
   // is always safe
@@ -456,7 +486,7 @@ static bool CanPropagatePredecessorsForPHIs(BasicBlock *BB, BasicBlock *Succ) {
             PI != PE; PI++) {
         if (BBPN->getIncomingValueForBlock(*PI) 
               != PN->getIncomingValueForBlock(*PI)) {
-          DEBUG(errs() << "Can't fold, phi node " << PN->getName() << " in " 
+          DEBUG(dbgs() << "Can't fold, phi node " << PN->getName() << " in " 
                 << Succ->getName() << " is conflicting with " 
                 << BBPN->getName() << " with regard to common predecessor "
                 << (*PI)->getName() << "\n");
@@ -471,7 +501,7 @@ static bool CanPropagatePredecessorsForPHIs(BasicBlock *BB, BasicBlock *Succ) {
         // one for BB, in which case this phi node will not prevent the merging
         // of the block.
         if (Val != PN->getIncomingValueForBlock(*PI)) {
-          DEBUG(errs() << "Can't fold, phi node " << PN->getName() << " in " 
+          DEBUG(dbgs() << "Can't fold, phi node " << PN->getName() << " in " 
                 << Succ->getName() << " is conflicting with regard to common "
                 << "predecessor " << (*PI)->getName() << "\n");
           return false;
@@ -525,7 +555,7 @@ bool llvm::TryToSimplifyUncondBranchFromEmptyBlock(BasicBlock *BB) {
     }
   }
 
-  DEBUG(errs() << "Killing Trivial BB: \n" << *BB);
+  DEBUG(dbgs() << "Killing Trivial BB: \n" << *BB);
   
   if (isa<PHINode>(Succ->begin())) {
     // If there is more than one pred of succ, and there are PHI nodes in
@@ -603,3 +633,65 @@ bool llvm::OnlyUsedByDbgInfoIntrinsics(Instruction *I,
   return true;
 }
 
+/// EliminateDuplicatePHINodes - Check for and eliminate duplicate PHI
+/// nodes in this block. This doesn't try to be clever about PHI nodes
+/// which differ only in the order of the incoming values, but instcombine
+/// orders them so it usually won't matter.
+///
+bool llvm::EliminateDuplicatePHINodes(BasicBlock *BB) {
+  bool Changed = false;
+
+  // This implementation doesn't currently consider undef operands
+  // specially. Theroetically, two phis which are identical except for
+  // one having an undef where the other doesn't could be collapsed.
+
+  // Map from PHI hash values to PHI nodes. If multiple PHIs have
+  // the same hash value, the element is the first PHI in the
+  // linked list in CollisionMap.
+  DenseMap<uintptr_t, PHINode *> HashMap;
+
+  // Maintain linked lists of PHI nodes with common hash values.
+  DenseMap<PHINode *, PHINode *> CollisionMap;
+
+  // Examine each PHI.
+  for (BasicBlock::iterator I = BB->begin();
+       PHINode *PN = dyn_cast<PHINode>(I++); ) {
+    // Compute a hash value on the operands. Instcombine will likely have sorted
+    // them, which helps expose duplicates, but we have to check all the
+    // operands to be safe in case instcombine hasn't run.
+    uintptr_t Hash = 0;
+    for (User::op_iterator I = PN->op_begin(), E = PN->op_end(); I != E; ++I) {
+      // This hash algorithm is quite weak as hash functions go, but it seems
+      // to do a good enough job for this particular purpose, and is very quick.
+      Hash ^= reinterpret_cast<uintptr_t>(static_cast<Value *>(*I));
+      Hash = (Hash << 7) | (Hash >> (sizeof(uintptr_t) * CHAR_BIT - 7));
+    }
+    // If we've never seen this hash value before, it's a unique PHI.
+    std::pair<DenseMap<uintptr_t, PHINode *>::iterator, bool> Pair =
+      HashMap.insert(std::make_pair(Hash, PN));
+    if (Pair.second) continue;
+    // Otherwise it's either a duplicate or a hash collision.
+    for (PHINode *OtherPN = Pair.first->second; ; ) {
+      if (OtherPN->isIdenticalTo(PN)) {
+        // A duplicate. Replace this PHI with its duplicate.
+        PN->replaceAllUsesWith(OtherPN);
+        PN->eraseFromParent();
+        Changed = true;
+        break;
+      }
+      // A non-duplicate hash collision.
+      DenseMap<PHINode *, PHINode *>::iterator I = CollisionMap.find(OtherPN);
+      if (I == CollisionMap.end()) {
+        // Set this PHI to be the head of the linked list of colliding PHIs.
+        PHINode *Old = Pair.first->second;
+        Pair.first->second = PN;
+        CollisionMap[PN] = Old;
+        break;
+      }
+      // Procede to the next PHI in the list.
+      OtherPN = I->second;
+    }
+  }
+
+  return Changed;
+}

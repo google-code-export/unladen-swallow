@@ -1,4 +1,4 @@
-// RUN: clang-cc -Wreorder -fsyntax-only -verify %s
+// RUN: %clang_cc1 -Wreorder -fsyntax-only -verify %s
 class A { 
   int m;
    A() : A::m(17) { } // expected-error {{member initializer 'm' does not name a non-static data member or base class}}
@@ -97,13 +97,10 @@ struct Current : Derived {
                                                   // expected-error {{member initializer 'NonExisting' does not name a non-static data member or}}
 };
 
-                        // FIXME. This is bad message!
-struct M {              // expected-note {{candidate function}} \
-                        // expected-note {{candidate function}} \
+struct M {              // expected-note 2 {{candidate constructor (the implicit copy constructor)}} \
                         // expected-note {{declared here}} \
                         // expected-note {{declared here}}
-  M(int i, int j);      // expected-note {{candidate function}} \
-                        // // expected-note {{candidate function}}
+  M(int i, int j);      // expected-note 2 {{candidate constructor}}
 };
 
 struct N : M  {

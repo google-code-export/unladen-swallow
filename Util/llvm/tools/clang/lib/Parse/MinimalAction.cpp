@@ -45,6 +45,7 @@ Action::DeclPtrTy Action::ActOnUsingDirective(Scope *CurScope,
 // Defined out-of-line here because of dependency on AttributeList
 Action::DeclPtrTy Action::ActOnUsingDeclaration(Scope *CurScope,
                                                 AccessSpecifier AS,
+                                                bool HasUsingKeyword,
                                                 SourceLocation UsingLoc,
                                                 const CXXScopeSpec &SS,
                                                 UnqualifiedId &Name,
@@ -144,7 +145,7 @@ void MinimalAction::ActOnTranslationUnitScope(SourceLocation Loc, Scope *S) {
 Action::TypeTy *
 MinimalAction::getTypeName(IdentifierInfo &II, SourceLocation Loc,
                            Scope *S, const CXXScopeSpec *SS,
-                           bool isClassName) {
+                           bool isClassName, TypeTy *ObjectType) {
   if (TypeNameInfo *TI = II.getFETokenInfo<TypeNameInfo>())
     if (TI->isTypeName)
       return TI;

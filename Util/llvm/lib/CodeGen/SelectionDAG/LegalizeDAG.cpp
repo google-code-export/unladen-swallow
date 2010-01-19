@@ -32,6 +32,7 @@
 #include "llvm/GlobalVariable.h"
 #include "llvm/LLVMContext.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
@@ -158,7 +159,6 @@ private:
   SDValue EmitStackConvert(SDValue SrcOp, EVT SlotVT, EVT DestVT, DebugLoc dl);
   SDValue ExpandBUILD_VECTOR(SDNode *Node);
   SDValue ExpandSCALAR_TO_VECTOR(SDNode *Node);
-  SDValue ExpandDBG_STOPPOINT(SDNode *Node);
   void ExpandDYNAMIC_STACKALLOC(SDNode *Node,
                                 SmallVectorImpl<SDValue> &Results);
   SDValue ExpandFCOPYSIGN(SDNode *Node);
@@ -188,7 +188,6 @@ SDValue
 SelectionDAGLegalize::ShuffleWithNarrowerEltType(EVT NVT, EVT VT,  DebugLoc dl, 
                                                  SDValue N1, SDValue N2,
                                              SmallVectorImpl<int> &Mask) const {
-  EVT EltVT = NVT.getVectorElementType();
   unsigned NumMaskElts = VT.getVectorNumElements();
   unsigned NumDestElts = NVT.getVectorNumElements();
   unsigned NumEltsGrowth = NumDestElts / NumMaskElts;
@@ -233,7 +232,7 @@ void SelectionDAGLegalize::LegalizeDAG() {
   // node is only legalized after all of its operands are legalized.
   DAG.AssignTopologicalOrder();
   for (SelectionDAG::allnodes_iterator I = DAG.allnodes_begin(),
-       E = prior(DAG.allnodes_end()); I != next(E); ++I)
+       E = prior(DAG.allnodes_end()); I != llvm::next(E); ++I)
     LegalizeOp(SDValue(I, 0));
 
   // Finally, it's possible the root changed.  Get the new root.
@@ -462,8 +461,7 @@ SDValue ExpandUnalignedStore(StoreSDNode *ST, SelectionDAG &DAG,
          !ST->getMemoryVT().isVector() &&
          "Unaligned store of unknown type.");
   // Get the half-size VT
-  EVT NewStoredVT =
-    (MVT::SimpleValueType)(ST->getMemoryVT().getSimpleVT().SimpleTy - 1);
+  EVT NewStoredVT = ST->getMemoryVT().getHalfSizedIntegerVT(*DAG.getContext());
   int NumBits = NewStoredVT.getSizeInBits();
   int IncrementSize = NumBits / 8;
 
@@ -953,9 +951,9 @@ SDValue SelectionDAGLegalize::LegalizeOp(SDValue Op) {
   switch (Node->getOpcode()) {
   default:
 #ifndef NDEBUG
-    errs() << "NODE: ";
-    Node->dump(&DAG);
-    errs() << "\n";
+    dbgs() << "NODE: ";
+    Node->dump( &DAG);
+    dbgs() << "\n";
 #endif
     llvm_unreachable("Do not know how to legalize this operator!");
 
@@ -1171,8 +1169,7 @@ SDValue SelectionDAGLegalize::LegalizeOp(SDValue Op) {
         Tmp2 = LegalizeOp(Ch);
       } else if (SrcWidth & (SrcWidth - 1)) {
         // If not loading a power-of-2 number of bits, expand as two loads.
-        assert(SrcVT.isExtended() && !SrcVT.isVector() &&
-               "Unsupported extload!");
+        assert(!SrcVT.isVector() && "Unsupported extload!");
         unsigned RoundWidth = 1 << Log2_32(SrcWidth);
         assert(RoundWidth < SrcWidth);
         unsigned ExtraWidth = SrcWidth - RoundWidth;
@@ -1385,8 +1382,7 @@ SDValue SelectionDAGLegalize::LegalizeOp(SDValue Op) {
                                    SVOffset, NVT, isVolatile, Alignment);
       } else if (StWidth & (StWidth - 1)) {
         // If not storing a power-of-2 number of bits, expand as two stores.
-        assert(StVT.isExtended() && !StVT.isVector() &&
-               "Unsupported truncstore!");
+        assert(!StVT.isVector() && "Unsupported truncstore!");
         unsigned RoundWidth = 1 << Log2_32(StWidth);
         assert(RoundWidth < StWidth);
         unsigned ExtraWidth = StWidth - RoundWidth;
@@ -1517,6 +1513,7 @@ SDValue SelectionDAGLegalize::ExpandVectorBuildThroughStack(SDNode* Node) {
   // Create the stack frame object.
   EVT VT = Node->getValueType(0);
   EVT OpVT = Node->getOperand(0).getValueType();
+  EVT EltVT = VT.getVectorElementType();
   DebugLoc dl = Node->getDebugLoc();
   SDValue FIPtr = DAG.CreateStackTemporary(VT);
   int FI = cast<FrameIndexSDNode>(FIPtr.getNode())->getIndex();
@@ -1524,7 +1521,7 @@ SDValue SelectionDAGLegalize::ExpandVectorBuildThroughStack(SDNode* Node) {
 
   // Emit a store of each element to the stack slot.
   SmallVector<SDValue, 8> Stores;
-  unsigned TypeByteSize = OpVT.getSizeInBits() / 8;
+  unsigned TypeByteSize = EltVT.getSizeInBits() / 8;
   // Store (in the right endianness) the elements to memory.
   for (unsigned i = 0, e = Node->getNumOperands(); i != e; ++i) {
     // Ignore undef elements.
@@ -1535,8 +1532,13 @@ SDValue SelectionDAGLegalize::ExpandVectorBuildThroughStack(SDNode* Node) {
     SDValue Idx = DAG.getConstant(Offset, FIPtr.getValueType());
     Idx = DAG.getNode(ISD::ADD, dl, FIPtr.getValueType(), FIPtr, Idx);
 
-    Stores.push_back(DAG.getStore(DAG.getEntryNode(), dl, Node->getOperand(i),
-                                  Idx, SV, Offset));
+    // If EltVT smaller than OpVT, only store the bits necessary.
+    if (EltVT.bitsLT(OpVT))
+      Stores.push_back(DAG.getTruncStore(DAG.getEntryNode(), dl,
+                          Node->getOperand(i), Idx, SV, Offset, EltVT));
+    else
+      Stores.push_back(DAG.getStore(DAG.getEntryNode(), dl, 
+                                    Node->getOperand(i), Idx, SV, Offset));
   }
 
   SDValue StoreChain;
@@ -1588,37 +1590,6 @@ SDValue SelectionDAGLegalize::ExpandFCOPYSIGN(SDNode* Node) {
   return DAG.getNode(ISD::SELECT, dl, AbsVal.getValueType(), SignBit,
                      DAG.getNode(ISD::FNEG, dl, AbsVal.getValueType(), AbsVal),
                      AbsVal);
-}
-
-SDValue SelectionDAGLegalize::ExpandDBG_STOPPOINT(SDNode* Node) {
-  DebugLoc dl = Node->getDebugLoc();
-  DwarfWriter *DW = DAG.getDwarfWriter();
-  bool useDEBUG_LOC = TLI.isOperationLegalOrCustom(ISD::DEBUG_LOC,
-                                                    MVT::Other);
-  bool useLABEL = TLI.isOperationLegalOrCustom(ISD::DBG_LABEL, MVT::Other);
-
-  const DbgStopPointSDNode *DSP = cast<DbgStopPointSDNode>(Node);
-  MDNode *CU_Node = DSP->getCompileUnit();
-  if (DW && (useDEBUG_LOC || useLABEL)) {
-
-    unsigned Line = DSP->getLine();
-    unsigned Col = DSP->getColumn();
-
-    if (OptLevel == CodeGenOpt::None) {
-      // A bit self-referential to have DebugLoc on Debug_Loc nodes, but it
-      // won't hurt anything.
-      if (useDEBUG_LOC) {
-        return DAG.getNode(ISD::DEBUG_LOC, dl, MVT::Other, Node->getOperand(0),
-                           DAG.getConstant(Line, MVT::i32),
-                           DAG.getConstant(Col, MVT::i32),
-                           DAG.getSrcValue(CU_Node));
-      } else {
-        unsigned ID = DW->RecordSourceLine(Line, Col, CU_Node);
-        return DAG.getLabel(ISD::DBG_LABEL, dl, Node->getOperand(0), ID);
-      }
-    }
-  }
-  return Node->getOperand(0);
 }
 
 void SelectionDAGLegalize::ExpandDYNAMIC_STACKALLOC(SDNode* Node,
@@ -1895,7 +1866,7 @@ SDValue SelectionDAGLegalize::ExpandLibCall(RTLIB::Libcall LC, SDNode *Node,
                     0, TLI.getLibcallCallingConv(LC), false,
                     /*isReturnValueUsed=*/true,
                     Callee, Args, DAG,
-                    Node->getDebugLoc());
+                    Node->getDebugLoc(), DAG.GetOrdering(Node));
 
   // Legalize the call sequence, starting with the chain.  This will advance
   // the LastCALLSEQ_END to the legalized version of the CALLSEQ_END node that
@@ -2269,15 +2240,11 @@ void SelectionDAGLegalize::ExpandNode(SDNode *Node,
     Results.push_back(DAG.getConstant(1, Node->getValueType(0)));
     break;
   case ISD::EH_RETURN:
-  case ISD::DBG_LABEL:
   case ISD::EH_LABEL:
   case ISD::PREFETCH:
   case ISD::MEMBARRIER:
   case ISD::VAEND:
     Results.push_back(Node->getOperand(0));
-    break;
-  case ISD::DBG_STOPPOINT:
-    Results.push_back(ExpandDBG_STOPPOINT(Node));
     break;
   case ISD::DYNAMIC_STACKALLOC:
     ExpandDYNAMIC_STACKALLOC(Node, Results);
@@ -2304,7 +2271,7 @@ void SelectionDAGLegalize::ExpandNode(SDNode *Node,
                       false, false, false, false, 0, CallingConv::C, false,
                       /*isReturnValueUsed=*/true,
                       DAG.getExternalSymbol("abort", TLI.getPointerTy()),
-                      Args, DAG, dl);
+                      Args, DAG, dl, DAG.GetOrdering(Node));
     Results.push_back(CallResult.second);
     break;
   }
@@ -2324,9 +2291,13 @@ void SelectionDAGLegalize::ExpandNode(SDNode *Node,
     // NOTE: we could fall back on load/store here too for targets without
     // SAR.  However, it is doubtful that any exist.
     EVT ExtraVT = cast<VTSDNode>(Node->getOperand(1))->getVT();
-    unsigned BitsDiff = Node->getValueType(0).getSizeInBits() -
-                        ExtraVT.getSizeInBits();
-    SDValue ShiftCst = DAG.getConstant(BitsDiff, TLI.getShiftAmountTy());
+    EVT VT = Node->getValueType(0);
+    EVT ShiftAmountTy = TLI.getShiftAmountTy();
+    if (VT.isVector())
+      ShiftAmountTy = VT;
+    unsigned BitsDiff = VT.getScalarType().getSizeInBits() -
+                        ExtraVT.getScalarType().getSizeInBits();
+    SDValue ShiftCst = DAG.getConstant(BitsDiff, ShiftAmountTy);
     Tmp1 = DAG.getNode(ISD::SHL, dl, Node->getValueType(0),
                        Node->getOperand(0), ShiftCst);
     Tmp1 = DAG.getNode(ISD::SRA, dl, Node->getValueType(0), Tmp1, ShiftCst);
@@ -2774,7 +2745,7 @@ void SelectionDAGLegalize::ExpandNode(SDNode *Node,
     SDValue RHS = Node->getOperand(1);
     SDValue BottomHalf;
     SDValue TopHalf;
-    static unsigned Ops[2][3] =
+    static const unsigned Ops[2][3] =
         { { ISD::MULHU, ISD::UMUL_LOHI, ISD::ZERO_EXTEND },
           { ISD::MULHS, ISD::SMUL_LOHI, ISD::SIGN_EXTEND }};
     bool isSigned = Node->getOpcode() == ISD::SMULO;
@@ -2991,7 +2962,7 @@ void SelectionDAGLegalize::PromoteNode(SDNode *Node,
     break;
   case ISD::BSWAP: {
     unsigned DiffBits = NVT.getSizeInBits() - OVT.getSizeInBits();
-    Tmp1 = DAG.getNode(ISD::ZERO_EXTEND, dl, NVT, Tmp1);
+    Tmp1 = DAG.getNode(ISD::ZERO_EXTEND, dl, NVT, Node->getOperand(0));
     Tmp1 = DAG.getNode(ISD::BSWAP, dl, NVT, Tmp1);
     Tmp1 = DAG.getNode(ISD::SRL, dl, NVT, Tmp1,
                           DAG.getConstant(DiffBits, TLI.getShiftAmountTy()));
@@ -3089,8 +3060,7 @@ void SelectionDAGLegalize::PromoteNode(SDNode *Node,
 
 // SelectionDAG::Legalize - This is the entry point for the file.
 //
-void SelectionDAG::Legalize(bool TypesNeedLegalizing,
-                            CodeGenOpt::Level OptLevel) {
+void SelectionDAG::Legalize(CodeGenOpt::Level OptLevel) {
   /// run - This is the main entry point to this class.
   ///
   SelectionDAGLegalize(*this, OptLevel).LegalizeDAG();

@@ -46,6 +46,11 @@ def SDT_ARMPICAdd  : SDTypeProfile<1, 2, [SDTCisSameAs<0, 1>,
 def SDT_ARMThreadPointer : SDTypeProfile<1, 0, [SDTCisPtrTy<0>]>;
 def SDT_ARMEH_SJLJ_Setjmp : SDTypeProfile<1, 1, [SDTCisInt<0>, SDTCisPtrTy<1>]>;
 
+def SDT_ARMMEMBARRIERV7  : SDTypeProfile<0, 0, []>;
+def SDT_ARMSYNCBARRIERV7 : SDTypeProfile<0, 0, []>;
+def SDT_ARMMEMBARRIERV6  : SDTypeProfile<0, 1, [SDTCisInt<0>]>;
+def SDT_ARMSYNCBARRIERV6 : SDTypeProfile<0, 1, [SDTCisInt<0>]>;
+
 // Node definitions.
 def ARMWrapper       : SDNode<"ARMISD::Wrapper",     SDTIntUnaryOp>;
 def ARMWrapperJT     : SDNode<"ARMISD::WrapperJT",   SDTIntBinOp>;
@@ -93,6 +98,15 @@ def ARMrrx           : SDNode<"ARMISD::RRX"     , SDTIntUnaryOp, [SDNPInFlag ]>;
 def ARMthread_pointer: SDNode<"ARMISD::THREAD_POINTER", SDT_ARMThreadPointer>;
 def ARMeh_sjlj_setjmp: SDNode<"ARMISD::EH_SJLJ_SETJMP", SDT_ARMEH_SJLJ_Setjmp>;
 
+def ARMMemBarrierV7  : SDNode<"ARMISD::MEMBARRIER", SDT_ARMMEMBARRIERV7,
+                              [SDNPHasChain]>;
+def ARMSyncBarrierV7 : SDNode<"ARMISD::SYNCBARRIER", SDT_ARMMEMBARRIERV7,
+                              [SDNPHasChain]>;
+def ARMMemBarrierV6  : SDNode<"ARMISD::MEMBARRIER", SDT_ARMMEMBARRIERV6,
+                              [SDNPHasChain]>;
+def ARMSyncBarrierV6 : SDNode<"ARMISD::SYNCBARRIER", SDT_ARMMEMBARRIERV6,
+                              [SDNPHasChain]>;
+
 //===----------------------------------------------------------------------===//
 // ARM Instruction Predicate Definitions.
 //
@@ -113,8 +127,12 @@ def IsThumb2  : Predicate<"Subtarget->isThumb2()">;
 def IsARM     : Predicate<"!Subtarget->isThumb()">;
 def IsDarwin    : Predicate<"Subtarget->isTargetDarwin()">;
 def IsNotDarwin : Predicate<"!Subtarget->isTargetDarwin()">;
-def CarryDefIsUnused : Predicate<"!N.getNode()->hasAnyUseOfValue(1)">;
-def CarryDefIsUsed   : Predicate<"N.getNode()->hasAnyUseOfValue(1)">;
+def CarryDefIsUnused : Predicate<"!N->hasAnyUseOfValue(1)">;
+def CarryDefIsUsed   : Predicate<"N->hasAnyUseOfValue(1)">;
+
+// FIXME: Eventually this will be just "hasV6T2Ops".
+def UseMovt   : Predicate<"Subtarget->useMovt()">;
+def DontUseMovt : Predicate<"!Subtarget->useMovt()">;
 
 //===----------------------------------------------------------------------===//
 // ARM Flag Definitions.
@@ -204,7 +222,7 @@ def hi16 : SDNodeXForm<imm, [{
 def lo16AllZero : PatLeaf<(i32 imm), [{
   // Returns true if all low 16-bits are 0.
   return (((uint32_t)N->getZExtValue()) & 0xFFFFUL) == 0;
-  }], hi16>;
+}], hi16>;
 
 /// imm0_65535 predicate - True if the 32-bit immediate is in the range 
 /// [0.65535].
@@ -281,6 +299,22 @@ def so_imm2part_1 : SDNodeXForm<imm, [{
 
 def so_imm2part_2 : SDNodeXForm<imm, [{
   unsigned V = ARM_AM::getSOImmTwoPartSecond((unsigned)N->getZExtValue());
+  return CurDAG->getTargetConstant(V, MVT::i32);
+}]>;
+
+def so_neg_imm2part : Operand<i32>, PatLeaf<(imm), [{
+      return ARM_AM::isSOImmTwoPartVal(-(int)N->getZExtValue());
+    }]> {
+  let PrintMethod = "printSOImm2PartOperand";
+}
+
+def so_neg_imm2part_1 : SDNodeXForm<imm, [{
+  unsigned V = ARM_AM::getSOImmTwoPartFirst(-(int)N->getZExtValue());
+  return CurDAG->getTargetConstant(V, MVT::i32);
+}]>;
+
+def so_neg_imm2part_2 : SDNodeXForm<imm, [{
+  unsigned V = ARM_AM::getSOImmTwoPartSecond(-(int)N->getZExtValue());
   return CurDAG->getTargetConstant(V, MVT::i32);
 }]>;
 
@@ -568,12 +602,6 @@ PseudoInst<(outs), (ins i32imm:$amt, pred:$p), NoItinerary,
            [(ARMcallseq_start timm:$amt)]>;
 }
 
-def DWARF_LOC :
-PseudoInst<(outs), (ins i32imm:$line, i32imm:$col, i32imm:$file), NoItinerary,
-           ".loc $file, $line, $col",
-           [(dwarf_loc (i32 imm:$line), (i32 imm:$col), (i32 imm:$file))]>;
-
-
 // Address computation and loads and stores in PIC mode.
 let isNotDuplicable = 1 in {
 def PICADD : AXI1<0b0100, (outs GPR:$dst), (ins GPR:$a, pclabel:$cp, pred:$p),
@@ -581,25 +609,24 @@ def PICADD : AXI1<0b0100, (outs GPR:$dst), (ins GPR:$a, pclabel:$cp, pred:$p),
                    [(set GPR:$dst, (ARMpic_add GPR:$a, imm:$cp))]>;
 
 let AddedComplexity = 10 in {
-let canFoldAsLoad = 1 in
 def PICLDR  : AXI2ldw<(outs GPR:$dst), (ins addrmodepc:$addr, pred:$p),
                   Pseudo, IIC_iLoadr, "\n${addr:label}:\n\tldr$p\t$dst, $addr",
                   [(set GPR:$dst, (load addrmodepc:$addr))]>;
 
 def PICLDRH : AXI3ldh<(outs GPR:$dst), (ins addrmodepc:$addr, pred:$p),
-                Pseudo, IIC_iLoadr, "\n${addr:label}:\n\tldr${p}h\t$dst, $addr",
+                Pseudo, IIC_iLoadr, "\n${addr:label}:\n\tldrh${p}\t$dst, $addr",
                   [(set GPR:$dst, (zextloadi16 addrmodepc:$addr))]>;
 
 def PICLDRB : AXI2ldb<(outs GPR:$dst), (ins addrmodepc:$addr, pred:$p),
-                Pseudo, IIC_iLoadr, "\n${addr:label}:\n\tldr${p}b\t$dst, $addr",
+                Pseudo, IIC_iLoadr, "\n${addr:label}:\n\tldrb${p}\t$dst, $addr",
                   [(set GPR:$dst, (zextloadi8 addrmodepc:$addr))]>;
 
 def PICLDRSH : AXI3ldsh<(outs GPR:$dst), (ins addrmodepc:$addr, pred:$p),
-               Pseudo, IIC_iLoadr, "\n${addr:label}:\n\tldr${p}sh\t$dst, $addr",
+               Pseudo, IIC_iLoadr, "\n${addr:label}:\n\tldrsh${p}\t$dst, $addr",
                   [(set GPR:$dst, (sextloadi16 addrmodepc:$addr))]>;
 
 def PICLDRSB : AXI3ldsb<(outs GPR:$dst), (ins addrmodepc:$addr, pred:$p),
-               Pseudo, IIC_iLoadr, "\n${addr:label}:\n\tldr${p}sb\t$dst, $addr",
+               Pseudo, IIC_iLoadr, "\n${addr:label}:\n\tldrsb${p}\t$dst, $addr",
                   [(set GPR:$dst, (sextloadi8 addrmodepc:$addr))]>;
 }
 let AddedComplexity = 10 in {
@@ -759,6 +786,7 @@ let isBranch = 1, isTerminator = 1 in {
   def BR_JTr : JTI<(outs), (ins GPR:$target, jtblock_operand:$jt, i32imm:$id),
                     IIC_Br, "mov\tpc, $target \n$jt",
                     [(ARMbrjt GPR:$target, tjumptable:$jt, imm:$id)]> {
+    let Inst{11-4}  = 0b00000000;
     let Inst{15-12} = 0b1111;
     let Inst{20}    = 0; // S Bit
     let Inst{24-21} = 0b1101;
@@ -801,13 +829,14 @@ let isBranch = 1, isTerminator = 1 in {
 //
 
 // Load
-let canFoldAsLoad = 1, isReMaterializable = 1 in 
+let canFoldAsLoad = 1, isReMaterializable = 1, mayHaveSideEffects = 1 in 
 def LDR  : AI2ldw<(outs GPR:$dst), (ins addrmode2:$addr), LdFrm, IIC_iLoadr,
                "ldr", "\t$dst, $addr",
                [(set GPR:$dst, (load addrmode2:$addr))]>;
 
 // Special LDR for loads from non-pc-relative constpools.
-let canFoldAsLoad = 1, mayLoad = 1, isReMaterializable = 1 in
+let canFoldAsLoad = 1, mayLoad = 1, isReMaterializable = 1,
+    mayHaveSideEffects = 1  in
 def LDRcp : AI2ldw<(outs GPR:$dst), (ins addrmode2:$addr), LdFrm, IIC_iLoadr,
                  "ldr", "\t$dst, $addr", []>;
 
@@ -992,7 +1021,7 @@ def MOVi16 : AI1<0b1000, (outs GPR:$dst), (ins i32imm:$src),
 let Constraints = "$src = $dst" in
 def MOVTi16 : AI1<0b1010, (outs GPR:$dst), (ins GPR:$src, i32imm:$imm),
                   DPFrm, IIC_iMOVi,
-                  "movt", "\t$dst, $imm", 
+                  "movt", "\t$dst, $imm",
                   [(set GPR:$dst,
                         (or (and GPR:$src, 0xffff), 
                             lo16AllZero:$imm))]>, UnaryDP,
@@ -1547,6 +1576,189 @@ def MOVCCi : AI1<0b1101, (outs GPR:$dst),
   let Inst{25} = 1;
 }
 
+//===----------------------------------------------------------------------===//
+// Atomic operations intrinsics
+//
+
+// memory barriers protect the atomic sequences
+let hasSideEffects = 1 in {
+def Int_MemBarrierV7 : AInoP<(outs), (ins),
+                        Pseudo, NoItinerary,
+                        "dmb", "",
+                        [(ARMMemBarrierV7)]>,
+                        Requires<[IsARM, HasV7]> {
+  let Inst{31-4} = 0xf57ff05;
+  // FIXME: add support for options other than a full system DMB
+  let Inst{3-0} = 0b1111;
+}
+
+def Int_SyncBarrierV7 : AInoP<(outs), (ins),
+                        Pseudo, NoItinerary,
+                        "dsb", "",
+                        [(ARMSyncBarrierV7)]>,
+                        Requires<[IsARM, HasV7]> {
+  let Inst{31-4} = 0xf57ff04;
+  // FIXME: add support for options other than a full system DSB
+  let Inst{3-0} = 0b1111;
+}
+
+def Int_MemBarrierV6 : AInoP<(outs), (ins GPR:$zero),
+                       Pseudo, NoItinerary,
+                       "mcr", "\tp15, 0, $zero, c7, c10, 5",
+                       [(ARMMemBarrierV6 GPR:$zero)]>,
+                       Requires<[IsARM, HasV6]> {
+  // FIXME: add support for options other than a full system DMB
+  // FIXME: add encoding
+}
+
+def Int_SyncBarrierV6 : AInoP<(outs), (ins GPR:$zero),
+                        Pseudo, NoItinerary,
+                        "mcr", "\tp15, 0, $zero, c7, c10, 4",
+                        [(ARMSyncBarrierV6 GPR:$zero)]>,
+                        Requires<[IsARM, HasV6]> {
+  // FIXME: add support for options other than a full system DSB
+  // FIXME: add encoding
+}
+}
+
+let usesCustomInserter = 1 in {
+  let Uses = [CPSR] in {
+    def ATOMIC_LOAD_ADD_I8 : PseudoInst<
+      (outs GPR:$dst), (ins GPR:$ptr, GPR:$incr), NoItinerary,
+      "${:comment} ATOMIC_LOAD_ADD_I8 PSEUDO!",
+      [(set GPR:$dst, (atomic_load_add_8 GPR:$ptr, GPR:$incr))]>;
+    def ATOMIC_LOAD_SUB_I8 : PseudoInst<
+      (outs GPR:$dst), (ins GPR:$ptr, GPR:$incr), NoItinerary,
+      "${:comment} ATOMIC_LOAD_SUB_I8 PSEUDO!",
+      [(set GPR:$dst, (atomic_load_sub_8 GPR:$ptr, GPR:$incr))]>;
+    def ATOMIC_LOAD_AND_I8 : PseudoInst<
+      (outs GPR:$dst), (ins GPR:$ptr, GPR:$incr), NoItinerary,
+      "${:comment} ATOMIC_LOAD_AND_I8 PSEUDO!",
+      [(set GPR:$dst, (atomic_load_and_8 GPR:$ptr, GPR:$incr))]>;
+    def ATOMIC_LOAD_OR_I8 : PseudoInst<
+      (outs GPR:$dst), (ins GPR:$ptr, GPR:$incr), NoItinerary,
+      "${:comment} ATOMIC_LOAD_OR_I8 PSEUDO!",
+      [(set GPR:$dst, (atomic_load_or_8 GPR:$ptr, GPR:$incr))]>;
+    def ATOMIC_LOAD_XOR_I8 : PseudoInst<
+      (outs GPR:$dst), (ins GPR:$ptr, GPR:$incr), NoItinerary,
+      "${:comment} ATOMIC_LOAD_XOR_I8 PSEUDO!",
+      [(set GPR:$dst, (atomic_load_xor_8 GPR:$ptr, GPR:$incr))]>;
+    def ATOMIC_LOAD_NAND_I8 : PseudoInst<
+      (outs GPR:$dst), (ins GPR:$ptr, GPR:$incr), NoItinerary,
+      "${:comment} ATOMIC_LOAD_NAND_I8 PSEUDO!",
+      [(set GPR:$dst, (atomic_load_nand_8 GPR:$ptr, GPR:$incr))]>;
+    def ATOMIC_LOAD_ADD_I16 : PseudoInst<
+      (outs GPR:$dst), (ins GPR:$ptr, GPR:$incr), NoItinerary,
+      "${:comment} ATOMIC_LOAD_ADD_I16 PSEUDO!",
+      [(set GPR:$dst, (atomic_load_add_16 GPR:$ptr, GPR:$incr))]>;
+    def ATOMIC_LOAD_SUB_I16 : PseudoInst<
+      (outs GPR:$dst), (ins GPR:$ptr, GPR:$incr), NoItinerary,
+      "${:comment} ATOMIC_LOAD_SUB_I16 PSEUDO!",
+      [(set GPR:$dst, (atomic_load_sub_16 GPR:$ptr, GPR:$incr))]>;
+    def ATOMIC_LOAD_AND_I16 : PseudoInst<
+      (outs GPR:$dst), (ins GPR:$ptr, GPR:$incr), NoItinerary,
+      "${:comment} ATOMIC_LOAD_AND_I16 PSEUDO!",
+      [(set GPR:$dst, (atomic_load_and_16 GPR:$ptr, GPR:$incr))]>;
+    def ATOMIC_LOAD_OR_I16 : PseudoInst<
+      (outs GPR:$dst), (ins GPR:$ptr, GPR:$incr), NoItinerary,
+      "${:comment} ATOMIC_LOAD_OR_I16 PSEUDO!",
+      [(set GPR:$dst, (atomic_load_or_16 GPR:$ptr, GPR:$incr))]>;
+    def ATOMIC_LOAD_XOR_I16 : PseudoInst<
+      (outs GPR:$dst), (ins GPR:$ptr, GPR:$incr), NoItinerary,
+      "${:comment} ATOMIC_LOAD_XOR_I16 PSEUDO!",
+      [(set GPR:$dst, (atomic_load_xor_16 GPR:$ptr, GPR:$incr))]>;
+    def ATOMIC_LOAD_NAND_I16 : PseudoInst<
+      (outs GPR:$dst), (ins GPR:$ptr, GPR:$incr), NoItinerary,
+      "${:comment} ATOMIC_LOAD_NAND_I16 PSEUDO!",
+      [(set GPR:$dst, (atomic_load_nand_16 GPR:$ptr, GPR:$incr))]>;
+    def ATOMIC_LOAD_ADD_I32 : PseudoInst<
+      (outs GPR:$dst), (ins GPR:$ptr, GPR:$incr), NoItinerary,
+      "${:comment} ATOMIC_LOAD_ADD_I32 PSEUDO!",
+      [(set GPR:$dst, (atomic_load_add_32 GPR:$ptr, GPR:$incr))]>;
+    def ATOMIC_LOAD_SUB_I32 : PseudoInst<
+      (outs GPR:$dst), (ins GPR:$ptr, GPR:$incr), NoItinerary,
+      "${:comment} ATOMIC_LOAD_SUB_I32 PSEUDO!",
+      [(set GPR:$dst, (atomic_load_sub_32 GPR:$ptr, GPR:$incr))]>;
+    def ATOMIC_LOAD_AND_I32 : PseudoInst<
+      (outs GPR:$dst), (ins GPR:$ptr, GPR:$incr), NoItinerary,
+      "${:comment} ATOMIC_LOAD_AND_I32 PSEUDO!",
+      [(set GPR:$dst, (atomic_load_and_32 GPR:$ptr, GPR:$incr))]>;
+    def ATOMIC_LOAD_OR_I32 : PseudoInst<
+      (outs GPR:$dst), (ins GPR:$ptr, GPR:$incr), NoItinerary,
+      "${:comment} ATOMIC_LOAD_OR_I32 PSEUDO!",
+      [(set GPR:$dst, (atomic_load_or_32 GPR:$ptr, GPR:$incr))]>;
+    def ATOMIC_LOAD_XOR_I32 : PseudoInst<
+      (outs GPR:$dst), (ins GPR:$ptr, GPR:$incr), NoItinerary,
+      "${:comment} ATOMIC_LOAD_XOR_I32 PSEUDO!",
+      [(set GPR:$dst, (atomic_load_xor_32 GPR:$ptr, GPR:$incr))]>;
+    def ATOMIC_LOAD_NAND_I32 : PseudoInst<
+      (outs GPR:$dst), (ins GPR:$ptr, GPR:$incr), NoItinerary,
+      "${:comment} ATOMIC_LOAD_NAND_I32 PSEUDO!",
+      [(set GPR:$dst, (atomic_load_nand_32 GPR:$ptr, GPR:$incr))]>;
+
+    def ATOMIC_SWAP_I8 : PseudoInst<
+      (outs GPR:$dst), (ins GPR:$ptr, GPR:$new), NoItinerary,
+      "${:comment} ATOMIC_SWAP_I8 PSEUDO!",
+      [(set GPR:$dst, (atomic_swap_8 GPR:$ptr, GPR:$new))]>;
+    def ATOMIC_SWAP_I16 : PseudoInst<
+      (outs GPR:$dst), (ins GPR:$ptr, GPR:$new), NoItinerary,
+      "${:comment} ATOMIC_SWAP_I16 PSEUDO!",
+      [(set GPR:$dst, (atomic_swap_16 GPR:$ptr, GPR:$new))]>;
+    def ATOMIC_SWAP_I32 : PseudoInst<
+      (outs GPR:$dst), (ins GPR:$ptr, GPR:$new), NoItinerary,
+      "${:comment} ATOMIC_SWAP_I32 PSEUDO!",
+      [(set GPR:$dst, (atomic_swap_32 GPR:$ptr, GPR:$new))]>;
+
+    def ATOMIC_CMP_SWAP_I8 : PseudoInst<
+      (outs GPR:$dst), (ins GPR:$ptr, GPR:$old, GPR:$new), NoItinerary,
+      "${:comment} ATOMIC_CMP_SWAP_I8 PSEUDO!",
+      [(set GPR:$dst, (atomic_cmp_swap_8 GPR:$ptr, GPR:$old, GPR:$new))]>;
+    def ATOMIC_CMP_SWAP_I16 : PseudoInst<
+      (outs GPR:$dst), (ins GPR:$ptr, GPR:$old, GPR:$new), NoItinerary,
+      "${:comment} ATOMIC_CMP_SWAP_I16 PSEUDO!",
+      [(set GPR:$dst, (atomic_cmp_swap_16 GPR:$ptr, GPR:$old, GPR:$new))]>;
+    def ATOMIC_CMP_SWAP_I32 : PseudoInst<
+      (outs GPR:$dst), (ins GPR:$ptr, GPR:$old, GPR:$new), NoItinerary,
+      "${:comment} ATOMIC_CMP_SWAP_I32 PSEUDO!",
+      [(set GPR:$dst, (atomic_cmp_swap_32 GPR:$ptr, GPR:$old, GPR:$new))]>;
+}
+}
+
+let mayLoad = 1 in {
+def LDREXB : AIldrex<0b10, (outs GPR:$dest), (ins GPR:$ptr), NoItinerary,
+                    "ldrexb", "\t$dest, [$ptr]",
+                    []>;
+def LDREXH : AIldrex<0b11, (outs GPR:$dest), (ins GPR:$ptr), NoItinerary,
+                    "ldrexh", "\t$dest, [$ptr]",
+                    []>;
+def LDREX  : AIldrex<0b00, (outs GPR:$dest), (ins GPR:$ptr), NoItinerary,
+                    "ldrex", "\t$dest, [$ptr]",
+                    []>;
+def LDREXD : AIldrex<0b01, (outs GPR:$dest, GPR:$dest2), (ins GPR:$ptr),
+                    NoItinerary,
+                    "ldrexd", "\t$dest, $dest2, [$ptr]",
+                    []>;
+}
+
+let mayStore = 1, Constraints = "@earlyclobber $success" in {
+def STREXB : AIstrex<0b10, (outs GPR:$success), (ins GPR:$src, GPR:$ptr),
+                    NoItinerary,
+                    "strexb", "\t$success, $src, [$ptr]",
+                    []>;
+def STREXH : AIstrex<0b11, (outs GPR:$success), (ins GPR:$src, GPR:$ptr),
+                    NoItinerary,
+                    "strexh", "\t$success, $src, [$ptr]",
+                    []>;
+def STREX  : AIstrex<0b00, (outs GPR:$success), (ins GPR:$src, GPR:$ptr),
+                    NoItinerary,
+                    "strex", "\t$success, $src, [$ptr]",
+                    []>;
+def STREXD : AIstrex<0b01, (outs GPR:$success),
+                    (ins GPR:$src, GPR:$src2, GPR:$ptr),
+                    NoItinerary,
+                    "strexd", "\t$success, $src, $src2, [$ptr]",
+                    []>;
+}
 
 //===----------------------------------------------------------------------===//
 // TLS Instructions
@@ -1593,12 +1805,6 @@ let Defs =
 // Non-Instruction Patterns
 //
 
-// ConstantPool, GlobalAddress, and JumpTable
-def : ARMPat<(ARMWrapper  tglobaladdr :$dst), (LEApcrel tglobaladdr :$dst)>;
-def : ARMPat<(ARMWrapper  tconstpool  :$dst), (LEApcrel tconstpool  :$dst)>;
-def : ARMPat<(ARMWrapperJT tjumptable:$dst, imm:$id),
-             (LEApcrelJT tjumptable:$dst, imm:$id)>;
-
 // Large immediate handling.
 
 // Two piece so_imms.
@@ -1618,9 +1824,9 @@ def : ARMPat<(xor GPR:$LHS, so_imm2part:$RHS),
 def : ARMPat<(add GPR:$LHS, so_imm2part:$RHS),
              (ADDri (ADDri GPR:$LHS, (so_imm2part_1 imm:$RHS)),
                     (so_imm2part_2 imm:$RHS))>;
-def : ARMPat<(sub GPR:$LHS, so_imm2part:$RHS),
-             (SUBri (SUBri GPR:$LHS, (so_imm2part_1 imm:$RHS)),
-                    (so_imm2part_2 imm:$RHS))>;
+def : ARMPat<(add GPR:$LHS, so_neg_imm2part:$RHS),
+             (SUBri (SUBri GPR:$LHS, (so_neg_imm2part_1 imm:$RHS)),
+                    (so_neg_imm2part_2 imm:$RHS))>;
 
 // 32-bit immediate using movw + movt.
 // This is a single pseudo instruction, the benefit is that it can be remat'd
@@ -1628,9 +1834,18 @@ def : ARMPat<(sub GPR:$LHS, so_imm2part:$RHS),
 // FIXME: Remove this when we can do generalized remat.
 let isReMaterializable = 1 in
 def MOVi32imm : AI1x2<(outs GPR:$dst), (ins i32imm:$src), Pseudo, IIC_iMOVi,
-                    "movw", "\t$dst, ${src:lo16}\n\tmovt${p} $dst, ${src:hi16}",
+                    "movw", "\t$dst, ${src:lo16}\n\tmovt${p}\t$dst, ${src:hi16}",
                      [(set GPR:$dst, (i32 imm:$src))]>,
                Requires<[IsARM, HasV6T2]>;
+
+// ConstantPool, GlobalAddress, and JumpTable
+def : ARMPat<(ARMWrapper  tglobaladdr :$dst), (LEApcrel tglobaladdr :$dst)>,
+            Requires<[IsARM, DontUseMovt]>;
+def : ARMPat<(ARMWrapper  tconstpool  :$dst), (LEApcrel tconstpool  :$dst)>;
+def : ARMPat<(ARMWrapper  tglobaladdr :$dst), (MOVi32imm tglobaladdr :$dst)>,
+            Requires<[IsARM, UseMovt]>;
+def : ARMPat<(ARMWrapperJT tjumptable:$dst, imm:$id),
+             (LEApcrelJT tjumptable:$dst, imm:$id)>;
 
 // TODO: add,sub,and, 3-instr forms?
 

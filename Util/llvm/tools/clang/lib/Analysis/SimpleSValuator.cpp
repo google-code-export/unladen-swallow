@@ -13,12 +13,11 @@
 
 #include "clang/Analysis/PathSensitive/SValuator.h"
 #include "clang/Analysis/PathSensitive/GRState.h"
-#include "llvm/Support/Compiler.h"
 
 using namespace clang;
 
 namespace {
-class VISIBILITY_HIDDEN SimpleSValuator : public SValuator {
+class SimpleSValuator : public SValuator {
 protected:
   virtual SVal EvalCastNL(NonLoc val, QualType castTy);
   virtual SVal EvalCastL(Loc val, QualType castTy);
@@ -54,13 +53,13 @@ SVal SimpleSValuator::EvalCastNL(NonLoc val, QualType castTy) {
     if (isLocType)
       return LI->getLoc();
 
+    // FIXME: Correctly support promotions/truncations.
     ASTContext &Ctx = ValMgr.getContext();
-
-    // FIXME: Support promotions/truncations.
-    if (Ctx.getTypeSize(castTy) == Ctx.getTypeSize(Ctx.VoidPtrTy))
+    unsigned castSize = Ctx.getTypeSize(castTy);
+    if (castSize == LI->getNumBits())
       return val;
 
-    return UnknownVal();
+    return ValMgr.makeLocAsInteger(LI->getLoc(), castSize);
   }
 
   if (const SymExpr *se = val.getAsSymbolicExpression()) {

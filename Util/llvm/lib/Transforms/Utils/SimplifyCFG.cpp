@@ -459,7 +459,7 @@ static bool SimplifyEqualityComparisonWithOnlyPredecessor(TerminatorInst *TI,
         // Remove PHI node entries for the dead edge.
         ThisCases[0].second->removePredecessor(TI->getParent());
 
-        DEBUG(errs() << "Threading pred instr: " << *Pred->getTerminator()
+        DEBUG(dbgs() << "Threading pred instr: " << *Pred->getTerminator()
              << "Through successor TI: " << *TI << "Leaving: " << *NI << "\n");
 
         EraseTerminatorInstAndDCECond(TI);
@@ -472,7 +472,7 @@ static bool SimplifyEqualityComparisonWithOnlyPredecessor(TerminatorInst *TI,
         for (unsigned i = 0, e = PredCases.size(); i != e; ++i)
           DeadCases.insert(PredCases[i].first);
 
-        DEBUG(errs() << "Threading pred instr: " << *Pred->getTerminator()
+        DEBUG(dbgs() << "Threading pred instr: " << *Pred->getTerminator()
                      << "Through successor TI: " << *TI);
 
         for (unsigned i = SI->getNumCases()-1; i != 0; --i)
@@ -481,7 +481,7 @@ static bool SimplifyEqualityComparisonWithOnlyPredecessor(TerminatorInst *TI,
             SI->removeCase(i);
           }
 
-        DEBUG(errs() << "Leaving: " << *TI << "\n");
+        DEBUG(dbgs() << "Leaving: " << *TI << "\n");
         return true;
       }
     }
@@ -524,7 +524,7 @@ static bool SimplifyEqualityComparisonWithOnlyPredecessor(TerminatorInst *TI,
     Instruction *NI = BranchInst::Create(TheRealDest, TI);
     (void) NI;
 
-    DEBUG(errs() << "Threading pred instr: " << *Pred->getTerminator()
+    DEBUG(dbgs() << "Threading pred instr: " << *Pred->getTerminator()
               << "Through successor TI: " << *TI << "Leaving: " << *NI << "\n");
 
     EraseTerminatorInstAndDCECond(TI);
@@ -753,7 +753,7 @@ HoistTerminator:
   // Okay, it is safe to hoist the terminator.
   Instruction *NT = I1->clone();
   BIParent->getInstList().insert(BI, NT);
-  if (NT->getType() != Type::getVoidTy(BB1->getContext())) {
+  if (!NT->getType()->isVoidTy()) {
     I1->replaceAllUsesWith(NT);
     I2->replaceAllUsesWith(NT);
     NT->takeName(I1);
@@ -1011,7 +1011,7 @@ static bool FoldCondBranchOnPHI(BranchInst *BI) {
   for (unsigned i = 0, e = PN->getNumIncomingValues(); i != e; ++i) {
     ConstantInt *CB;
     if ((CB = dyn_cast<ConstantInt>(PN->getIncomingValue(i))) &&
-        CB->getType() == Type::getInt1Ty(BB->getContext())) {
+        CB->getType()->isInteger(1)) {
       // Okay, we now know that all edges from PredBB should be revectored to
       // branch to RealDest.
       BasicBlock *PredBB = PN->getIncomingBlock(i);
@@ -1111,7 +1111,7 @@ static bool FoldTwoEntryPHINode(PHINode *PN) {
     if (NumPhis > 2)
       return false;
   
-  DEBUG(errs() << "FOUND IF CONDITION!  " << *IfCond << "  T: "
+  DEBUG(dbgs() << "FOUND IF CONDITION!  " << *IfCond << "  T: "
         << IfTrue->getName() << "  F: " << IfFalse->getName() << "\n");
   
   // Loop over the PHI's seeing if we can promote them all to select
@@ -1295,7 +1295,7 @@ static bool SimplifyCondBranchToTwoReturns(BranchInst *BI) {
               ReturnInst::Create(BI->getContext(), TrueValue, BI);
   (void) RI;
       
-  DEBUG(errs() << "\nCHANGING BRANCH TO TWO RETURNS INTO SELECT:"
+  DEBUG(dbgs() << "\nCHANGING BRANCH TO TWO RETURNS INTO SELECT:"
                << "\n  " << *BI << "NewRet = " << *RI
                << "TRUEBLOCK: " << *TrueSucc << "FALSEBLOCK: "<< *FalseSucc);
       
@@ -1377,7 +1377,7 @@ bool llvm::FoldBranchToCommonDest(BranchInst *BI) {
     else
       continue;
 
-    DEBUG(errs() << "FOLDING BRANCH TO COMMON DEST:\n" << *PBI << *BB);
+    DEBUG(dbgs() << "FOLDING BRANCH TO COMMON DEST:\n" << *PBI << *BB);
     
     // If we need to invert the condition in the pred block to match, do so now.
     if (InvertPredCond) {
@@ -1511,7 +1511,7 @@ static bool SimplifyCondBranchToCondBranch(BranchInst *PBI, BranchInst *BI) {
   // Finally, if everything is ok, fold the branches to logical ops.
   BasicBlock *OtherDest  = BI->getSuccessor(BIOp ^ 1);
   
-  DEBUG(errs() << "FOLDING BRs:" << *PBI->getParent()
+  DEBUG(dbgs() << "FOLDING BRs:" << *PBI->getParent()
                << "AND: " << *BI->getParent());
   
   
@@ -1531,7 +1531,7 @@ static bool SimplifyCondBranchToCondBranch(BranchInst *PBI, BranchInst *BI) {
     OtherDest = InfLoopBlock;
   }  
   
-  DEBUG(errs() << *PBI->getParent()->getParent());
+  DEBUG(dbgs() << *PBI->getParent()->getParent());
   
   // BI may have other predecessors.  Because of this, we leave
   // it alone, but modify PBI.
@@ -1581,75 +1581,12 @@ static bool SimplifyCondBranchToCondBranch(BranchInst *PBI, BranchInst *BI) {
     }
   }
   
-  DEBUG(errs() << "INTO: " << *PBI->getParent());
-  DEBUG(errs() << *PBI->getParent()->getParent());
+  DEBUG(dbgs() << "INTO: " << *PBI->getParent());
+  DEBUG(dbgs() << *PBI->getParent()->getParent());
   
   // This basic block is probably dead.  We know it has at least
   // one fewer predecessor.
   return true;
-}
-
-/// EliminateDuplicatePHINodes - Check for and eliminate duplicate PHI
-/// nodes in this block. This doesn't try to be clever about PHI nodes
-/// which differ only in the order of the incoming values, but instcombine
-/// orders them so it usually won't matter.
-///
-bool llvm::EliminateDuplicatePHINodes(BasicBlock *BB) {
-  bool Changed = false;
-  
-  // This implementation doesn't currently consider undef operands
-  // specially. Theroetically, two phis which are identical except for
-  // one having an undef where the other doesn't could be collapsed.
-
-  // Map from PHI hash values to PHI nodes. If multiple PHIs have
-  // the same hash value, the element is the first PHI in the
-  // linked list in CollisionMap.
-  DenseMap<uintptr_t, PHINode *> HashMap;
-
-  // Maintain linked lists of PHI nodes with common hash values.
-  DenseMap<PHINode *, PHINode *> CollisionMap;
-
-  // Examine each PHI.
-  for (BasicBlock::iterator I = BB->begin();
-       PHINode *PN = dyn_cast<PHINode>(I++); ) {
-    // Compute a hash value on the operands. Instcombine will likely have sorted
-    // them, which helps expose duplicates, but we have to check all the
-    // operands to be safe in case instcombine hasn't run.
-    uintptr_t Hash = 0;
-    for (User::op_iterator I = PN->op_begin(), E = PN->op_end(); I != E; ++I) {
-      // This hash algorithm is quite weak as hash functions go, but it seems
-      // to do a good enough job for this particular purpose, and is very quick.
-      Hash ^= reinterpret_cast<uintptr_t>(static_cast<Value *>(*I));
-      Hash = (Hash << 7) | (Hash >> (sizeof(uintptr_t) * CHAR_BIT - 7));
-    }
-    // If we've never seen this hash value before, it's a unique PHI.
-    std::pair<DenseMap<uintptr_t, PHINode *>::iterator, bool> Pair =
-      HashMap.insert(std::make_pair(Hash, PN));
-    if (Pair.second) continue;
-    // Otherwise it's either a duplicate or a hash collision.
-    for (PHINode *OtherPN = Pair.first->second; ; ) {
-      if (OtherPN->isIdenticalTo(PN)) {
-        // A duplicate. Replace this PHI with its duplicate.
-        PN->replaceAllUsesWith(OtherPN);
-        PN->eraseFromParent();
-        Changed = true;
-        break;
-      }
-      // A non-duplicate hash collision.
-      DenseMap<PHINode *, PHINode *>::iterator I = CollisionMap.find(OtherPN);
-      if (I == CollisionMap.end()) {
-        // Set this PHI to be the head of the linked list of colliding PHIs.
-        PHINode *Old = Pair.first->second;
-        Pair.first->second = PN;
-        CollisionMap[PN] = Old;
-        break;
-      }
-      // Procede to the next PHI in the list.
-      OtherPN = I->second;
-    }
-  }
-
-  return Changed;
 }
 
 /// SimplifyCFG - This function is used to do simplification of a CFG.  For
@@ -1671,7 +1608,7 @@ bool llvm::SimplifyCFG(BasicBlock *BB) {
   // Remove basic blocks that have no predecessors... or that just have themself
   // as a predecessor.  These are unreachable.
   if (pred_begin(BB) == pred_end(BB) || BB->getSinglePredecessor() == BB) {
-    DEBUG(errs() << "Removing BB: \n" << *BB);
+    DEBUG(dbgs() << "Removing BB: \n" << *BB);
     DeleteDeadBlock(BB);
     return true;
   }
@@ -1714,19 +1651,12 @@ bool llvm::SimplifyCFG(BasicBlock *BB) {
       if (!UncondBranchPreds.empty()) {
         while (!UncondBranchPreds.empty()) {
           BasicBlock *Pred = UncondBranchPreds.pop_back_val();
-          DEBUG(errs() << "FOLDING: " << *BB
+          DEBUG(dbgs() << "FOLDING: " << *BB
                        << "INTO UNCOND BRANCH PRED: " << *Pred);
           Instruction *UncondBranch = Pred->getTerminator();
           // Clone the return and add it to the end of the predecessor.
           Instruction *NewRet = RI->clone();
           Pred->getInstList().push_back(NewRet);
-
-          BasicBlock::iterator BBI = RI;
-          if (BBI != BB->begin()) {
-            // Move region end info into the predecessor.
-            if (DbgRegionEndInst *DREI = dyn_cast<DbgRegionEndInst>(--BBI))
-              DREI->moveBefore(NewRet);
-          }
 
           // If the return instruction returns a value, and if the value was a
           // PHI node in "BB", propagate the right value into the return.

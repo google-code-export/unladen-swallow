@@ -22,13 +22,14 @@ using namespace clang;
 
 namespace {
 
-struct RefState {
-  enum Kind { Allocated, Released, Escaped } K;
+class RefState {
+  enum Kind { AllocateUnchecked, AllocateFailed, Released, Escaped } K;
   const Stmt *S;
 
+public:
   RefState(Kind k, const Stmt *s) : K(k), S(s) {}
 
-  bool isAllocated() const { return K == Allocated; }
+  bool isAllocated() const { return K == AllocateUnchecked; }
   bool isReleased() const { return K == Released; }
   bool isEscaped() const { return K == Escaped; }
 
@@ -36,7 +37,12 @@ struct RefState {
     return K == X.K && S == X.S;
   }
 
-  static RefState getAllocated(const Stmt *s) { return RefState(Allocated, s); }
+  static RefState getAllocateUnchecked(const Stmt *s) { 
+    return RefState(AllocateUnchecked, s); 
+  }
+  static RefState getAllocateFailed() {
+    return RefState(AllocateFailed, 0);
+  }
   static RefState getReleased(const Stmt *s) { return RefState(Released, s); }
   static RefState getEscaped(const Stmt *s) { return RefState(Escaped, s); }
 
@@ -46,26 +52,36 @@ struct RefState {
   }
 };
 
-class VISIBILITY_HIDDEN RegionState {};
+class RegionState {};
 
-class VISIBILITY_HIDDEN MallocChecker : public CheckerVisitor<MallocChecker> {
+class MallocChecker : public CheckerVisitor<MallocChecker> {
   BuiltinBug *BT_DoubleFree;
   BuiltinBug *BT_Leak;
-  IdentifierInfo *II_malloc;
-  IdentifierInfo *II_free;
+  IdentifierInfo *II_malloc, *II_free, *II_realloc;
 
 public:
-  MallocChecker() : BT_DoubleFree(0), BT_Leak(0), II_malloc(0), II_free(0) {}
+  MallocChecker() 
+    : BT_DoubleFree(0), BT_Leak(0), II_malloc(0), II_free(0), II_realloc(0) {}
   static void *getTag();
-  void PostVisitCallExpr(CheckerContext &C, const CallExpr *CE);
+  bool EvalCallExpr(CheckerContext &C, const CallExpr *CE);
   void EvalDeadSymbols(CheckerContext &C,const Stmt *S,SymbolReaper &SymReaper);
   void EvalEndPath(GREndPathNodeBuilder &B, void *tag, GRExprEngine &Eng);
   void PreVisitReturnStmt(CheckerContext &C, const ReturnStmt *S);
+  const GRState *EvalAssume(const GRState *state, SVal Cond, bool Assumption);
+
 private:
   void MallocMem(CheckerContext &C, const CallExpr *CE);
+  const GRState *MallocMemAux(CheckerContext &C, const CallExpr *CE,
+                              const GRState *state);
   void FreeMem(CheckerContext &C, const CallExpr *CE);
+  const GRState *FreeMemAux(CheckerContext &C, const CallExpr *CE,
+                            const GRState *state);
+
+  void ReallocMem(CheckerContext &C, const CallExpr *CE);
 };
-}
+} // end anonymous namespace
+
+typedef llvm::ImmutableMap<SymbolRef, RefState> RegionStateTy;
 
 namespace clang {
   template <>
@@ -84,41 +100,71 @@ void *MallocChecker::getTag() {
   return &x;
 }
 
-void MallocChecker::PostVisitCallExpr(CheckerContext &C, const CallExpr *CE) {
-  const FunctionDecl *FD = CE->getDirectCallee();
+bool MallocChecker::EvalCallExpr(CheckerContext &C, const CallExpr *CE) {
+  const GRState *state = C.getState();
+  const Expr *Callee = CE->getCallee();
+  SVal L = state->getSVal(Callee);
+
+  const FunctionDecl *FD = L.getAsFunctionDecl();
   if (!FD)
-    return;
+    return false;
 
   ASTContext &Ctx = C.getASTContext();
   if (!II_malloc)
     II_malloc = &Ctx.Idents.get("malloc");
   if (!II_free)
     II_free = &Ctx.Idents.get("free");
+  if (!II_realloc)
+    II_realloc = &Ctx.Idents.get("realloc");
 
   if (FD->getIdentifier() == II_malloc) {
     MallocMem(C, CE);
-    return;
+    return true;
   }
 
   if (FD->getIdentifier() == II_free) {
     FreeMem(C, CE);
-    return;
+    return true;
   }
+
+  if (FD->getIdentifier() == II_realloc) {
+    ReallocMem(C, CE);
+    return true;
+  }
+
+  return false;
 }
 
 void MallocChecker::MallocMem(CheckerContext &C, const CallExpr *CE) {
-  const GRState *state = C.getState();
-  SVal CallVal = state->getSVal(CE);
-  SymbolRef Sym = CallVal.getAsLocSymbol();
+  const GRState *state = MallocMemAux(C, CE, C.getState());
+  C.addTransition(state);
+}
+
+const GRState *MallocChecker::MallocMemAux(CheckerContext &C,  
+                                           const CallExpr *CE,
+                                           const GRState *state) {
+  unsigned Count = C.getNodeBuilder().getCurrentBlockCount();
+  ValueManager &ValMgr = C.getValueManager();
+
+  SVal RetVal = ValMgr.getConjuredSymbolVal(NULL, CE, CE->getType(), Count);
+
+  state = state->BindExpr(CE, RetVal);
+  
+  SymbolRef Sym = RetVal.getAsLocSymbol();
   assert(Sym);
   // Set the symbol's state to Allocated.
-  const GRState *AllocState 
-    = state->set<RegionState>(Sym, RefState::getAllocated(CE));
-  C.addTransition(C.GenerateNode(CE, AllocState));
+  return state->set<RegionState>(Sym, RefState::getAllocateUnchecked(CE));
 }
 
 void MallocChecker::FreeMem(CheckerContext &C, const CallExpr *CE) {
-  const GRState *state = C.getState();
+  const GRState *state = FreeMemAux(C, CE, C.getState());
+
+  if (state)
+    C.addTransition(state);
+}
+
+const GRState *MallocChecker::FreeMemAux(CheckerContext &C, const CallExpr *CE,
+                                         const GRState *state) {
   SVal ArgVal = state->getSVal(CE->getArg(0));
   SymbolRef Sym = ArgVal.getAsLocSymbol();
   assert(Sym);
@@ -128,7 +174,7 @@ void MallocChecker::FreeMem(CheckerContext &C, const CallExpr *CE) {
 
   // Check double free.
   if (RS->isReleased()) {
-    ExplodedNode *N = C.GenerateNode(CE, true);
+    ExplodedNode *N = C.GenerateSink();
     if (N) {
       if (!BT_DoubleFree)
         BT_DoubleFree = new BuiltinBug("Double free",
@@ -138,13 +184,59 @@ void MallocChecker::FreeMem(CheckerContext &C, const CallExpr *CE) {
                                    BT_DoubleFree->getDescription(), N);
       C.EmitReport(R);
     }
-    return;
+    return NULL;
   }
 
   // Normal free.
-  const GRState *FreedState 
-    = state->set<RegionState>(Sym, RefState::getReleased(CE));
-  C.addTransition(C.GenerateNode(CE, FreedState));
+  return state->set<RegionState>(Sym, RefState::getReleased(CE));
+}
+
+void MallocChecker::ReallocMem(CheckerContext &C, const CallExpr *CE) {
+  const GRState *state = C.getState();
+  const Expr *Arg0 = CE->getArg(0);
+  DefinedOrUnknownSVal Arg0Val=cast<DefinedOrUnknownSVal>(state->getSVal(Arg0));
+
+  ValueManager &ValMgr = C.getValueManager();
+  SValuator &SVator = C.getSValuator();
+
+  DefinedOrUnknownSVal PtrEQ = SVator.EvalEQ(state, Arg0Val, ValMgr.makeNull());
+
+  // If the ptr is NULL, the call is equivalent to malloc(size).
+  if (const GRState *stateEqual = state->Assume(PtrEQ, true)) {
+    // Hack: set the NULL symbolic region to released to suppress false warning.
+    // In the future we should add more states for allocated regions, e.g., 
+    // CheckedNull, CheckedNonNull.
+    
+    SymbolRef Sym = Arg0Val.getAsLocSymbol();
+    if (Sym)
+      stateEqual = stateEqual->set<RegionState>(Sym, RefState::getReleased(CE));
+
+    const GRState *stateMalloc = MallocMemAux(C, CE, stateEqual);
+    C.addTransition(stateMalloc);
+  }
+
+  if (const GRState *stateNotEqual = state->Assume(PtrEQ, false)) {
+    const Expr *Arg1 = CE->getArg(1);
+    DefinedOrUnknownSVal Arg1Val = 
+      cast<DefinedOrUnknownSVal>(stateNotEqual->getSVal(Arg1));
+    DefinedOrUnknownSVal SizeZero = SVator.EvalEQ(stateNotEqual, Arg1Val,
+                                      ValMgr.makeIntValWithPtrWidth(0, false));
+
+    if (const GRState *stateSizeZero = stateNotEqual->Assume(SizeZero, true)) {
+      const GRState *stateFree = FreeMemAux(C, CE, stateSizeZero);
+      if (stateFree)
+        C.addTransition(stateFree->BindExpr(CE, UndefinedVal(), true));
+    }
+
+    if (const GRState *stateSizeNotZero=stateNotEqual->Assume(SizeZero,false)) {
+      const GRState *stateFree = FreeMemAux(C, CE, stateSizeNotZero);
+      if (stateFree) {
+        // FIXME: We should copy the content of the original buffer.
+        const GRState *stateRealloc = MallocMemAux(C, CE, stateFree);
+        C.addTransition(stateRealloc);
+      }
+    }
+  }
 }
 
 void MallocChecker::EvalDeadSymbols(CheckerContext &C, const Stmt *S,
@@ -158,7 +250,7 @@ void MallocChecker::EvalDeadSymbols(CheckerContext &C, const Stmt *S,
       return;
 
     if (RS->isAllocated()) {
-      ExplodedNode *N = C.GenerateNode(S, true);
+      ExplodedNode *N = C.GenerateSink();
       if (N) {
         if (!BT_Leak)
           BT_Leak = new BuiltinBug("Memory leak",
@@ -173,6 +265,7 @@ void MallocChecker::EvalDeadSymbols(CheckerContext &C, const Stmt *S,
 
 void MallocChecker::EvalEndPath(GREndPathNodeBuilder &B, void *tag,
                                 GRExprEngine &Eng) {
+  SaveAndRestore<bool> OldHasGen(B.HasGeneratedNode);
   const GRState *state = B.getState();
   typedef llvm::ImmutableMap<SymbolRef, RefState> SymMap;
   SymMap M = state->get<RegionState>();
@@ -212,7 +305,20 @@ void MallocChecker::PreVisitReturnStmt(CheckerContext &C, const ReturnStmt *S) {
   if (RS->isAllocated())
     state = state->set<RegionState>(Sym, RefState::getEscaped(S));
 
-  ExplodedNode *N = C.GenerateNode(S, state);
-  if (N)
-    C.addTransition(N);
+  C.addTransition(state);
+}
+
+const GRState *MallocChecker::EvalAssume(const GRState *state, SVal Cond, 
+                                         bool Assumption) {
+  // If a symblic region is assumed to NULL, set its state to AllocateFailed.
+  // FIXME: should also check symbols assumed to non-null.
+
+  RegionStateTy RS = state->get<RegionState>();
+
+  for (RegionStateTy::iterator I = RS.begin(), E = RS.end(); I != E; ++I) {
+    if (state->getSymVal(I.getKey()))
+      state = state->set<RegionState>(I.getKey(),RefState::getAllocateFailed());
+  }
+
+  return state;
 }

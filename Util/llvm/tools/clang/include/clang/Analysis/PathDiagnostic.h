@@ -14,37 +14,30 @@
 #ifndef LLVM_CLANG_PATH_DIAGNOSTIC_H
 #define LLVM_CLANG_PATH_DIAGNOSTIC_H
 
-#include "clang/Basic/SourceManager.h"
 #include "clang/Basic/Diagnostic.h"
-#include "llvm/ADT/OwningPtr.h"
 #include "llvm/ADT/FoldingSet.h"
-
-#include <vector>
 #include <deque>
+#include <iterator>
 #include <string>
-#include <algorithm>
+#include <vector>
 
 namespace clang {
-    
-class Stmt;
+
 class Decl;
-class Preprocessor;
-  
+class SourceManager;
+class Stmt;
+
 //===----------------------------------------------------------------------===//
 // High-level interface for handlers of path-sensitive diagnostics.
 //===----------------------------------------------------------------------===//
 
 class PathDiagnostic;
-    
-class Stmt;
-class Decl;
-class Preprocessor;
 
 class PathDiagnosticClient : public DiagnosticClient  {
 public:
   PathDiagnosticClient() {}
 
-  virtual ~PathDiagnosticClient() {};
+  virtual ~PathDiagnosticClient() {}
   
   virtual void
   FlushDiagnostics(llvm::SmallVectorImpl<std::string> *FilesMade = 0) = 0;
@@ -186,9 +179,7 @@ private:
   PathDiagnosticPiece& operator=(const PathDiagnosticPiece &P);
 
 protected:
-  PathDiagnosticPiece(const std::string& s, Kind k, DisplayHint hint = Below);
-
-  PathDiagnosticPiece(const char* s, Kind k, DisplayHint hint = Below);
+  PathDiagnosticPiece(llvm::StringRef s, Kind k, DisplayHint hint = Below);
 
   PathDiagnosticPiece(Kind k, DisplayHint hint = Below);
 
@@ -249,7 +240,7 @@ private:
   PathDiagnosticLocation Pos;
 public:
   PathDiagnosticSpotPiece(const PathDiagnosticLocation &pos,
-                          const std::string& s,
+                          llvm::StringRef s,
                           PathDiagnosticPiece::Kind k,
                           bool addPosRange = true)
   : PathDiagnosticPiece(s, k), Pos(pos) {
@@ -268,11 +259,7 @@ class PathDiagnosticEventPiece : public PathDiagnosticSpotPiece {
 
 public:
   PathDiagnosticEventPiece(const PathDiagnosticLocation &pos,
-                           const std::string& s, bool addPosRange = true)
-    : PathDiagnosticSpotPiece(pos, s, Event, addPosRange) {}
-
-  PathDiagnosticEventPiece(const PathDiagnosticLocation &pos, const char* s,
-                           bool addPosRange = true)
+                           llvm::StringRef s, bool addPosRange = true)
     : PathDiagnosticSpotPiece(pos, s, Event, addPosRange) {}
 
   ~PathDiagnosticEventPiece();
@@ -287,14 +274,7 @@ class PathDiagnosticControlFlowPiece : public PathDiagnosticPiece {
 public:
   PathDiagnosticControlFlowPiece(const PathDiagnosticLocation &startPos,
                                  const PathDiagnosticLocation &endPos,
-                                 const std::string& s)
-    : PathDiagnosticPiece(s, ControlFlow) {
-      LPairs.push_back(PathDiagnosticLocationPair(startPos, endPos));
-    }
-
-  PathDiagnosticControlFlowPiece(const PathDiagnosticLocation &startPos,
-                                 const PathDiagnosticLocation &endPos,
-                                 const char* s)
+                                 llvm::StringRef s)
     : PathDiagnosticPiece(s, ControlFlow) {
       LPairs.push_back(PathDiagnosticLocationPair(startPos, endPos));
     }
@@ -391,22 +371,19 @@ class PathDiagnostic : public llvm::FoldingSetNode {
 public:
   PathDiagnostic();
 
-  PathDiagnostic(const char* bugtype, const char* desc, const char* category);
-
-  PathDiagnostic(const std::string& bugtype, const std::string& desc,
-                 const std::string& category);
+  PathDiagnostic(llvm::StringRef bugtype, llvm::StringRef desc,
+                 llvm::StringRef category);
 
   ~PathDiagnostic();
 
-  const std::string& getDescription() const { return Desc; }
-  const std::string& getBugType() const { return BugType; }
-  const std::string& getCategory() const { return Category; }
+  llvm::StringRef getDescription() const { return Desc; }
+  llvm::StringRef getBugType() const { return BugType; }
+  llvm::StringRef getCategory() const { return Category; }
 
   typedef std::deque<std::string>::const_iterator meta_iterator;
   meta_iterator meta_begin() const { return OtherDesc.begin(); }
   meta_iterator meta_end() const { return OtherDesc.end(); }
-  void addMeta(const std::string& s) { OtherDesc.push_back(s); }
-  void addMeta(const char* s) { OtherDesc.push_back(s); }
+  void addMeta(llvm::StringRef s) { OtherDesc.push_back(s); }
 
   PathDiagnosticLocation getLocation() const {
     assert(Size > 0 && "getLocation() requires a non-empty PathDiagnostic.");

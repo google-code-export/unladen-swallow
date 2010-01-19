@@ -26,6 +26,7 @@
 #include "llvm/CodeGen/MachineJumpTableInfo.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/Passes.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Target/TargetData.h"
 #include "llvm/Target/TargetLowering.h"
 #include "llvm/Target/TargetMachine.h"
@@ -299,7 +300,7 @@ MachineFunction::extractStoreMemRefs(MachineInstr::mmo_iterator Begin,
 }
 
 void MachineFunction::dump() const {
-  print(errs());
+  print(dbgs());
 }
 
 void MachineFunction::print(raw_ostream &OS) const {
@@ -328,7 +329,7 @@ void MachineFunction::print(raw_ostream &OS) const {
       if (I->second)
         OS << " in reg%" << I->second;
 
-      if (next(I) != E)
+      if (llvm::next(I) != E)
         OS << ", ";
     }
     OS << '\n';
@@ -342,7 +343,7 @@ void MachineFunction::print(raw_ostream &OS) const {
       else
         OS << "%physreg" << *I;
 
-      if (next(I) != E)
+      if (llvm::next(I) != E)
         OS << " ";
     }
     OS << '\n';
@@ -359,14 +360,16 @@ void MachineFunction::print(raw_ostream &OS) const {
 namespace llvm {
   template<>
   struct DOTGraphTraits<const MachineFunction*> : public DefaultDOTGraphTraits {
+
+  DOTGraphTraits (bool isSimple=false) : DefaultDOTGraphTraits(isSimple) {}
+
     static std::string getGraphName(const MachineFunction *F) {
       return "CFG for '" + F->getFunction()->getNameStr() + "' function";
     }
 
-    static std::string getNodeLabel(const MachineBasicBlock *Node,
-                                    const MachineFunction *Graph,
-                                    bool ShortNames) {
-      if (ShortNames && Node->getBasicBlock() &&
+    std::string getNodeLabel(const MachineBasicBlock *Node,
+                             const MachineFunction *Graph) {
+      if (isSimple () && Node->getBasicBlock() &&
           !Node->getBasicBlock()->getName().empty())
         return Node->getBasicBlock()->getNameStr() + ":";
 
@@ -374,7 +377,7 @@ namespace llvm {
       {
         raw_string_ostream OSS(OutStr);
         
-        if (ShortNames)
+        if (isSimple())
           OSS << Node->getNumber() << ':';
         else
           Node->print(OSS);
@@ -517,7 +520,7 @@ void MachineFrameInfo::print(const MachineFunction &MF, raw_ostream &OS) const{
 }
 
 void MachineFrameInfo::dump(const MachineFunction &MF) const {
-  print(MF, errs());
+  print(MF, dbgs());
 }
 
 //===----------------------------------------------------------------------===//
@@ -577,7 +580,7 @@ void MachineJumpTableInfo::print(raw_ostream &OS) const {
   OS << '\n';
 }
 
-void MachineJumpTableInfo::dump() const { print(errs()); }
+void MachineJumpTableInfo::dump() const { print(dbgs()); }
 
 
 //===----------------------------------------------------------------------===//
@@ -700,4 +703,4 @@ void MachineConstantPool::print(raw_ostream &OS) const {
   }
 }
 
-void MachineConstantPool::dump() const { print(errs()); }
+void MachineConstantPool::dump() const { print(dbgs()); }

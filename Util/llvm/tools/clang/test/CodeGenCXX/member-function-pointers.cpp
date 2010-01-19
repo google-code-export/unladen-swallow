@@ -1,4 +1,4 @@
-// RUN: clang-cc %s -emit-llvm -o - -triple=x86_64-apple-darwin9 | FileCheck %s
+// RUN: %clang_cc1 %s -emit-llvm -o - -triple=x86_64-apple-darwin9 | FileCheck %s
 
 struct A { int a; void f(); virtual void vf(); };
 struct B { int b; virtual void g(); };
@@ -34,6 +34,11 @@ void f() {
   // CHECK: [[ADJ:%[a-zA-Z0-9\.]+]] = add i64 {{.*}}, 16
   // CHECK: store i64 [[ADJ]], i64* getelementptr inbounds (%0* @pc, i32 0, i32 1)
   pc = pa;
+
+  // CHECK: store i64 {{.*}}, i64* getelementptr inbounds (%0* @pa, i32 0, i32 0)
+  // CHECK: [[ADJ:%[a-zA-Z0-9\.]+]] = sub i64 {{.*}}, 16
+  // CHECK: store i64 [[ADJ]], i64* getelementptr inbounds (%0* @pa, i32 0, i32 1)
+  pa = static_cast<void (A::*)()>(pc);
 }
 
 void f2() {
@@ -53,6 +58,10 @@ void f2() {
 void f3(A *a, A &ar) {
   (a->*pa)();
   (ar.*pa)();
+}
+
+bool f4() {
+  return pa;
 }
 
 // PR5177
@@ -86,4 +95,47 @@ namespace PR5138 {
   void (*ptr2)(void *) = (void (*)(void *))&baz;
 
   void (foo::*ptr3)(void) = (void (foo::*)(void))&foo::bar;
+}
+
+// PR5593
+namespace PR5593 {
+  struct A { };
+  
+  bool f(void (A::*f)()) {
+    return f && f;
+  }
+}
+
+namespace PR5718 {
+  struct A { };
+  
+  bool f(void (A::*f)(), void (A::*g)()) {
+    return f == g;
+  }
+}
+
+namespace BoolMemberPointer {
+  struct A { };
+  
+  bool f(void (A::*f)()) {
+    return !f;
+  }
+
+  bool g(void (A::*f)()) {
+    if (!!f)
+      return true;
+    return false;
+  }
+}
+
+// PR5940
+namespace PR5940 {
+  class foo {
+  public:
+    virtual void baz(void);
+  };
+
+  void foo::baz(void) {
+       void (foo::*ptr)(void) = &foo::baz;
+  }
 }

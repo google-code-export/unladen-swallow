@@ -26,8 +26,8 @@ def note_type_being_defined : Note<
 /// e.g. to specify the '(' when we expected a ')'.
 def note_matching : Note<"to match this '%0'">;
 
-def note_using_decl : Note<"using">;
-def note_also_found_decl : Note<"also found">;
+def note_using : Note<"using">;
+def note_also_found : Note<"also found">;
 
 // Parse && Lex
 def err_expected_colon : Error<"expected ':'">;
@@ -56,6 +56,7 @@ def note_invalid_subexpr_in_ice : Note<
 
 def err_target_unknown_triple : Error<
   "unknown target triple '%0', please use -triple or -arch">;
+def err_target_unknown_cpu : Error<"unknown target CPU '%0'">;
 def err_target_unknown_abi : Error<"unknown target ABI '%0'">;
 def err_target_invalid_feature : Error<"invalid target feature '%0'">;
 

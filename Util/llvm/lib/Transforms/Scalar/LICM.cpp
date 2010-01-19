@@ -160,16 +160,17 @@ namespace {
 
       // Because the exit block is not in the loop, we know we have to get _at
       // least_ its immediate dominator.
-      do {
-        // Get next Immediate Dominator.
-        IDom = IDom->getIDom();
-
+      IDom = IDom->getIDom();
+      
+      while (IDom && IDom != BlockInLoopNode) {
         // If we have got to the header of the loop, then the instructions block
         // did not dominate the exit node, so we can't hoist it.
         if (IDom->getBlock() == LoopHeader)
           return false;
 
-      } while (IDom != BlockInLoopNode);
+        // Get next Immediate Dominator.
+        IDom = IDom->getIDom();
+      };
 
       return true;
     }
@@ -383,10 +384,6 @@ bool LICM::canSinkOrHoistInst(Instruction &I) {
       Size = AA->getTypeStoreSize(LI->getType());
     return !pointerInvalidatedByLoop(LI->getOperand(0), Size);
   } else if (CallInst *CI = dyn_cast<CallInst>(&I)) {
-    if (isa<DbgStopPointInst>(CI)) {
-      // Don't hoist/sink dbgstoppoints, we handle them separately
-      return false;
-    }
     // Handle obvious cases efficiently.
     AliasAnalysis::ModRefBehavior Behavior = AA->getModRefBehavior(CI);
     if (Behavior == AliasAnalysis::DoesNotAccessMemory)
@@ -432,7 +429,7 @@ bool LICM::isNotUsedInLoop(Instruction &I) {
         if (PN->getIncomingValue(i) == &I)
           if (CurLoop->contains(PN->getIncomingBlock(i)))
             return false;
-    } else if (CurLoop->contains(User->getParent())) {
+    } else if (CurLoop->contains(User)) {
       return false;
     }
   }
@@ -460,7 +457,7 @@ bool LICM::isLoopInvariantInst(Instruction &I) {
 /// position, and may either delete it or move it to outside of the loop.
 ///
 void LICM::sink(Instruction &I) {
-  DEBUG(errs() << "LICM sinking instruction: " << I);
+  DEBUG(dbgs() << "LICM sinking instruction: " << I);
 
   SmallVector<BasicBlock*, 8> ExitBlocks;
   CurLoop->getExitBlocks(ExitBlocks);
@@ -593,7 +590,7 @@ void LICM::sink(Instruction &I) {
     if (AI) {
       std::vector<AllocaInst*> Allocas;
       Allocas.push_back(AI);
-      PromoteMemToReg(Allocas, *DT, *DF, AI->getContext(), CurAST);
+      PromoteMemToReg(Allocas, *DT, *DF, CurAST);
     }
   }
 }
@@ -602,7 +599,7 @@ void LICM::sink(Instruction &I) {
 /// that is safe to hoist, this instruction is called to do the dirty work.
 ///
 void LICM::hoist(Instruction &I) {
-  DEBUG(errs() << "LICM hoisting to " << Preheader->getName() << ": "
+  DEBUG(dbgs() << "LICM hoisting to " << Preheader->getName() << ": "
         << I << "\n");
 
   // Remove the instruction from its current basic block... but don't delete the
@@ -769,7 +766,7 @@ void LICM::PromoteValuesInLoop() {
   PromotedAllocas.reserve(PromotedValues.size());
   for (unsigned i = 0, e = PromotedValues.size(); i != e; ++i)
     PromotedAllocas.push_back(PromotedValues[i].first);
-  PromoteMemToReg(PromotedAllocas, *DT, *DF, Preheader->getContext(), CurAST);
+  PromoteMemToReg(PromotedAllocas, *DT, *DF, CurAST);
 }
 
 /// FindPromotableValuesInLoop - Check the current loop for stores to definite
@@ -830,7 +827,7 @@ void LICM::FindPromotableValuesInLoop(
          UI != UE; ++UI) {
       // Ignore instructions not in this loop.
       Instruction *Use = dyn_cast<Instruction>(*UI);
-      if (!Use || !CurLoop->contains(Use->getParent()))
+      if (!Use || !CurLoop->contains(Use))
         continue;
 
       if (!isa<LoadInst>(Use) && !isa<StoreInst>(Use)) {
@@ -858,7 +855,7 @@ void LICM::FindPromotableValuesInLoop(
     for (AliasSet::iterator I = AS.begin(), E = AS.end(); I != E; ++I)
       ValueToAllocaMap.insert(std::make_pair(I->getValue(), AI));
 
-    DEBUG(errs() << "LICM: Promoting value: " << *V << "\n");
+    DEBUG(dbgs() << "LICM: Promoting value: " << *V << "\n");
   }
 }
 

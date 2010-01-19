@@ -19,6 +19,7 @@
 #include "llvm/ModuleProvider.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/System/Atomic.h"
@@ -41,13 +42,17 @@ Pass::~Pass() {
 // Force out-of-line virtual method.
 ModulePass::~ModulePass() { }
 
+PassManagerType ModulePass::getPotentialPassManagerType() const {
+  return PMT_ModulePassManager;
+}
+
 bool Pass::mustPreserveAnalysisID(const PassInfo *AnalysisID) const {
   return Resolver->getAnalysisIfAvailable(AnalysisID, true) != 0;
 }
 
 // dumpPassStructure - Implement the -debug-passes=Structure option
 void Pass::dumpPassStructure(unsigned Offset) {
-  errs().indent(Offset*2) << getPassName() << "\n";
+  dbgs().indent(Offset*2) << getPassName() << "\n";
 }
 
 /// getPassName - Return a nice clean name for a pass.  This usually
@@ -60,6 +65,27 @@ const char *Pass::getPassName() const {
   return "Unnamed pass: implement Pass::getPassName()";
 }
 
+void Pass::preparePassManager(PMStack &) {
+  // By default, don't do anything.
+}
+
+PassManagerType Pass::getPotentialPassManagerType() const {
+  // Default implementation.
+  return PMT_Unknown; 
+}
+
+void Pass::getAnalysisUsage(AnalysisUsage &) const {
+  // By default, no analysis results are used, all are invalidated.
+}
+
+void Pass::releaseMemory() {
+  // By default, don't do anything.
+}
+
+void Pass::verifyAnalysis() const {
+  // By default, don't do anything.
+}
+
 // print - Print out the internal state of the pass.  This is called by Analyze
 // to print out the contents of an analysis.  Otherwise it is not necessary to
 // implement this method.
@@ -70,7 +96,7 @@ void Pass::print(raw_ostream &O,const Module*) const {
 
 // dump - call print(cerr);
 void Pass::dump() const {
-  print(errs(), 0);
+  print(dbgs(), 0);
 }
 
 //===----------------------------------------------------------------------===//
@@ -78,6 +104,10 @@ void Pass::dump() const {
 //
 // Force out-of-line virtual method.
 ImmutablePass::~ImmutablePass() { }
+
+void ImmutablePass::initializePass() {
+  // By default, don't do anything.
+}
 
 //===----------------------------------------------------------------------===//
 // FunctionPass Implementation
@@ -107,6 +137,20 @@ bool FunctionPass::run(Function &F) {
   return Changed | doFinalization(*F.getParent());
 }
 
+bool FunctionPass::doInitialization(Module &) {
+  // By default, don't do anything.
+  return false;
+}
+
+bool FunctionPass::doFinalization(Module &) {
+  // By default, don't do anything.
+  return false;
+}
+
+PassManagerType FunctionPass::getPotentialPassManagerType() const {
+  return PMT_FunctionPassManager;
+}
+
 //===----------------------------------------------------------------------===//
 // BasicBlockPass Implementation
 //
@@ -119,6 +163,30 @@ bool BasicBlockPass::runOnFunction(Function &F) {
   for (Function::iterator I = F.begin(), E = F.end(); I != E; ++I)
     Changed |= runOnBasicBlock(*I);
   return Changed | doFinalization(F);
+}
+
+bool BasicBlockPass::doInitialization(Module &) {
+  // By default, don't do anything.
+  return false;
+}
+
+bool BasicBlockPass::doInitialization(Function &) {
+  // By default, don't do anything.
+  return false;
+}
+
+bool BasicBlockPass::doFinalization(Function &) {
+  // By default, don't do anything.
+  return false;
+}
+
+bool BasicBlockPass::doFinalization(Module &) {
+  // By default, don't do anything.
+  return false;
+}
+
+PassManagerType BasicBlockPass::getPotentialPassManagerType() const {
+  return PMT_BasicBlockPassManager; 
 }
 
 //===----------------------------------------------------------------------===//

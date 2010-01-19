@@ -16,8 +16,6 @@
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/Target/TargetInstrInfo.h"
 
-#include <map>
-
 namespace llvm {
 
   /// Lower PHI instructions to copies.  
@@ -93,18 +91,6 @@ namespace llvm {
     bool SplitPHIEdges(MachineFunction &MF, MachineBasicBlock &MBB,
                        LiveVariables &LV);
 
-    /// isLiveOut - Determine if Reg is live out from MBB, when not
-    /// considering PHI nodes. This means that Reg is either killed by
-    /// a successor block or passed through one.
-    bool isLiveOut(unsigned Reg, const MachineBasicBlock &MBB,
-                   LiveVariables &LV);
-
-    /// isLiveIn - Determine if Reg is live in to MBB, not considering PHI
-    /// source registers. This means that Reg is either killed by MBB or passes
-    /// through it.
-    bool isLiveIn(unsigned Reg, const MachineBasicBlock &MBB,
-                  LiveVariables &LV);
-
     /// SplitCriticalEdge - Split a critical edge from A to B by
     /// inserting a new MBB. Update branches in A and PHI instructions
     /// in B. Return the new block.
@@ -132,8 +118,8 @@ namespace llvm {
       return I;
     }
 
-    typedef std::pair<const MachineBasicBlock*, unsigned> BBVRegPair;
-    typedef std::map<BBVRegPair, unsigned> VRegPHIUse;
+    typedef std::pair<unsigned, unsigned> BBVRegPair;
+    typedef DenseMap<BBVRegPair, unsigned> VRegPHIUse;
 
     VRegPHIUse VRegPHIUseCount;
     PHIDefMap PHIDefs;
@@ -141,6 +127,17 @@ namespace llvm {
 
     // Defs of PHI sources which are implicit_def.
     SmallPtrSet<MachineInstr*, 4> ImpDefs;
+
+    // Lowered PHI nodes may be reused. We provide special DenseMap traits to
+    // match PHI nodes with identical arguments.
+    struct PHINodeTraits : public DenseMapInfo<MachineInstr*> {
+      static unsigned getHashValue(const MachineInstr *PtrVal);
+      static bool isEqual(const MachineInstr *LHS, const MachineInstr *RHS);
+    };
+
+    // Map reusable lowered PHI node -> incoming join register.
+    typedef DenseMap<MachineInstr*, unsigned, PHINodeTraits> LoweredPHIMap;
+    LoweredPHIMap LoweredPHIs;
   };
 
 }

@@ -17,7 +17,6 @@
 #include "clang/AST/StmtVisitor.h"
 #include "clang/AST/PrettyPrinter.h"
 #include "llvm/Support/GraphWriter.h"
-#include "llvm/Support/Compiler.h"
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/Format.h"
 #include "llvm/ADT/DenseMap.h"
@@ -35,6 +34,17 @@ static SourceLocation GetEndLoc(Decl* D) {
 
   return D->getLocation();
 }
+  
+class AddStmtChoice {
+public:
+  enum Kind { NotAlwaysAdd = 0, AlwaysAdd, AlwaysAddAsLValue };
+public:
+  AddStmtChoice(Kind kind) : k(kind) {}  
+  bool alwaysAdd() const { return k != NotAlwaysAdd; }
+  bool asLValue() const { return k == AlwaysAddAsLValue; }
+private:
+  Kind k;
+};
 
 /// CFGBuilder - This class implements CFG construction from an AST.
 ///   The builder is stateful: an instance of the builder should be used to only
@@ -50,7 +60,7 @@ static SourceLocation GetEndLoc(Decl* D) {
 ///  constructed prior to its predecessor.  This allows us to nicely capture
 ///  implicit fall-throughs without extra basic blocks.
 ///
-class VISIBILITY_HIDDEN CFGBuilder {
+class CFGBuilder {
   ASTContext *Context;
   llvm::OwningPtr<CFG> cfg;
 
@@ -85,18 +95,20 @@ public:
 
 private:
   // Visitors to walk an AST and construct the CFG.
-  CFGBlock *VisitAddrLabelExpr(AddrLabelExpr *A, bool alwaysAdd);
-  CFGBlock *VisitBinaryOperator(BinaryOperator *B, bool alwaysAdd);
-  CFGBlock *VisitBlockExpr(BlockExpr* E, bool alwaysAdd);
-  CFGBlock *VisitBlockDeclRefExpr(BlockDeclRefExpr* E, bool alwaysAdd);
+  CFGBlock *VisitAddrLabelExpr(AddrLabelExpr *A, AddStmtChoice asc);
+  CFGBlock *VisitBinaryOperator(BinaryOperator *B, AddStmtChoice asc);
+  CFGBlock *VisitBlockExpr(BlockExpr* E, AddStmtChoice asc);
   CFGBlock *VisitBreakStmt(BreakStmt *B);
-  CFGBlock *VisitCallExpr(CallExpr *C, bool alwaysAdd);
+  CFGBlock *VisitCallExpr(CallExpr *C, AddStmtChoice asc);
   CFGBlock *VisitCaseStmt(CaseStmt *C);
-  CFGBlock *VisitChooseExpr(ChooseExpr *C);
+  CFGBlock *VisitChooseExpr(ChooseExpr *C, AddStmtChoice asc);
   CFGBlock *VisitCompoundStmt(CompoundStmt *C);
-  CFGBlock *VisitConditionalOperator(ConditionalOperator *C);
+  CFGBlock *VisitConditionalOperator(ConditionalOperator *C,
+                                     AddStmtChoice asc);
   CFGBlock *VisitContinueStmt(ContinueStmt *C);
+  CFGBlock *VisitCXXCatchStmt(CXXCatchStmt *S) { return NYS(); }
   CFGBlock *VisitCXXThrowExpr(CXXThrowExpr *T);
+  CFGBlock *VisitCXXTryStmt(CXXTryStmt *S) { return NYS(); }  
   CFGBlock *VisitDeclStmt(DeclStmt *DS);
   CFGBlock *VisitDeclSubExpr(Decl* D);
   CFGBlock *VisitDefaultStmt(DefaultStmt *D);
@@ -112,13 +124,13 @@ private:
   CFGBlock *VisitObjCAtTryStmt(ObjCAtTryStmt *S);
   CFGBlock *VisitObjCForCollectionStmt(ObjCForCollectionStmt *S);
   CFGBlock *VisitReturnStmt(ReturnStmt* R);
-  CFGBlock *VisitSizeOfAlignOfExpr(SizeOfAlignOfExpr *E, bool alwaysAdd);
-  CFGBlock *VisitStmtExpr(StmtExpr *S, bool alwaysAdd);
+  CFGBlock *VisitSizeOfAlignOfExpr(SizeOfAlignOfExpr *E, AddStmtChoice asc);
+  CFGBlock *VisitStmtExpr(StmtExpr *S, AddStmtChoice asc);
   CFGBlock *VisitSwitchStmt(SwitchStmt *S);
   CFGBlock *VisitWhileStmt(WhileStmt *W);
 
-  CFGBlock *Visit(Stmt *S, bool alwaysAdd = false);
-  CFGBlock *VisitStmt(Stmt *S, bool alwaysAdd);
+  CFGBlock *Visit(Stmt *S, AddStmtChoice asc = AddStmtChoice::NotAlwaysAdd);
+  CFGBlock *VisitStmt(Stmt *S, AddStmtChoice asc);
   CFGBlock *VisitChildren(Stmt* S);
 
   // NYS == Not Yet Supported
@@ -130,10 +142,13 @@ private:
   void autoCreateBlock() { if (!Block) Block = createBlock(); }
   CFGBlock *createBlock(bool add_successor = true);
   bool FinishBlock(CFGBlock* B);
-  CFGBlock *addStmt(Stmt *S) { return Visit(S, true); }
+  CFGBlock *addStmt(Stmt *S, AddStmtChoice asc = AddStmtChoice::AlwaysAdd) {
+    return Visit(S, asc);
+  }
   
-  void AppendStmt(CFGBlock *B, Stmt *S) {
-    B->appendStmt(S, cfg->getBumpVectorContext());
+  void AppendStmt(CFGBlock *B, Stmt *S,
+                  AddStmtChoice asc = AddStmtChoice::AlwaysAdd) {
+    B->appendStmt(S, cfg->getBumpVectorContext(), asc.asLValue());
   }
   
   void AddSuccessor(CFGBlock *B, CFGBlock *S) {
@@ -278,41 +293,38 @@ bool CFGBuilder::FinishBlock(CFGBlock* B) {
 /// Visit - Walk the subtree of a statement and add extra
 ///   blocks for ternary operators, &&, and ||.  We also process "," and
 ///   DeclStmts (which may contain nested control-flow).
-CFGBlock* CFGBuilder::Visit(Stmt * S, bool alwaysAdd) {
+CFGBlock* CFGBuilder::Visit(Stmt * S, AddStmtChoice asc) {
 tryAgain:
   switch (S->getStmtClass()) {
     default:
-      return VisitStmt(S, alwaysAdd);
+      return VisitStmt(S, asc);
 
     case Stmt::AddrLabelExprClass:
-      return VisitAddrLabelExpr(cast<AddrLabelExpr>(S), alwaysAdd);
+      return VisitAddrLabelExpr(cast<AddrLabelExpr>(S), asc);
 
     case Stmt::BinaryOperatorClass:
-      return VisitBinaryOperator(cast<BinaryOperator>(S), alwaysAdd);
+      return VisitBinaryOperator(cast<BinaryOperator>(S), asc);
 
     case Stmt::BlockExprClass:
-      return VisitBlockExpr(cast<BlockExpr>(S), alwaysAdd);
-
-    case Stmt::BlockDeclRefExprClass:
-      return VisitBlockDeclRefExpr(cast<BlockDeclRefExpr>(S), alwaysAdd);
+      return VisitBlockExpr(cast<BlockExpr>(S), asc);
 
     case Stmt::BreakStmtClass:
       return VisitBreakStmt(cast<BreakStmt>(S));
 
     case Stmt::CallExprClass:
-      return VisitCallExpr(cast<CallExpr>(S), alwaysAdd);
+      return VisitCallExpr(cast<CallExpr>(S), asc);
 
     case Stmt::CaseStmtClass:
       return VisitCaseStmt(cast<CaseStmt>(S));
 
     case Stmt::ChooseExprClass:
-      return VisitChooseExpr(cast<ChooseExpr>(S));
+      return VisitChooseExpr(cast<ChooseExpr>(S), asc);
 
     case Stmt::CompoundStmtClass:
       return VisitCompoundStmt(cast<CompoundStmt>(S));
 
     case Stmt::ConditionalOperatorClass:
-      return VisitConditionalOperator(cast<ConditionalOperator>(S));
+      return VisitConditionalOperator(cast<ConditionalOperator>(S), asc);
 
     case Stmt::ContinueStmtClass:
       return VisitContinueStmt(cast<ContinueStmt>(S));
@@ -370,10 +382,10 @@ tryAgain:
       return VisitReturnStmt(cast<ReturnStmt>(S));
 
     case Stmt::SizeOfAlignOfExprClass:
-      return VisitSizeOfAlignOfExpr(cast<SizeOfAlignOfExpr>(S), alwaysAdd);
+      return VisitSizeOfAlignOfExpr(cast<SizeOfAlignOfExpr>(S), asc);
 
     case Stmt::StmtExprClass:
-      return VisitStmtExpr(cast<StmtExpr>(S), alwaysAdd);
+      return VisitStmtExpr(cast<StmtExpr>(S), asc);
 
     case Stmt::SwitchStmtClass:
       return VisitSwitchStmt(cast<SwitchStmt>(S));
@@ -383,10 +395,10 @@ tryAgain:
   }
 }
 
-CFGBlock *CFGBuilder::VisitStmt(Stmt *S, bool alwaysAdd) {
-  if (alwaysAdd) {
+CFGBlock *CFGBuilder::VisitStmt(Stmt *S, AddStmtChoice asc) {
+  if (asc.alwaysAdd()) {
     autoCreateBlock();
-    AppendStmt(Block, S);
+    AppendStmt(Block, S, asc);
   }
 
   return VisitChildren(S);
@@ -402,21 +414,23 @@ CFGBlock *CFGBuilder::VisitChildren(Stmt* Terminator) {
   return B;
 }
 
-CFGBlock *CFGBuilder::VisitAddrLabelExpr(AddrLabelExpr *A, bool alwaysAdd) {
+CFGBlock *CFGBuilder::VisitAddrLabelExpr(AddrLabelExpr *A,
+                                         AddStmtChoice asc) {
   AddressTakenLabels.insert(A->getLabel());
 
-  if (alwaysAdd) {
+  if (asc.alwaysAdd()) {
     autoCreateBlock();
-    AppendStmt(Block, A);
+    AppendStmt(Block, A, asc);
   }
 
   return Block;
 }
 
-CFGBlock *CFGBuilder::VisitBinaryOperator(BinaryOperator *B, bool alwaysAdd) {
+CFGBlock *CFGBuilder::VisitBinaryOperator(BinaryOperator *B,
+                                          AddStmtChoice asc) {
   if (B->isLogicalOp()) { // && or ||
     CFGBlock* ConfluenceBlock = Block ? Block : createBlock();
-    AppendStmt(ConfluenceBlock, B);
+    AppendStmt(ConfluenceBlock, B, asc);
 
     if (!FinishBlock(ConfluenceBlock))
       return 0;
@@ -453,23 +467,20 @@ CFGBlock *CFGBuilder::VisitBinaryOperator(BinaryOperator *B, bool alwaysAdd) {
   }
   else if (B->getOpcode() == BinaryOperator::Comma) { // ,
     autoCreateBlock();
-    AppendStmt(Block, B);
+    AppendStmt(Block, B, asc);
     addStmt(B->getRHS());
     return addStmt(B->getLHS());
   }
 
-  return VisitStmt(B, alwaysAdd);
+  return VisitStmt(B, asc);
 }
 
-CFGBlock *CFGBuilder::VisitBlockExpr(BlockExpr* E, bool alwaysAdd) {
-  // FIXME
-  return NYS();
-}
-
-CFGBlock *CFGBuilder::VisitBlockDeclRefExpr(BlockDeclRefExpr* E,
-                                            bool alwaysAdd) {
-  // FIXME
-  return NYS();
+CFGBlock *CFGBuilder::VisitBlockExpr(BlockExpr *E, AddStmtChoice asc) {
+  if (asc.alwaysAdd()) {
+    autoCreateBlock();
+    AppendStmt(Block, E, asc);
+  }
+  return Block;
 }
 
 CFGBlock *CFGBuilder::VisitBreakStmt(BreakStmt *B) {
@@ -493,7 +504,7 @@ CFGBlock *CFGBuilder::VisitBreakStmt(BreakStmt *B) {
   return Block;
 }
 
-CFGBlock *CFGBuilder::VisitCallExpr(CallExpr *C, bool alwaysAdd) {
+CFGBlock *CFGBuilder::VisitCallExpr(CallExpr *C, AddStmtChoice asc) {
   // If this is a call to a no-return function, this stops the block here.
   bool NoReturn = false;
   if (C->getCallee()->getType().getNoReturnAttr()) {
@@ -505,14 +516,14 @@ CFGBlock *CFGBuilder::VisitCallExpr(CallExpr *C, bool alwaysAdd) {
       NoReturn = true;
 
   if (!NoReturn)
-    return VisitStmt(C, alwaysAdd);
+    return VisitStmt(C, asc);
 
   if (Block && !FinishBlock(Block))
     return 0;
 
   // Create new block with no successor for the remaining pieces.
   Block = createBlock(false);
-  AppendStmt(Block, C);
+  AppendStmt(Block, C, asc);
 
   // Wire this to the exit block directly.
   AddSuccessor(Block, &cfg->getExit());
@@ -520,9 +531,10 @@ CFGBlock *CFGBuilder::VisitCallExpr(CallExpr *C, bool alwaysAdd) {
   return VisitChildren(C);
 }
 
-CFGBlock *CFGBuilder::VisitChooseExpr(ChooseExpr *C) {
+CFGBlock *CFGBuilder::VisitChooseExpr(ChooseExpr *C,
+                                      AddStmtChoice asc) {
   CFGBlock* ConfluenceBlock = Block ? Block : createBlock();
-  AppendStmt(ConfluenceBlock, C);
+  AppendStmt(ConfluenceBlock, C, asc);
   if (!FinishBlock(ConfluenceBlock))
     return 0;
 
@@ -561,11 +573,12 @@ CFGBlock* CFGBuilder::VisitCompoundStmt(CompoundStmt* C) {
   return LastBlock;
 }
 
-CFGBlock *CFGBuilder::VisitConditionalOperator(ConditionalOperator *C) {
+CFGBlock *CFGBuilder::VisitConditionalOperator(ConditionalOperator *C,
+                                               AddStmtChoice asc) {
   // Create the confluence block that will "merge" the results of the ternary
   // expression.
   CFGBlock* ConfluenceBlock = Block ? Block : createBlock();
-  AppendStmt(ConfluenceBlock, C);
+  AppendStmt(ConfluenceBlock, C, asc);
   if (!FinishBlock(ConfluenceBlock))
     return 0;
 
@@ -676,7 +689,10 @@ CFGBlock *CFGBuilder::VisitDeclSubExpr(Decl* D) {
       case Stmt::StringLiteralClass:
         break;
       default:
-        Block = addStmt(Init);
+        Block = addStmt(Init,
+                        VD->getType()->isReferenceType()
+                        ? AddStmtChoice::AlwaysAddAsLValue
+                        : AddStmtChoice::AlwaysAdd);
     }
   }
 
@@ -760,7 +776,19 @@ CFGBlock* CFGBuilder::VisitIfStmt(IfStmt* I) {
   // Add the condition as the last statement in the new block.  This may create
   // new blocks as the condition may contain control-flow.  Any newly created
   // blocks will be pointed to be "Block".
-  return addStmt(I->getCond());
+  Block = addStmt(I->getCond());
+  
+  // Finally, if the IfStmt contains a condition variable, add both the IfStmt
+  // and the condition variable initialization to the CFG.
+  if (VarDecl *VD = I->getConditionVariable()) {
+    if (Expr *Init = VD->getInit()) {
+      autoCreateBlock();
+      AppendStmt(Block, I, AddStmtChoice::AlwaysAdd);
+      addStmt(Init);
+    }
+  }
+  
+  return Block;
 }
 
 
@@ -782,7 +810,7 @@ CFGBlock* CFGBuilder::VisitReturnStmt(ReturnStmt* R) {
 
   // Add the return statement to the block.  This may create new blocks if R
   // contains control-flow (short-circuit operations).
-  return VisitStmt(R, true);
+  return VisitStmt(R, AddStmtChoice::AlwaysAdd);
 }
 
 CFGBlock* CFGBuilder::VisitLabelStmt(LabelStmt* L) {
@@ -860,6 +888,19 @@ CFGBlock* CFGBuilder::VisitForStmt(ForStmt* F) {
   if (Stmt* C = F->getCond()) {
     Block = ExitConditionBlock;
     EntryConditionBlock = addStmt(C);
+    assert(Block == EntryConditionBlock);
+
+    // If this block contains a condition variable, add both the condition
+    // variable and initializer to the CFG.
+    if (VarDecl *VD = F->getConditionVariable()) {
+      if (Expr *Init = VD->getInit()) {
+        autoCreateBlock();
+        AppendStmt(Block, F, AddStmtChoice::AlwaysAdd);
+        EntryConditionBlock = addStmt(Init);
+        assert(Block == EntryConditionBlock);
+      }
+    }
+    
     if (Block) {
       if (!FinishBlock(EntryConditionBlock))
         return 0;
@@ -1006,7 +1047,7 @@ CFGBlock* CFGBuilder::VisitObjCForCollectionStmt(ObjCForCollectionStmt* S) {
   // Walk the 'element' expression to see if there are any side-effects.  We
   // generate new blocks as necesary.  We DON'T add the statement by default to
   // the CFG unless it contains control-flow.
-  EntryConditionBlock = Visit(S->getElement(), false);
+  EntryConditionBlock = Visit(S->getElement(), AddStmtChoice::NotAlwaysAdd);
   if (Block) {
     if (!FinishBlock(EntryConditionBlock))
       return 0;
@@ -1102,6 +1143,18 @@ CFGBlock* CFGBuilder::VisitWhileStmt(WhileStmt* W) {
     Block = ExitConditionBlock;
     EntryConditionBlock = addStmt(C);
     assert(Block == EntryConditionBlock);
+    
+    // If this block contains a condition variable, add both the condition
+    // variable and initializer to the CFG.
+    if (VarDecl *VD = W->getConditionVariable()) {
+      if (Expr *Init = VD->getInit()) {
+        autoCreateBlock();
+        AppendStmt(Block, W, AddStmtChoice::AlwaysAdd);
+        EntryConditionBlock = addStmt(Init);
+        assert(Block == EntryConditionBlock);
+      }
+    }
+
     if (Block) {
       if (!FinishBlock(EntryConditionBlock))
         return 0;
@@ -1188,7 +1241,7 @@ CFGBlock* CFGBuilder::VisitObjCAtThrowStmt(ObjCAtThrowStmt* S) {
 
   // Add the statement to the block.  This may create new blocks if S contains
   // control-flow (short-circuit operations).
-  return VisitStmt(S, true);
+  return VisitStmt(S, AddStmtChoice::AlwaysAdd);
 }
 
 CFGBlock* CFGBuilder::VisitCXXThrowExpr(CXXThrowExpr* T) {
@@ -1204,7 +1257,7 @@ CFGBlock* CFGBuilder::VisitCXXThrowExpr(CXXThrowExpr* T) {
 
   // Add the statement to the block.  This may create new blocks if S contains
   // control-flow (short-circuit operations).
-  return VisitStmt(T, true);
+  return VisitStmt(T, AddStmtChoice::AlwaysAdd);
 }
 
 CFGBlock *CFGBuilder::VisitDoStmt(DoStmt* D) {
@@ -1322,9 +1375,9 @@ CFGBlock* CFGBuilder::VisitContinueStmt(ContinueStmt* C) {
 }
 
 CFGBlock *CFGBuilder::VisitSizeOfAlignOfExpr(SizeOfAlignOfExpr *E,
-                                             bool alwaysAdd) {
+                                             AddStmtChoice asc) {
 
-  if (alwaysAdd) {
+  if (asc.alwaysAdd()) {
     autoCreateBlock();
     AppendStmt(Block, E);
   }
@@ -1341,8 +1394,8 @@ CFGBlock *CFGBuilder::VisitSizeOfAlignOfExpr(SizeOfAlignOfExpr *E,
 
 /// VisitStmtExpr - Utility method to handle (nested) statement
 ///  expressions (a GCC extension).
-CFGBlock* CFGBuilder::VisitStmtExpr(StmtExpr *SE, bool alwaysAdd) {
-  if (alwaysAdd) {
+CFGBlock* CFGBuilder::VisitStmtExpr(StmtExpr *SE, AddStmtChoice asc) {
+  if (asc.alwaysAdd()) {
     autoCreateBlock();
     AppendStmt(Block, SE);
   }
@@ -1397,8 +1450,19 @@ CFGBlock* CFGBuilder::VisitSwitchStmt(SwitchStmt* Terminator) {
   SwitchTerminatedBlock->setTerminator(Terminator);
   assert (Terminator->getCond() && "switch condition must be non-NULL");
   Block = SwitchTerminatedBlock;
-
-  return addStmt(Terminator->getCond());
+  Block = addStmt(Terminator->getCond());
+  
+  // Finally, if the SwitchStmt contains a condition variable, add both the
+  // SwitchStmt and the condition variable initialization to the CFG.
+  if (VarDecl *VD = Terminator->getConditionVariable()) {
+    if (Expr *Init = VD->getInit()) {
+      autoCreateBlock();
+      AppendStmt(Block, Terminator, AddStmtChoice::AlwaysAdd);
+      addStmt(Init);
+    }
+  }
+  
+  return Block;
 }
 
 CFGBlock* CFGBuilder::VisitCaseStmt(CaseStmt* CS) {
@@ -1520,17 +1584,20 @@ namespace {
   typedef llvm::DenseMap<const Stmt*,unsigned> BlkExprMapTy;
 }
 
-static void FindSubExprAssignments(Stmt* Terminator, llvm::SmallPtrSet<Expr*,50>& Set) {
-  if (!Terminator)
+static void FindSubExprAssignments(Stmt *S,
+                                   llvm::SmallPtrSet<Expr*,50>& Set) {
+  if (!S)
     return;
 
-  for (Stmt::child_iterator I=Terminator->child_begin(), E=Terminator->child_end(); I!=E; ++I) {
-    if (!*I) continue;
-
-    if (BinaryOperator* B = dyn_cast<BinaryOperator>(*I))
+  for (Stmt::child_iterator I=S->child_begin(), E=S->child_end(); I!=E; ++I) {
+    Stmt *child = *I;    
+    if (!child)
+      continue;
+    
+    if (BinaryOperator* B = dyn_cast<BinaryOperator>(child))
       if (B->isAssignmentOp()) Set.insert(B);
 
-    FindSubExprAssignments(*I, Set);
+    FindSubExprAssignments(child, Set);
   }
 }
 
@@ -1624,7 +1691,7 @@ CFG::~CFG() {
 
 namespace {
 
-class VISIBILITY_HIDDEN StmtPrinterHelper : public PrinterHelper  {
+class StmtPrinterHelper : public PrinterHelper  {
 
   typedef llvm::DenseMap<Stmt*,std::pair<unsigned,unsigned> > StmtMapTy;
   StmtMapTy StmtMap;
@@ -1668,7 +1735,7 @@ public:
 
 
 namespace {
-class VISIBILITY_HIDDEN CFGBlockTerminatorPrint
+class CFGBlockTerminatorPrint
   : public StmtVisitor<CFGBlockTerminatorPrint,void> {
 
   llvm::raw_ostream& OS;
@@ -2047,8 +2114,10 @@ void CFG::viewCFG(const LangOptions &LO) const {
 namespace llvm {
 template<>
 struct DOTGraphTraits<const CFG*> : public DefaultDOTGraphTraits {
-  static std::string getNodeLabel(const CFGBlock* Node, const CFG* Graph,
-                                  bool ShortNames) {
+
+  DOTGraphTraits (bool isSimple=false) : DefaultDOTGraphTraits(isSimple) {}
+
+  static std::string getNodeLabel(const CFGBlock* Node, const CFG* Graph) {
 
 #ifndef NDEBUG
     std::string OutSStr;

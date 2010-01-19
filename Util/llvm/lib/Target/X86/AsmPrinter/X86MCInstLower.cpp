@@ -43,7 +43,6 @@ MCSymbol *X86MCInstLower::GetPICBaseSymbol() const {
                                Twine(AsmPrinter.getFunctionNumber())+"$pb");
 }
 
-
 /// LowerGlobalAddressOperand - Lower an MO_GlobalAddress operand to an
 /// MCOperand.
 MCSymbol *X86MCInstLower::
@@ -231,6 +230,19 @@ GetConstantPoolIndexSymbol(const MachineOperand &MO) const {
   return Ctx.GetOrCreateSymbol(Name.str());
 }
 
+MCSymbol *X86MCInstLower::
+GetBlockAddressSymbol(const MachineOperand &MO) const {
+  const char *Suffix = "";
+  switch (MO.getTargetFlags()) {
+  default: llvm_unreachable("Unknown target flag on BA operand");
+  case X86II::MO_NO_FLAG:         break; // No flag.
+  case X86II::MO_PIC_BASE_OFFSET: break; // Doesn't modify symbol name.
+  case X86II::MO_GOTOFF: Suffix = "@GOTOFF"; break;
+  }
+
+  return AsmPrinter.GetBlockAddressSymbol(MO.getBlockAddress(), Suffix);
+}
+
 MCOperand X86MCInstLower::LowerSymbolOperand(const MachineOperand &MO,
                                              MCSymbol *Sym) const {
   // FIXME: We would like an efficient form for this, so we don't have to do a
@@ -331,8 +343,7 @@ void X86MCInstLower::Lower(const MachineInstr *MI, MCInst &OutMI) const {
       MCOp = LowerSymbolOperand(MO, GetConstantPoolIndexSymbol(MO));
       break;
     case MachineOperand::MO_BlockAddress:
-      MCOp = LowerSymbolOperand(MO, AsmPrinter.GetBlockAddressSymbol(
-                                                 MO.getBlockAddress()));
+      MCOp = LowerSymbolOperand(MO, GetBlockAddressSymbol(MO));
       break;
     }
     
@@ -343,10 +354,6 @@ void X86MCInstLower::Lower(const MachineInstr *MI, MCInst &OutMI) const {
   switch (OutMI.getOpcode()) {
   case X86::LEA64_32r: // Handle 'subreg rewriting' for the lea64_32mem operand.
     lower_lea64_32mem(&OutMI, 1);
-    break;
-  case X86::MOV16r0:
-    OutMI.setOpcode(X86::MOV32r0);
-    lower_subreg32(&OutMI, 0);
     break;
   case X86::MOVZX16rr8:
     OutMI.setOpcode(X86::MOVZX32rr8);
@@ -390,6 +397,14 @@ void X86MCInstLower::Lower(const MachineInstr *MI, MCInst &OutMI) const {
     break;
   case X86::MOVZX64rm16:
     OutMI.setOpcode(X86::MOVZX32rm16);
+    lower_subreg32(&OutMI, 0);
+    break;
+  case X86::MOV16r0:
+    OutMI.setOpcode(X86::MOV32r0);
+    lower_subreg32(&OutMI, 0);
+    break;
+  case X86::MOV64r0:
+    OutMI.setOpcode(X86::MOV32r0);
     lower_subreg32(&OutMI, 0);
     break;
   }

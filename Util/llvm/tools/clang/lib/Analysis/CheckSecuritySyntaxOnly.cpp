@@ -14,16 +14,16 @@
 #include "clang/Analysis/PathSensitive/BugReporter.h"
 #include "clang/Analysis/LocalCheckers.h"
 #include "clang/AST/StmtVisitor.h"
-#include "llvm/Support/Compiler.h"
 #include "llvm/Support/raw_ostream.h"
 
 using namespace clang;
 
 namespace {
-class VISIBILITY_HIDDEN WalkAST : public StmtVisitor<WalkAST> {
+class WalkAST : public StmtVisitor<WalkAST> {
   BugReporter &BR;
   IdentifierInfo *II_gets;
   IdentifierInfo *II_getpw;
+  IdentifierInfo *II_mktemp;
   enum { num_rands = 9 };
   IdentifierInfo *II_rand[num_rands];
   IdentifierInfo *II_random;
@@ -32,7 +32,8 @@ class VISIBILITY_HIDDEN WalkAST : public StmtVisitor<WalkAST> {
 
 public:
   WalkAST(BugReporter &br) : BR(br),
-    II_gets(0), II_getpw(0), II_rand(), II_random(0), II_setid() {}
+			     II_gets(0), II_getpw(0), II_mktemp(0),
+			     II_rand(), II_random(0), II_setid() {}
 
   // Statement visitor methods.
   void VisitCallExpr(CallExpr *CE);
@@ -49,6 +50,7 @@ public:
   void CheckLoopConditionForFloat(const ForStmt *FS);
   void CheckCall_gets(const CallExpr *CE, const FunctionDecl *FD);
   void CheckCall_getpw(const CallExpr *CE, const FunctionDecl *FD);
+  void CheckCall_mktemp(const CallExpr *CE, const FunctionDecl *FD);
   void CheckCall_rand(const CallExpr *CE, const FunctionDecl *FD);
   void CheckCall_random(const CallExpr *CE, const FunctionDecl *FD);
   void CheckUncheckedReturnValue(CallExpr *CE);
@@ -80,6 +82,7 @@ void WalkAST::VisitCallExpr(CallExpr *CE) {
   if (const FunctionDecl *FD = CE->getDirectCallee()) {
     CheckCall_gets(CE, FD);
     CheckCall_getpw(CE, FD);
+    CheckCall_mktemp(CE, FD);
     CheckCall_rand(CE, FD);
     CheckCall_random(CE, FD);
   }
@@ -210,7 +213,7 @@ void WalkAST::CheckLoopConditionForFloat(const ForStmt *FS) {
   ranges.push_back(drInc->getSourceRange());
 
   const char *bugType = "Floating point variable used as loop counter";
-  BR.EmitBasicReport(bugType, "Security", os.str().c_str(),
+  BR.EmitBasicReport(bugType, "Security", os.str(),
                      FS->getLocStart(), ranges.data(), ranges.size());
 }
 
@@ -289,6 +292,42 @@ void WalkAST::CheckCall_getpw(const CallExpr *CE, const FunctionDecl *FD) {
 }
 
 //===----------------------------------------------------------------------===//
+// Check: Any use of 'mktemp' is insecure.It is obsoleted by mkstemp().
+// CWE-377: Insecure Temporary File
+//===----------------------------------------------------------------------===//
+
+void WalkAST::CheckCall_mktemp(const CallExpr *CE, const FunctionDecl *FD) {
+  if (FD->getIdentifier() != GetIdentifier(II_mktemp, "mktemp"))
+    return;
+
+  const FunctionProtoType *FPT = dyn_cast<FunctionProtoType>(FD->getType());
+  if(!FPT)
+    return;
+  
+  // Verify that the funcion takes a single argument.
+  if (FPT->getNumArgs() != 1)
+    return;
+
+  // Verify that the argument is Pointer Type.
+  const PointerType *PT = dyn_cast<PointerType>(FPT->getArgType(0));
+  if (!PT)
+    return;
+
+  // Verify that the argument is a 'char*'.
+  if (PT->getPointeeType().getUnqualifiedType() != BR.getContext().CharTy)
+    return;
+  
+  // Issue a waring.
+  SourceRange R = CE->getCallee()->getSourceRange();
+  BR.EmitBasicReport("Potential insecure temporary file in call 'mktemp'",
+		     "Security",
+		     "Call to function 'mktemp' is insecure as it always "
+		     "creates or uses insecure temporary file",
+		     CE->getLocStart(), &R, 1);
+}
+
+
+//===----------------------------------------------------------------------===//
 // Check: Linear congruent random number generators should not be used
 // Originally: <rdar://problem/63371000>
 // CWE-338: Use of cryptographically weak prng
@@ -347,7 +386,7 @@ void WalkAST::CheckCall_rand(const CallExpr *CE, const FunctionDecl *FD) {
 
   SourceRange R = CE->getCallee()->getSourceRange();
 
-  BR.EmitBasicReport(os1.str().c_str(), "Security", os2.str().c_str(),
+  BR.EmitBasicReport(os1.str(), "Security", os2.str(),
                      CE->getLocStart(), &R, 1);
 }
 
@@ -437,7 +476,7 @@ void WalkAST::CheckUncheckedReturnValue(CallExpr *CE) {
 
   SourceRange R = CE->getCallee()->getSourceRange();
 
-  BR.EmitBasicReport(os1.str().c_str(), "Security", os2.str().c_str(),
+  BR.EmitBasicReport(os1.str(), "Security", os2.str(),
                      CE->getLocStart(), &R, 1);
 }
 

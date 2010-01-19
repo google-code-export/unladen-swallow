@@ -13,16 +13,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "GRExprEngineInternalChecks.h"
 #include "clang/Analysis/PathSensitive/GRExprEngine.h"
 #include "clang/Analysis/PathSensitive/GRExprEngineBuilders.h"
 #include "clang/Analysis/PathSensitive/Checker.h"
+#include "clang/AST/CharUnits.h"
 #include "clang/AST/ParentMap.h"
 #include "clang/AST/StmtObjC.h"
 #include "clang/Basic/Builtins.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Basic/PrettyStackTrace.h"
-#include "llvm/Support/Compiler.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/ADT/ImmutableList.h"
 #include "llvm/ADT/StringSwitch.h"
@@ -33,8 +34,59 @@
 
 using namespace clang;
 using llvm::dyn_cast;
+using llvm::dyn_cast_or_null;
 using llvm::cast;
 using llvm::APSInt;
+
+//===----------------------------------------------------------------------===//
+// Utility functions.
+//===----------------------------------------------------------------------===//
+
+static inline Selector GetNullarySelector(const char* name, ASTContext& Ctx) {
+  IdentifierInfo* II = &Ctx.Idents.get(name);
+  return Ctx.Selectors.getSelector(0, &II);
+}
+
+
+static QualType GetCalleeReturnType(const CallExpr *CE) { 
+  const Expr *Callee = CE->getCallee();
+  QualType T = Callee->getType();
+  if (const PointerType *PT = T->getAs<PointerType>()) {
+    const FunctionType *FT = PT->getPointeeType()->getAs<FunctionType>();
+    T = FT->getResultType();
+  }
+  else {
+    const BlockPointerType *BT = T->getAs<BlockPointerType>();
+    T = BT->getPointeeType()->getAs<FunctionType>()->getResultType();
+  }
+  return T;
+}
+
+static bool CalleeReturnsReference(const CallExpr *CE) { 
+  return (bool) GetCalleeReturnType(CE)->getAs<ReferenceType>();
+}
+
+static bool ReceiverReturnsReference(const ObjCMessageExpr *ME) {
+  const ObjCMethodDecl *MD = ME->getMethodDecl();
+  if (!MD)
+    return false;
+  return MD->getResultType()->getAs<ReferenceType>();
+}
+
+#ifndef NDEBUG
+static bool ReceiverReturnsReferenceOrRecord(const ObjCMessageExpr *ME) {
+  const ObjCMethodDecl *MD = ME->getMethodDecl();
+  if (!MD)
+    return false;
+  QualType T = MD->getResultType();
+  return T->getAs<RecordType>() || T->getAs<ReferenceType>();
+}
+
+static bool CalleeReturnsReferenceOrRecord(const CallExpr *CE) {
+  QualType T = GetCalleeReturnType(CE);
+  return T->getAs<ReferenceType>() || T->getAs<RecordType>();
+}
+#endif
 
 //===----------------------------------------------------------------------===//
 // Batch auditor.  DEPRECATED.
@@ -42,7 +94,7 @@ using llvm::APSInt;
 
 namespace {
 
-class VISIBILITY_HIDDEN MappedBatchAuditor : public GRSimpleAPICheck {
+class MappedBatchAuditor : public GRSimpleAPICheck {
   typedef llvm::ImmutableList<GRSimpleAPICheck*> Checks;
   typedef llvm::DenseMap<void*,Checks> MapTy;
 
@@ -111,32 +163,87 @@ void GRExprEngine::CheckerVisit(Stmt *S, ExplodedNodeSet &Dst,
                                 ExplodedNodeSet &Src, bool isPrevisit) {
 
   if (Checkers.empty()) {
-    Dst = Src;
+    Dst.insert(Src);
     return;
   }
 
   ExplodedNodeSet Tmp;
   ExplodedNodeSet *PrevSet = &Src;
 
-  for (CheckersOrdered::iterator I=Checkers.begin(),E=Checkers.end(); I!=E; ++I)
-  {
-    ExplodedNodeSet *CurrSet = (I+1 == E) ? &Dst 
-                                          : (PrevSet == &Tmp) ? &Src : &Tmp;
-
-    CurrSet->clear();
+  for (CheckersOrdered::iterator I=Checkers.begin(),E=Checkers.end(); I!=E;++I){
+    ExplodedNodeSet *CurrSet = 0;
+    if (I+1 == E)
+      CurrSet = &Dst;
+    else {
+      CurrSet = (PrevSet == &Tmp) ? &Src : &Tmp;
+      CurrSet->clear();
+    }    
     void *tag = I->first;
     Checker *checker = I->second;
-
+    
     for (ExplodedNodeSet::iterator NI = PrevSet->begin(), NE = PrevSet->end();
          NI != NE; ++NI)
       checker->GR_Visit(*CurrSet, *Builder, *this, S, *NI, tag, isPrevisit);
-
-    // Update which NodeSet is the current one.
     PrevSet = CurrSet;
   }
 
   // Don't autotransition.  The CheckerContext objects should do this
   // automatically.
+}
+
+void GRExprEngine::CheckerEvalNilReceiver(const ObjCMessageExpr *ME, 
+                                          ExplodedNodeSet &Dst,
+                                          const GRState *state,
+                                          ExplodedNode *Pred) {
+  bool Evaluated = false;
+  ExplodedNodeSet DstTmp;
+
+  for (CheckersOrdered::iterator I=Checkers.begin(),E=Checkers.end();I!=E;++I) {
+    void *tag = I->first;
+    Checker *checker = I->second;
+
+    if (checker->GR_EvalNilReceiver(DstTmp, *Builder, *this, ME, Pred, state,
+                                    tag)) {
+      Evaluated = true;
+      break;
+    } else
+      // The checker didn't evaluate the expr. Restore the Dst.
+      DstTmp.clear();
+  }
+
+  if (Evaluated)
+    Dst.insert(DstTmp);
+  else
+    Dst.insert(Pred);
+}
+
+// CheckerEvalCall returns true if one of the checkers processed the node.
+// This may return void when all call evaluation logic goes to some checker
+// in the future.
+bool GRExprEngine::CheckerEvalCall(const CallExpr *CE, 
+                                   ExplodedNodeSet &Dst, 
+                                   ExplodedNode *Pred) {
+  bool Evaluated = false;
+  ExplodedNodeSet DstTmp;
+
+  for (CheckersOrdered::iterator I=Checkers.begin(),E=Checkers.end();I!=E;++I) {
+    void *tag = I->first;
+    Checker *checker = I->second;
+
+    if (checker->GR_EvalCallExpr(DstTmp, *Builder, *this, CE, Pred, tag)) {
+      Evaluated = true;
+      break;
+    } else
+      // The checker didn't evaluate the expr. Restore the DstTmp set.
+      DstTmp.clear();
+  }
+
+  if (Evaluated)
+    Dst.insert(DstTmp);
+  else
+    Dst.insert(Pred);
+
+  return Evaluated;
 }
 
 // FIXME: This is largely copy-paste from CheckerVisit().  Need to 
@@ -147,7 +254,7 @@ void GRExprEngine::CheckerVisitBind(const Stmt *AssignE, const Stmt *StoreE,
                                     SVal location, SVal val, bool isPrevisit) {
   
   if (Checkers.empty()) {
-    Dst = Src;
+    Dst.insert(Src);
     return;
   }
   
@@ -156,10 +263,14 @@ void GRExprEngine::CheckerVisitBind(const Stmt *AssignE, const Stmt *StoreE,
   
   for (CheckersOrdered::iterator I=Checkers.begin(),E=Checkers.end(); I!=E; ++I)
   {
-    ExplodedNodeSet *CurrSet = (I+1 == E) ? &Dst 
-    : (PrevSet == &Tmp) ? &Src : &Tmp;
-    
-    CurrSet->clear();
+    ExplodedNodeSet *CurrSet = 0;
+    if (I+1 == E)
+      CurrSet = &Dst;
+    else {
+      CurrSet = (PrevSet == &Tmp) ? &Src : &Tmp;
+      CurrSet->clear();
+    }
+
     void *tag = I->first;
     Checker *checker = I->second;
     
@@ -179,26 +290,57 @@ void GRExprEngine::CheckerVisitBind(const Stmt *AssignE, const Stmt *StoreE,
 // Engine construction and deletion.
 //===----------------------------------------------------------------------===//
 
-static inline Selector GetNullarySelector(const char* name, ASTContext& Ctx) {
-  IdentifierInfo* II = &Ctx.Idents.get(name);
-  return Ctx.Selectors.getSelector(0, &II);
+static void RegisterInternalChecks(GRExprEngine &Eng) {
+  // Register internal "built-in" BugTypes with the BugReporter. These BugTypes
+  // are different than what probably many checks will do since they don't
+  // create BugReports on-the-fly but instead wait until GRExprEngine finishes
+  // analyzing a function.  Generation of BugReport objects is done via a call
+  // to 'FlushReports' from BugReporter.
+  // The following checks do not need to have their associated BugTypes
+  // explicitly registered with the BugReporter.  If they issue any BugReports,
+  // their associated BugType will get registered with the BugReporter
+  // automatically.  Note that the check itself is owned by the GRExprEngine
+  // object.  
+  RegisterAttrNonNullChecker(Eng);
+  RegisterCallAndMessageChecker(Eng);
+  RegisterDereferenceChecker(Eng);
+  RegisterVLASizeChecker(Eng);
+  RegisterDivZeroChecker(Eng);
+  RegisterReturnStackAddressChecker(Eng);
+  RegisterReturnUndefChecker(Eng);
+  RegisterUndefinedArraySubscriptChecker(Eng);
+  RegisterUndefinedAssignmentChecker(Eng);
+  RegisterUndefBranchChecker(Eng);
+  RegisterUndefResultChecker(Eng);
+
+  // This is not a checker yet.
+  RegisterNoReturnFunctionChecker(Eng);
+  RegisterBuiltinFunctionChecker(Eng);
+  RegisterOSAtomicChecker(Eng);
 }
 
-
-GRExprEngine::GRExprEngine(AnalysisManager &mgr)
+GRExprEngine::GRExprEngine(AnalysisManager &mgr, GRTransferFuncs *tf)
   : AMgr(mgr),
     CoreEngine(mgr.getASTContext(), *this),
     G(CoreEngine.getGraph()),
     Builder(NULL),
     StateMgr(G.getContext(), mgr.getStoreManagerCreator(),
-             mgr.getConstraintManagerCreator(), G.getAllocator()),
+             mgr.getConstraintManagerCreator(), G.getAllocator(),
+             *this),
     SymMgr(StateMgr.getSymbolManager()),
     ValMgr(StateMgr.getValueManager()),
     SVator(ValMgr.getSValuator()),
     CurrentStmt(NULL),
     NSExceptionII(NULL), NSExceptionInstanceRaiseSelectors(NULL),
     RaiseSel(GetNullarySelector("raise", G.getContext())),
-    BR(mgr, *this) {}
+    BR(mgr, *this), TF(tf) {
+  // Register internal checks.
+  RegisterInternalChecks(*this);
+  
+  // FIXME: Eventually remove the TF object entirely.
+  TF->RegisterChecks(*this);
+  TF->RegisterPrinters(getStateManager().Printers);
+}
 
 GRExprEngine::~GRExprEngine() {
   BR.FlushReports();
@@ -210,13 +352,6 @@ GRExprEngine::~GRExprEngine() {
 //===----------------------------------------------------------------------===//
 // Utility methods.
 //===----------------------------------------------------------------------===//
-
-
-void GRExprEngine::setTransferFunctions(GRTransferFuncs* tf) {
-  StateMgr.TF = tf;
-  tf->RegisterChecks(*this);
-  tf->RegisterPrinters(getStateManager().Printers);
-}
 
 void GRExprEngine::AddCheck(GRSimpleAPICheck* A, Stmt::StmtClass C) {
   if (!BatchAuditor)
@@ -239,43 +374,55 @@ const GRState* GRExprEngine::getInitialState(const LocationContext *InitLoc) {
 
   // FIXME: It would be nice if we had a more general mechanism to add
   // such preconditions.  Some day.
-  const Decl *D = InitLoc->getDecl();
-  
-  if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(D)) {
-    // Precondition: the first argument of 'main' is an integer guaranteed
-    //  to be > 0.
-    if (FD->getIdentifier()->getName() == "main" &&
-        FD->getNumParams() > 0) {
+  do {
+    const Decl *D = InitLoc->getDecl();  
+    if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(D)) {
+      // Precondition: the first argument of 'main' is an integer guaranteed
+      //  to be > 0.
+      const IdentifierInfo *II = FD->getIdentifier();
+      if (!II || !(II->getName() == "main" && FD->getNumParams() > 0))
+        break;
+
       const ParmVarDecl *PD = FD->getParamDecl(0);
       QualType T = PD->getType();
-      if (T->isIntegerType())
-        if (const MemRegion *R = state->getRegion(PD, InitLoc)) {
-          SVal V = state->getSVal(loc::MemRegionVal(R));
-          SVal Constraint_untested = EvalBinOp(state, BinaryOperator::GT, V,
-                                               ValMgr.makeZeroVal(T),
-                                               getContext().IntTy);
-
-          if (DefinedOrUnknownSVal *Constraint =
-              dyn_cast<DefinedOrUnknownSVal>(&Constraint_untested)) {
-            if (const GRState *newState = state->Assume(*Constraint, true))
-              state = newState;
-          }
-        }
-    }
-  }
-  else if (const ObjCMethodDecl *MD = dyn_cast<ObjCMethodDecl>(D)) {    
-    // Precondition: 'self' is always non-null upon entry to an Objective-C
-    // method.
-    const ImplicitParamDecl *SelfD = MD->getSelfDecl();
-    const MemRegion *R = state->getRegion(SelfD, InitLoc);
-    SVal V = state->getSVal(loc::MemRegionVal(R));
+      if (!T->isIntegerType())
+        break;
     
-    if (const Loc *LV = dyn_cast<Loc>(&V)) {
-      // Assume that the pointer value in 'self' is non-null.
-      state = state->Assume(*LV, true);
-      assert(state && "'self' cannot be null");
+      const MemRegion *R = state->getRegion(PD, InitLoc);
+      if (!R)
+        break;
+    
+      SVal V = state->getSVal(loc::MemRegionVal(R));
+      SVal Constraint_untested = EvalBinOp(state, BinaryOperator::GT, V,
+                                           ValMgr.makeZeroVal(T),
+                                           getContext().IntTy);
+
+      DefinedOrUnknownSVal *Constraint =
+        dyn_cast<DefinedOrUnknownSVal>(&Constraint_untested);
+      
+      if (!Constraint)
+        break;
+      
+      if (const GRState *newState = state->Assume(*Constraint, true))
+        state = newState;
+      
+      break;
     }
-  }
+
+    if (const ObjCMethodDecl *MD = dyn_cast<ObjCMethodDecl>(D)) {    
+      // Precondition: 'self' is always non-null upon entry to an Objective-C
+      // method.
+      const ImplicitParamDecl *SelfD = MD->getSelfDecl();
+      const MemRegion *R = state->getRegion(SelfD, InitLoc);
+      SVal V = state->getSVal(loc::MemRegionVal(R));
+    
+      if (const Loc *LV = dyn_cast<Loc>(&V)) {
+        // Assume that the pointer value in 'self' is non-null.
+        state = state->Assume(*LV, true);
+        assert(state && "'self' cannot be null");
+      }
+    }
+  } while (0);
   
   return state;
 }
@@ -284,24 +431,42 @@ const GRState* GRExprEngine::getInitialState(const LocationContext *InitLoc) {
 // Top-level transfer function logic (Dispatcher).
 //===----------------------------------------------------------------------===//
 
-void GRExprEngine::ProcessStmt(Stmt* S, GRStmtNodeBuilder& builder) {
+/// EvalAssume - Called by ConstraintManager. Used to call checker-specific
+///  logic for handling assumptions on symbolic values.
+const GRState *GRExprEngine::ProcessAssume(const GRState *state, SVal cond,
+                                           bool assumption) {  
+  for (CheckersOrdered::iterator I = Checkers.begin(), E = Checkers.end();
+        I != E; ++I) {
 
+    if (!state)
+      return NULL;  
+    
+    state = I->second->EvalAssume(state, cond, assumption);
+  }
+  
+  if (!state)
+    return NULL;
+  
+  return TF->EvalAssume(state, cond, assumption);
+}
+
+void GRExprEngine::ProcessStmt(CFGElement CE, GRStmtNodeBuilder& builder) {
+  CurrentStmt = CE.getStmt();
   PrettyStackTraceLoc CrashInfo(getContext().getSourceManager(),
-                                S->getLocStart(),
+                                CurrentStmt->getLocStart(),
                                 "Error evaluating statement");
 
   Builder = &builder;
   EntryNode = builder.getLastNode();
-
-  CurrentStmt = S;
 
   // Set up our simple checks.
   if (BatchAuditor)
     Builder->setAuditor(BatchAuditor.get());
 
   // Create the cleaned state.
-  SymbolReaper SymReaper(Builder->getBasePredecessor()->getLiveVariables(), 
-                         SymMgr);
+  const ExplodedNode *BasePred = Builder->getBasePredecessor();
+  SymbolReaper SymReaper(BasePred->getLiveVariables(), SymMgr,
+                        BasePred->getLocationContext()->getCurrentStackFrame());
   CleanedState = AMgr.shouldPurgeDead()
     ? StateMgr.RemoveDeadBindings(EntryNode->getState(), CurrentStmt, SymReaper)
     : EntryNode->getState();
@@ -320,26 +485,30 @@ void GRExprEngine::ProcessStmt(Stmt* S, GRStmtNodeBuilder& builder) {
 
     // FIXME: This should soon be removed.
     ExplodedNodeSet Tmp2;
-    getTF().EvalDeadSymbols(Tmp2, *this, *Builder, EntryNode, S,
+    getTF().EvalDeadSymbols(Tmp2, *this, *Builder, EntryNode, CurrentStmt,
                             CleanedState, SymReaper);
 
     if (Checkers.empty())
-      Tmp = Tmp2;
+      Tmp.insert(Tmp2);
     else {
       ExplodedNodeSet Tmp3;
       ExplodedNodeSet *SrcSet = &Tmp2;
       for (CheckersOrdered::iterator I = Checkers.begin(), E = Checkers.end();
            I != E; ++I) {
-        ExplodedNodeSet *DstSet = (I+1 == E) ? &Tmp
-                                              : (SrcSet == &Tmp2) ? &Tmp3 
-                                                                  : &Tmp2;
-        DstSet->clear();
+        ExplodedNodeSet *DstSet = 0;
+        if (I+1 == E)
+          DstSet = &Tmp;
+        else {
+          DstSet = (SrcSet == &Tmp2) ? &Tmp3 : &Tmp2;
+          DstSet->clear();
+        }
+
         void *tag = I->first;
         Checker *checker = I->second;
         for (ExplodedNodeSet::iterator NI = SrcSet->begin(), NE = SrcSet->end();
              NI != NE; ++NI)
-          checker->GR_EvalDeadSymbols(*DstSet, *Builder, *this, S, *NI, 
-                                      SymReaper, tag);
+          checker->GR_EvalDeadSymbols(*DstSet, *Builder, *this, CurrentStmt,
+                                      *NI, SymReaper, tag);
         SrcSet = DstSet;
       }
     }
@@ -358,7 +527,10 @@ void GRExprEngine::ProcessStmt(Stmt* S, GRStmtNodeBuilder& builder) {
     Builder->SetCleanedState(*I == EntryNode ? CleanedState : GetState(*I));
 
     // Visit the statement.
-    Visit(S, *I, Dst);
+    if (CE.asLValue())
+      VisitLValue(cast<Expr>(CurrentStmt), *I, Dst);
+    else
+      Visit(CurrentStmt, *I, Dst);
 
     // Do we need to auto-generate a node?  We only need to do this to generate
     // a node with a "cleaned" state; GRCoreEngine will actually handle
@@ -366,7 +538,7 @@ void GRExprEngine::ProcessStmt(Stmt* S, GRStmtNodeBuilder& builder) {
     if (Dst.size() == 1 && *Dst.begin() == EntryNode
         && !Builder->HasGeneratedNode && !HasAutoGenerated) {
       HasAutoGenerated = true;
-      builder.generateNode(S, GetState(EntryNode), *I);
+      builder.generateNode(CurrentStmt, GetState(EntryNode), *I);
     }
   }
 
@@ -394,6 +566,40 @@ void GRExprEngine::Visit(Stmt* S, ExplodedNode* Pred, ExplodedNodeSet& Dst) {
   }
 
   switch (S->getStmtClass()) {
+    // C++ stuff we don't support yet.
+    case Stmt::CXXMemberCallExprClass:
+    case Stmt::CXXNamedCastExprClass:
+    case Stmt::CXXStaticCastExprClass:
+    case Stmt::CXXDynamicCastExprClass:
+    case Stmt::CXXReinterpretCastExprClass:
+    case Stmt::CXXConstCastExprClass:
+    case Stmt::CXXFunctionalCastExprClass:
+    case Stmt::CXXTypeidExprClass:
+    case Stmt::CXXBoolLiteralExprClass:
+    case Stmt::CXXNullPtrLiteralExprClass:
+    case Stmt::CXXThrowExprClass:
+    case Stmt::CXXDefaultArgExprClass:
+    case Stmt::CXXZeroInitValueExprClass:
+    case Stmt::CXXNewExprClass:
+    case Stmt::CXXDeleteExprClass:
+    case Stmt::CXXPseudoDestructorExprClass:
+    case Stmt::UnresolvedLookupExprClass:
+    case Stmt::UnaryTypeTraitExprClass:
+    case Stmt::DependentScopeDeclRefExprClass:
+    case Stmt::CXXConstructExprClass:
+    case Stmt::CXXBindTemporaryExprClass:
+    case Stmt::CXXExprWithTemporariesClass:
+    case Stmt::CXXTemporaryObjectExprClass:
+    case Stmt::CXXUnresolvedConstructExprClass:
+    case Stmt::CXXDependentScopeMemberExprClass:
+    case Stmt::UnresolvedMemberExprClass:
+    case Stmt::CXXCatchStmtClass:
+    case Stmt::CXXTryStmtClass: {
+      SaveAndRestore<bool> OldSink(Builder->BuildSinks);
+      Builder->BuildSinks = true;
+      MakeNode(Dst, S, Pred, GetState(Pred));
+      break;
+    }
 
     default:
       // Cases we intentionally have "default" handle:
@@ -409,6 +615,14 @@ void GRExprEngine::Visit(Stmt* S, ExplodedNode* Pred, ExplodedNodeSet& Dst) {
     case Stmt::AsmStmtClass:
       VisitAsmStmt(cast<AsmStmt>(S), Pred, Dst);
       break;
+      
+    case Stmt::BlockDeclRefExprClass:
+      VisitBlockDeclRefExpr(cast<BlockDeclRefExpr>(S), Pred, Dst, false);
+      break;
+
+    case Stmt::BlockExprClass:
+      VisitBlockExpr(cast<BlockExpr>(S), Pred, Dst);
+      break;
 
     case Stmt::BinaryOperatorClass: {
       BinaryOperator* B = cast<BinaryOperator>(S);
@@ -423,7 +637,8 @@ void GRExprEngine::Visit(Stmt* S, ExplodedNode* Pred, ExplodedNodeSet& Dst) {
         break;
       }
 
-      if (AMgr.shouldEagerlyAssume() && (B->isRelationalOp() || B->isEqualityOp())) {
+      if (AMgr.shouldEagerlyAssume() && 
+          (B->isRelationalOp() || B->isEqualityOp())) {
         ExplodedNodeSet Tmp;
         VisitBinaryOperator(cast<BinaryOperator>(S), Pred, Tmp, false);
         EvalEagerlyAssume(Dst, Tmp, cast<Expr>(S));
@@ -437,7 +652,7 @@ void GRExprEngine::Visit(Stmt* S, ExplodedNode* Pred, ExplodedNodeSet& Dst) {
     case Stmt::CallExprClass:
     case Stmt::CXXOperatorCallExprClass: {
       CallExpr* C = cast<CallExpr>(S);
-      VisitCall(C, Pred, C->arg_begin(), C->arg_end(), Dst);
+      VisitCall(C, Pred, C->arg_begin(), C->arg_end(), Dst, false);
       break;
     }
 
@@ -464,6 +679,10 @@ void GRExprEngine::Visit(Stmt* S, ExplodedNode* Pred, ExplodedNodeSet& Dst) {
       break;
     }
 
+    case Stmt::CXXThisExprClass:
+      VisitCXXThisExpr(cast<CXXThisExpr>(S), Pred, Dst);
+      break;
+
     case Stmt::DeclRefExprClass:
       VisitDeclRefExpr(cast<DeclRefExpr>(S), Pred, Dst, false);
       break;
@@ -472,12 +691,24 @@ void GRExprEngine::Visit(Stmt* S, ExplodedNode* Pred, ExplodedNodeSet& Dst) {
       VisitDeclStmt(cast<DeclStmt>(S), Pred, Dst);
       break;
 
+    case Stmt::ForStmtClass:
+      // This case isn't for branch processing, but for handling the
+      // initialization of a condition variable.
+      VisitCondInit(cast<ForStmt>(S)->getConditionVariable(), S, Pred, Dst);
+      break;      
+
     case Stmt::ImplicitCastExprClass:
     case Stmt::CStyleCastExprClass: {
       CastExpr* C = cast<CastExpr>(S);
-      VisitCast(C, C->getSubExpr(), Pred, Dst);
+      VisitCast(C, C->getSubExpr(), Pred, Dst, false);
       break;
     }
+      
+    case Stmt::IfStmtClass:
+      // This case isn't for branch processing, but for handling the
+      // initialization of a condition variable.
+      VisitCondInit(cast<IfStmt>(S)->getConditionVariable(), S, Pred, Dst);
+      break;
 
     case Stmt::InitListExprClass:
       VisitInitListExpr(cast<InitListExpr>(S), Pred, Dst);
@@ -495,10 +726,9 @@ void GRExprEngine::Visit(Stmt* S, ExplodedNode* Pred, ExplodedNodeSet& Dst) {
       VisitObjCForCollectionStmt(cast<ObjCForCollectionStmt>(S), Pred, Dst);
       break;
 
-    case Stmt::ObjCMessageExprClass: {
-      VisitObjCMessageExpr(cast<ObjCMessageExpr>(S), Pred, Dst);
+    case Stmt::ObjCMessageExprClass:
+      VisitObjCMessageExpr(cast<ObjCMessageExpr>(S), Pred, Dst, false);
       break;
-    }
 
     case Stmt::ObjCAtThrowStmtClass: {
       // FIXME: This is not complete.  We basically treat @throw as
@@ -545,10 +775,16 @@ void GRExprEngine::Visit(Stmt* S, ExplodedNode* Pred, ExplodedNodeSet& Dst) {
     case Stmt::StringLiteralClass:
       VisitLValue(cast<StringLiteral>(S), Pred, Dst);
       break;
+      
+    case Stmt::SwitchStmtClass:
+      // This case isn't for branch processing, but for handling the
+      // initialization of a condition variable.
+      VisitCondInit(cast<SwitchStmt>(S)->getConditionVariable(), S, Pred, Dst);
+      break;
 
     case Stmt::UnaryOperatorClass: {
       UnaryOperator *U = cast<UnaryOperator>(S);
-      if (AMgr.shouldEagerlyAssume() && (U->getOpcode() == UnaryOperator::LNot)) {
+      if (AMgr.shouldEagerlyAssume()&&(U->getOpcode() == UnaryOperator::LNot)) {
         ExplodedNodeSet Tmp;
         VisitUnaryOperator(U, Pred, Tmp, false);
         EvalEagerlyAssume(Dst, Tmp, U);
@@ -557,44 +793,92 @@ void GRExprEngine::Visit(Stmt* S, ExplodedNode* Pred, ExplodedNodeSet& Dst) {
         VisitUnaryOperator(U, Pred, Dst, false);
       break;
     }
+      
+    case Stmt::WhileStmtClass:
+      // This case isn't for branch processing, but for handling the
+      // initialization of a condition variable.
+      VisitCondInit(cast<WhileStmt>(S)->getConditionVariable(), S, Pred, Dst);
+      break;      
   }
 }
 
 void GRExprEngine::VisitLValue(Expr* Ex, ExplodedNode* Pred,
                                ExplodedNodeSet& Dst) {
+  
+  PrettyStackTraceLoc CrashInfo(getContext().getSourceManager(),
+                                Ex->getLocStart(),
+                                "Error evaluating statement");
+
 
   Ex = Ex->IgnoreParens();
 
-  if (Ex != CurrentStmt && Pred->getLocationContext()->getCFG()->isBlkExpr(Ex)) {
+  if (Ex != CurrentStmt && Pred->getLocationContext()->getCFG()->isBlkExpr(Ex)){
     Dst.Add(Pred);
     return;
   }
 
   switch (Ex->getStmtClass()) {
+    // C++ stuff we don't support yet.
+    case Stmt::CXXExprWithTemporariesClass:
+    case Stmt::CXXMemberCallExprClass:
+    case Stmt::CXXZeroInitValueExprClass: {
+      SaveAndRestore<bool> OldSink(Builder->BuildSinks);
+      Builder->BuildSinks = true;
+      MakeNode(Dst, Ex, Pred, GetState(Pred));
+      break;
+    }
 
     case Stmt::ArraySubscriptExprClass:
       VisitArraySubscriptExpr(cast<ArraySubscriptExpr>(Ex), Pred, Dst, true);
       return;
 
+    case Stmt::BinaryOperatorClass:
+    case Stmt::CompoundAssignOperatorClass:
+      VisitBinaryOperator(cast<BinaryOperator>(Ex), Pred, Dst, true);
+      return;
+      
+    case Stmt::BlockDeclRefExprClass:
+      VisitBlockDeclRefExpr(cast<BlockDeclRefExpr>(Ex), Pred, Dst, true);
+      return;
+      
+    case Stmt::CallExprClass:
+    case Stmt::CXXOperatorCallExprClass: {
+      CallExpr *C = cast<CallExpr>(Ex);
+      assert(CalleeReturnsReferenceOrRecord(C));
+      VisitCall(C, Pred, C->arg_begin(), C->arg_end(), Dst, true);      
+      break;
+    }
+      
+    case Stmt::CompoundLiteralExprClass:
+      VisitCompoundLiteralExpr(cast<CompoundLiteralExpr>(Ex), Pred, Dst, true);
+      return;      
+
     case Stmt::DeclRefExprClass:
       VisitDeclRefExpr(cast<DeclRefExpr>(Ex), Pred, Dst, true);
+      return;
+      
+    case Stmt::ImplicitCastExprClass:
+    case Stmt::CStyleCastExprClass: {
+      CastExpr *C = cast<CastExpr>(Ex);
+      QualType T = Ex->getType();
+      VisitCast(C, C->getSubExpr(), Pred, Dst, true);
+      break;
+    }
+      
+    case Stmt::MemberExprClass:
+      VisitMemberExpr(cast<MemberExpr>(Ex), Pred, Dst, true);
       return;
 
     case Stmt::ObjCIvarRefExprClass:
       VisitObjCIvarRefExpr(cast<ObjCIvarRefExpr>(Ex), Pred, Dst, true);
       return;
-
-    case Stmt::UnaryOperatorClass:
-      VisitUnaryOperator(cast<UnaryOperator>(Ex), Pred, Dst, true);
+      
+    case Stmt::ObjCMessageExprClass: {
+      ObjCMessageExpr *ME = cast<ObjCMessageExpr>(Ex);
+      assert(ReceiverReturnsReferenceOrRecord(ME));
+      VisitObjCMessageExpr(ME, Pred, Dst, true); 
       return;
-
-    case Stmt::MemberExprClass:
-      VisitMemberExpr(cast<MemberExpr>(Ex), Pred, Dst, true);
-      return;
-
-    case Stmt::CompoundLiteralExprClass:
-      VisitCompoundLiteralExpr(cast<CompoundLiteralExpr>(Ex), Pred, Dst, true);
-      return;
+    }
 
     case Stmt::ObjCPropertyRefExprClass:
     case Stmt::ObjCImplicitSetterGetterRefExprClass:
@@ -619,11 +903,15 @@ void GRExprEngine::VisitLValue(Expr* Ex, ExplodedNode* Pred,
       return;
     }
 
-    case Stmt::BinaryOperatorClass:
-    case Stmt::CompoundAssignOperatorClass:
-      VisitBinaryOperator(cast<BinaryOperator>(Ex), Pred, Dst, true);
+    case Stmt::UnaryOperatorClass:
+      VisitUnaryOperator(cast<UnaryOperator>(Ex), Pred, Dst, true);
       return;
 
+    // In C++, binding an rvalue to a reference requires to create an object.
+    case Stmt::IntegerLiteralClass:
+      CreateCXXTemporaryObject(Ex, Pred, Dst);
+      return;
+      
     default:
       // Arbitrary subexpressions can return aggregate temporaries that
       // can be used in a lvalue context.  We need to enhance our support
@@ -771,55 +1059,49 @@ void GRExprEngine::ProcessBranch(Stmt* Condition, Stmt* Term,
                                 Condition->getLocStart(),
                                 "Error evaluating branch");
 
+  for (CheckersOrdered::iterator I=Checkers.begin(),E=Checkers.end();I!=E;++I) {
+    void *tag = I->first;
+    Checker *checker = I->second;
+    checker->VisitBranchCondition(builder, *this, Condition, tag);
+  }
+
+  // If the branch condition is undefined, return;
+  if (!builder.isFeasible(true) && !builder.isFeasible(false))
+    return;
+
   const GRState* PrevState = builder.getState();
   SVal X = PrevState->getSVal(Condition);
-  DefinedSVal *V = NULL;
-  
-  while (true) {
-    V = dyn_cast<DefinedSVal>(&X);
 
-    if (!V) {
-      if (X.isUnknown()) {
-        if (const Expr *Ex = dyn_cast<Expr>(Condition)) {
-          if (Ex->getType()->isIntegerType()) {
-            // Try to recover some path-sensitivity.  Right now casts of symbolic
-            // integers that promote their values are currently not tracked well.
-            // If 'Condition' is such an expression, try and recover the
-            // underlying value and use that instead.
-            SVal recovered = RecoverCastedSymbol(getStateManager(),
-                                                 builder.getState(), Condition,
-                                                 getContext());
-
-            if (!recovered.isUnknown()) {
-              X = recovered;
-              continue;
-            }
-          }
-        }    
-
-        builder.generateNode(MarkBranch(PrevState, Term, true), true);
-        builder.generateNode(MarkBranch(PrevState, Term, false), false);
-        return;
+  if (X.isUnknown()) {
+    // Give it a chance to recover from unknown.
+    if (const Expr *Ex = dyn_cast<Expr>(Condition)) {
+      if (Ex->getType()->isIntegerType()) {
+        // Try to recover some path-sensitivity.  Right now casts of symbolic
+        // integers that promote their values are currently not tracked well.
+        // If 'Condition' is such an expression, try and recover the
+        // underlying value and use that instead.
+        SVal recovered = RecoverCastedSymbol(getStateManager(),
+                                             builder.getState(), Condition,
+                                             getContext());
+        
+        if (!recovered.isUnknown()) {
+          X = recovered;
+        }
       }
-
-      assert(X.isUndef());
-      ExplodedNode *N = builder.generateNode(PrevState, true);
-
-      if (N) {
-        N->markAsSink();
-        UndefBranches.insert(N);
-      }
-
-      builder.markInfeasible(false);
+    }
+    // If the condition is still unknown, give up.
+    if (X.isUnknown()) {
+      builder.generateNode(MarkBranch(PrevState, Term, true), true);
+      builder.generateNode(MarkBranch(PrevState, Term, false), false);
       return;
     }
-    
-    break;
   }
+
+  DefinedSVal V = cast<DefinedSVal>(X);
 
   // Process the true branch.
   if (builder.isFeasible(true)) {
-    if (const GRState *state = PrevState->Assume(*V, true))
+    if (const GRState *state = PrevState->Assume(V, true))
       builder.generateNode(MarkBranch(state, Term, true), true);
     else
       builder.markInfeasible(true);
@@ -827,7 +1109,7 @@ void GRExprEngine::ProcessBranch(Stmt* Condition, Stmt* Term,
 
   // Process the false branch.
   if (builder.isFeasible(false)) {
-    if (const GRState *state = PrevState->Assume(*V, false))
+    if (const GRState *state = PrevState->Assume(V, false))
       builder.generateNode(MarkBranch(state, Term, false), false);
     else
       builder.markInfeasible(false);
@@ -866,8 +1148,9 @@ void GRExprEngine::ProcessIndirectGoto(GRIndirectGotoNodeBuilder& builder) {
 
   if (isa<loc::ConcreteInt>(V) || isa<UndefinedVal>(V)) {
     // Dispatch to the first target and mark it as a sink.
-    ExplodedNode* N = builder.generateNode(builder.begin(), state, true);
-    UndefBranches.insert(N);
+    //ExplodedNode* N = builder.generateNode(builder.begin(), state, true);
+    // FIXME: add checker visit.
+    //    UndefBranches.insert(N);
     return;
   }
 
@@ -882,7 +1165,8 @@ void GRExprEngine::ProcessIndirectGoto(GRIndirectGotoNodeBuilder& builder) {
 void GRExprEngine::VisitGuardedExpr(Expr* Ex, Expr* L, Expr* R,
                                     ExplodedNode* Pred, ExplodedNodeSet& Dst) {
 
-  assert (Ex == CurrentStmt && Pred->getLocationContext()->getCFG()->isBlkExpr(Ex));
+  assert(Ex == CurrentStmt && 
+         Pred->getLocationContext()->getCFG()->isBlkExpr(Ex));
 
   const GRState* state = GetState(Pred);
   SVal X = state->getSVal(Ex);
@@ -918,8 +1202,10 @@ void GRExprEngine::ProcessSwitch(GRSwitchNodeBuilder& builder) {
   SVal  CondV_untested = state->getSVal(CondE);
 
   if (CondV_untested.isUndef()) {
-    ExplodedNode* N = builder.generateDefaultCaseNode(state, true);
-    UndefBranches.insert(N);
+    //ExplodedNode* N = builder.generateDefaultCaseNode(state, true);
+    // FIXME: add checker 
+    //UndefBranches.insert(N);
+
     return;
   }
   DefinedOrUnknownSVal CondV = cast<DefinedOrUnknownSVal>(CondV_untested);
@@ -959,7 +1245,8 @@ void GRExprEngine::ProcessSwitch(GRSwitchNodeBuilder& builder) {
 
     do {
       nonloc::ConcreteInt CaseVal(getBasicVals().getValue(V1.Val.getInt()));
-      DefinedOrUnknownSVal Res = SVator.EvalEQ(DefaultSt, CondV, CaseVal);
+      DefinedOrUnknownSVal Res = SVator.EvalEQ(DefaultSt ? DefaultSt : state,
+                                               CondV, CaseVal);
             
       // Now "assume" that the case matches.
       if (const GRState* stateNew = state->Assume(Res, true)) {
@@ -974,11 +1261,17 @@ void GRExprEngine::ProcessSwitch(GRSwitchNodeBuilder& builder) {
 
       // Now "assume" that the case doesn't match.  Add this state
       // to the default state (if it is feasible).
-      if (const GRState *stateNew = DefaultSt->Assume(Res, false)) {
-        defaultIsFeasible = true;
-        DefaultSt = stateNew;
+      if (DefaultSt) {
+        if (const GRState *stateNew = DefaultSt->Assume(Res, false)) {
+          defaultIsFeasible = true;
+          DefaultSt = stateNew;
+        }
+        else {
+          defaultIsFeasible = false;
+          DefaultSt = NULL;
+        }
       }
-
+        
       // Concretize the next value in the range.
       if (V1.Val.getInt() == V2.Val.getInt())
         break;
@@ -1004,7 +1297,7 @@ void GRExprEngine::VisitLogicalExpr(BinaryOperator* B, ExplodedNode* Pred,
   assert(B->getOpcode() == BinaryOperator::LAnd ||
          B->getOpcode() == BinaryOperator::LOr);
 
-  assert(B == CurrentStmt && Pred->getLocationContext()->getCFG()->isBlkExpr(B));
+  assert(B==CurrentStmt && Pred->getLocationContext()->getCFG()->isBlkExpr(B));
 
   const GRState* state = GetState(Pred);
   SVal X = state->getSVal(B);
@@ -1052,23 +1345,60 @@ void GRExprEngine::VisitLogicalExpr(BinaryOperator* B, ExplodedNode* Pred,
 // Transfer functions: Loads and stores.
 //===----------------------------------------------------------------------===//
 
+void GRExprEngine::VisitBlockExpr(BlockExpr *BE, ExplodedNode *Pred,
+                                  ExplodedNodeSet &Dst) {
+  
+  ExplodedNodeSet Tmp;
+  
+  CanQualType T = getContext().getCanonicalType(BE->getType());
+  SVal V = ValMgr.getBlockPointer(BE->getBlockDecl(), T,
+                                  Pred->getLocationContext());
+
+  MakeNode(Tmp, BE, Pred, GetState(Pred)->BindExpr(BE, V),
+           ProgramPoint::PostLValueKind);
+ 
+  // Post-visit the BlockExpr.
+  CheckerVisit(BE, Dst, Tmp, false);
+}
+
 void GRExprEngine::VisitDeclRefExpr(DeclRefExpr *Ex, ExplodedNode *Pred,
                                     ExplodedNodeSet &Dst, bool asLValue) {
+  VisitCommonDeclRefExpr(Ex, Ex->getDecl(), Pred, Dst, asLValue);
+}
+
+void GRExprEngine::VisitBlockDeclRefExpr(BlockDeclRefExpr *Ex,
+                                         ExplodedNode *Pred,
+                                    ExplodedNodeSet &Dst, bool asLValue) {
+  VisitCommonDeclRefExpr(Ex, Ex->getDecl(), Pred, Dst, asLValue);
+}
+
+void GRExprEngine::VisitCommonDeclRefExpr(Expr *Ex, const NamedDecl *D,
+                                          ExplodedNode *Pred,
+                                          ExplodedNodeSet &Dst, bool asLValue) {
 
   const GRState *state = GetState(Pred);
-  const NamedDecl *D = Ex->getDecl();
 
   if (const VarDecl* VD = dyn_cast<VarDecl>(D)) {
 
     SVal V = state->getLValue(VD, Pred->getLocationContext());
 
-    if (asLValue)
+    if (asLValue) {
+      // For references, the 'lvalue' is the pointer address stored in the
+      // reference region.
+      if (VD->getType()->isReferenceType()) {
+        if (const MemRegion *R = V.getAsRegion())
+          V = state->getSVal(R);
+        else
+          V = UnknownVal();
+      }
+      
       MakeNode(Dst, Ex, Pred, state->BindExpr(Ex, V),
                ProgramPoint::PostLValueKind);
+    }
     else
       EvalLoad(Dst, Ex, Pred, state, V);
-    return;
 
+    return;
   } else if (const EnumConstantDecl* ED = dyn_cast<EnumConstantDecl>(D)) {
     assert(!asLValue && "EnumConstantDecl does not have lvalue.");
 
@@ -1245,6 +1575,37 @@ void GRExprEngine::EvalLoad(ExplodedNodeSet& Dst, Expr *Ex, ExplodedNode* Pred,
                             const GRState* state, SVal location,
                             const void *tag, QualType LoadTy) {
 
+  // Are we loading from a region?  This actually results in two loads; one
+  // to fetch the address of the referenced value and one to fetch the
+  // referenced value.
+  if (const TypedRegion *TR = 
+        dyn_cast_or_null<TypedRegion>(location.getAsRegion())) {
+    
+    QualType ValTy = TR->getValueType(getContext());
+    if (const ReferenceType *RT = ValTy->getAs<ReferenceType>()) {
+      static int loadReferenceTag = 0;    
+      ExplodedNodeSet Tmp;
+      EvalLoadCommon(Tmp, Ex, Pred, state, location, &loadReferenceTag,
+                     getContext().getPointerType(RT->getPointeeType()));
+
+      // Perform the load from the referenced value.
+      for (ExplodedNodeSet::iterator I=Tmp.begin(), E=Tmp.end() ; I!=E; ++I) {
+        state = GetState(*I);
+        location = state->getSVal(Ex);
+        EvalLoadCommon(Dst, Ex, *I, state, location, tag, LoadTy);
+      }    
+      return;
+    }
+  }
+  
+  EvalLoadCommon(Dst, Ex, Pred, state, location, tag, LoadTy);
+}
+
+void GRExprEngine::EvalLoadCommon(ExplodedNodeSet& Dst, Expr *Ex,
+                                  ExplodedNode* Pred,
+                                  const GRState* state, SVal location,
+                                  const void *tag, QualType LoadTy) {
+  
   // Evaluate the location (checks for bad dereferences).
   ExplodedNodeSet Tmp;
   EvalLocation(Tmp, Ex, Pred, state, location, tag, true);
@@ -1278,7 +1639,7 @@ void GRExprEngine::EvalLocation(ExplodedNodeSet &Dst, Stmt *S,
                                 ExplodedNode* Pred,
                                 const GRState* state, SVal location,
                                 const void *tag, bool isLoad) {
-
+  // Early checks for performance reason.
   if (location.isUnknown() || Checkers.empty()) {
     Dst.Add(Pred);
     return;
@@ -1290,17 +1651,25 @@ void GRExprEngine::EvalLocation(ExplodedNodeSet &Dst, Stmt *S,
   
   for (CheckersOrdered::iterator I=Checkers.begin(),E=Checkers.end(); I!=E; ++I)
   {
-    ExplodedNodeSet *CurrSet = (I+1 == E) ? &Dst 
-      : (PrevSet == &Tmp) ? &Src : &Tmp;
+    ExplodedNodeSet *CurrSet = 0;
+    if (I+1 == E)
+      CurrSet = &Dst;
+    else {
+      CurrSet = (PrevSet == &Tmp) ? &Src : &Tmp;
+      CurrSet->clear();
+    }
     
-    CurrSet->clear();
     void *tag = I->first;
     Checker *checker = I->second;
     
     for (ExplodedNodeSet::iterator NI = PrevSet->begin(), NE = PrevSet->end();
-         NI != NE; ++NI)
-      checker->GR_VisitLocation(*CurrSet, *Builder, *this, S, *NI, state,
+         NI != NE; ++NI) {
+      // Use the 'state' argument only when the predecessor node is the
+      // same as Pred.  This allows us to catch updates to the state.
+      checker->GR_VisitLocation(*CurrSet, *Builder, *this, S, *NI,
+                                *NI == Pred ? state : GetState(*NI),
                                 location, tag, isLoad);
+    }
     
     // Update which NodeSet is the current one.
     PrevSet = CurrSet;
@@ -1308,329 +1677,146 @@ void GRExprEngine::EvalLocation(ExplodedNodeSet &Dst, Stmt *S,
 }
 
 //===----------------------------------------------------------------------===//
-// Transfer function: OSAtomics.
-//
-// FIXME: Eventually refactor into a more "plugin" infrastructure.
-//===----------------------------------------------------------------------===//
-
-// Mac OS X:
-// http://developer.apple.com/documentation/Darwin/Reference/Manpages/man3
-// atomic.3.html
-//
-static bool EvalOSAtomicCompareAndSwap(ExplodedNodeSet& Dst,
-                                       GRExprEngine& Engine,
-                                       GRStmtNodeBuilder& Builder,
-                                       CallExpr* CE, ExplodedNode* Pred) {
-
-  // Not enough arguments to match OSAtomicCompareAndSwap?
-  if (CE->getNumArgs() != 3)
-    return false;
-
-  ASTContext &C = Engine.getContext();
-  Expr *oldValueExpr = CE->getArg(0);
-  QualType oldValueType = C.getCanonicalType(oldValueExpr->getType());
-
-  Expr *newValueExpr = CE->getArg(1);
-  QualType newValueType = C.getCanonicalType(newValueExpr->getType());
-
-  // Do the types of 'oldValue' and 'newValue' match?
-  if (oldValueType != newValueType)
-    return false;
-
-  Expr *theValueExpr = CE->getArg(2);
-  const PointerType *theValueType =
-    theValueExpr->getType()->getAs<PointerType>();
-
-  // theValueType not a pointer?
-  if (!theValueType)
-    return false;
-
-  QualType theValueTypePointee =
-    C.getCanonicalType(theValueType->getPointeeType()).getUnqualifiedType();
-
-  // The pointee must match newValueType and oldValueType.
-  if (theValueTypePointee != newValueType)
-    return false;
-
-  static unsigned magic_load = 0;
-  static unsigned magic_store = 0;
-
-  const void *OSAtomicLoadTag = &magic_load;
-  const void *OSAtomicStoreTag = &magic_store;
-
-  // Load 'theValue'.
-  const GRState *state = Pred->getState();
-  ExplodedNodeSet Tmp;
-  SVal location = state->getSVal(theValueExpr);
-  // Here we should use the value type of the region as the load type.
-  const MemRegion *R = location.getAsRegion();
-  QualType LoadTy;
-  if (R)
-    LoadTy = cast<TypedRegion>(R)->getValueType(C);
-  Engine.EvalLoad(Tmp, theValueExpr, Pred, state, location, OSAtomicLoadTag,
-                  LoadTy);
-
-  for (ExplodedNodeSet::iterator I = Tmp.begin(), E = Tmp.end();
-       I != E; ++I) {
-
-    ExplodedNode *N = *I;
-    const GRState *stateLoad = N->getState();
-    SVal theValueVal_untested = stateLoad->getSVal(theValueExpr);
-    SVal oldValueVal_untested = stateLoad->getSVal(oldValueExpr);
-
-    // FIXME: Issue an error.
-    if (theValueVal_untested.isUndef() || oldValueVal_untested.isUndef()) {
-      return false;
-    }
-    
-    DefinedOrUnknownSVal theValueVal =
-      cast<DefinedOrUnknownSVal>(theValueVal_untested);
-    DefinedOrUnknownSVal oldValueVal =
-      cast<DefinedOrUnknownSVal>(oldValueVal_untested);
-
-    SValuator &SVator = Engine.getSValuator();
-
-    // Perform the comparison.
-    DefinedOrUnknownSVal Cmp = SVator.EvalEQ(stateLoad, theValueVal,
-                                             oldValueVal);
-
-    const GRState *stateEqual = stateLoad->Assume(Cmp, true);
-
-    // Were they equal?
-    if (stateEqual) {
-      // Perform the store.
-      ExplodedNodeSet TmpStore;
-      SVal val = stateEqual->getSVal(newValueExpr);
-
-      // Handle implicit value casts.
-      if (const TypedRegion *R =
-          dyn_cast_or_null<TypedRegion>(location.getAsRegion())) {
-        llvm::tie(state, val) = SVator.EvalCast(val, state, R->getValueType(C),
-                                                newValueExpr->getType());
-      }
-
-      Engine.EvalStore(TmpStore, NULL, theValueExpr, N, stateEqual, location,
-                       val, OSAtomicStoreTag);
-
-      // Now bind the result of the comparison.
-      for (ExplodedNodeSet::iterator I2 = TmpStore.begin(),
-           E2 = TmpStore.end(); I2 != E2; ++I2) {
-        ExplodedNode *predNew = *I2;
-        const GRState *stateNew = predNew->getState();
-        SVal Res = Engine.getValueManager().makeTruthVal(true, CE->getType());
-        Engine.MakeNode(Dst, CE, predNew, stateNew->BindExpr(CE, Res));
-      }
-    }
-
-    // Were they not equal?
-    if (const GRState *stateNotEqual = stateLoad->Assume(Cmp, false)) {
-      SVal Res = Engine.getValueManager().makeTruthVal(false, CE->getType());
-      Engine.MakeNode(Dst, CE, N, stateNotEqual->BindExpr(CE, Res));
-    }
-  }
-
-  return true;
-}
-
-static bool EvalOSAtomic(ExplodedNodeSet& Dst,
-                         GRExprEngine& Engine,
-                         GRStmtNodeBuilder& Builder,
-                         CallExpr* CE, SVal L,
-                         ExplodedNode* Pred) {
-  const FunctionDecl* FD = L.getAsFunctionDecl();
-  if (!FD)
-    return false;
-
-  const char *FName = FD->getNameAsCString();
-
-  // Check for compare and swap.
-  if (strncmp(FName, "OSAtomicCompareAndSwap", 22) == 0 ||
-      strncmp(FName, "objc_atomicCompareAndSwap", 25) == 0)
-    return EvalOSAtomicCompareAndSwap(Dst, Engine, Builder, CE, Pred);
-
-  // FIXME: Other atomics.
-  return false;
-}
-
-//===----------------------------------------------------------------------===//
 // Transfer function: Function calls.
 //===----------------------------------------------------------------------===//
-static void MarkNoReturnFunction(const FunctionDecl *FD, CallExpr *CE,
-                                 const GRState *state,
-                                 GRStmtNodeBuilder *Builder) {
-  if (!FD)
-    return;
 
-  if (FD->getAttr<NoReturnAttr>() ||
-      FD->getAttr<AnalyzerNoReturnAttr>())
-    Builder->BuildSinks = true;
-  else {
-    // HACK: Some functions are not marked noreturn, and don't return.
-    //  Here are a few hardwired ones.  If this takes too long, we can
-    //  potentially cache these results.
-    using llvm::StringRef;
-    bool BuildSinks
-      = llvm::StringSwitch<bool>(StringRef(FD->getIdentifier()->getName()))
-          .Case("exit", true)
-          .Case("panic", true)
-          .Case("error", true)
-          .Case("Assert", true)
-          // FIXME: This is just a wrapper around throwing an exception.
-          //  Eventually inter-procedural analysis should handle this easily.
-          .Case("ziperr", true)
-          .Case("assfail", true)
-          .Case("db_error", true)
-          .Case("__assert", true)
-          .Case("__assert_rtn", true)
-          .Case("__assert_fail", true)
-          .Case("dtrace_assfail", true)
-          .Case("yy_fatal_error", true)
-          .Case("_XCAssertionFailureHandler", true)
-          .Case("_DTAssertionFailureHandler", true)
-          .Case("_TSAssertionFailureHandler", true)
-          .Default(false);
-    
-    if (BuildSinks)
-      Builder->BuildSinks = true;
-  }
-}
+namespace {
+class CallExprWLItem {
+public:
+  CallExpr::arg_iterator I;
+  ExplodedNode *N;
 
-bool GRExprEngine::EvalBuiltinFunction(const FunctionDecl *FD, CallExpr *CE,
-                                       ExplodedNode *Pred,
-                                       ExplodedNodeSet &Dst) {
-  if (!FD)
-    return false;
-
-  unsigned id = FD->getBuiltinID();
-  if (!id)
-    return false;
-
-  const GRState *state = Pred->getState();
-
-  switch (id) {
-  case Builtin::BI__builtin_expect: {
-    // For __builtin_expect, just return the value of the subexpression.
-    assert (CE->arg_begin() != CE->arg_end());
-    SVal X = state->getSVal(*(CE->arg_begin()));
-    MakeNode(Dst, CE, Pred, state->BindExpr(CE, X));
-    return true;
-  }
-
-  case Builtin::BI__builtin_alloca: {
-    // FIXME: Refactor into StoreManager itself?
-    MemRegionManager& RM = getStateManager().getRegionManager();
-    const MemRegion* R =
-      RM.getAllocaRegion(CE, Builder->getCurrentBlockCount());
-
-    // Set the extent of the region in bytes. This enables us to use the
-    // SVal of the argument directly. If we save the extent in bits, we
-    // cannot represent values like symbol*8.
-    SVal Extent = state->getSVal(*(CE->arg_begin()));
-    state = getStoreManager().setExtent(state, R, Extent);
-    MakeNode(Dst, CE, Pred, state->BindExpr(CE, loc::MemRegionVal(R)));
-    return true;
-  }
-  }
-
-  return false;
-}
+  CallExprWLItem(const CallExpr::arg_iterator &i, ExplodedNode *n)
+    : I(i), N(n) {}
+};  
+} // end anonymous namespace
 
 void GRExprEngine::VisitCall(CallExpr* CE, ExplodedNode* Pred,
                              CallExpr::arg_iterator AI,
                              CallExpr::arg_iterator AE,
-                             ExplodedNodeSet& Dst) {
+                             ExplodedNodeSet& Dst, bool asLValue) {
+
   // Determine the type of function we're calling (if available).
   const FunctionProtoType *Proto = NULL;
   QualType FnType = CE->getCallee()->IgnoreParens()->getType();
   if (const PointerType *FnTypePtr = FnType->getAs<PointerType>())
     Proto = FnTypePtr->getPointeeType()->getAs<FunctionProtoType>();
 
-  VisitCallRec(CE, Pred, AI, AE, Dst, Proto, /*ParamIdx=*/0);
-}
+  // Create a worklist to process the arguments.
+  llvm::SmallVector<CallExprWLItem, 20> WorkList;
+  WorkList.reserve(AE - AI);
+  WorkList.push_back(CallExprWLItem(AI, Pred));
+  
+  ExplodedNodeSet ArgsEvaluated;
 
-void GRExprEngine::VisitCallRec(CallExpr* CE, ExplodedNode* Pred,
-                                CallExpr::arg_iterator AI,
-                                CallExpr::arg_iterator AE,
-                                ExplodedNodeSet& Dst,
-                                const FunctionProtoType *Proto,
-                                unsigned ParamIdx) {
-
-  // Process the arguments.
-  if (AI != AE) {
-    // If the call argument is being bound to a reference parameter,
-    // visit it as an lvalue, not an rvalue.
+  while (!WorkList.empty()) {
+    CallExprWLItem Item = WorkList.back();
+    WorkList.pop_back();
+    
+    if (Item.I == AE) {
+      ArgsEvaluated.insert(Item.N);
+      continue;
+    }
+    
+    // Evaluate the argument.
+    ExplodedNodeSet Tmp;
+    const unsigned ParamIdx = Item.I - AI;
+    
     bool VisitAsLvalue = false;
     if (Proto && ParamIdx < Proto->getNumArgs())
       VisitAsLvalue = Proto->getArgType(ParamIdx)->isReferenceType();
-
-    ExplodedNodeSet DstTmp;
+    
     if (VisitAsLvalue)
-      VisitLValue(*AI, Pred, DstTmp);
+      VisitLValue(*Item.I, Item.N, Tmp);
     else
-      Visit(*AI, Pred, DstTmp);
-    ++AI;
+      Visit(*Item.I, Item.N, Tmp);
+   
+    // Enqueue evaluating the next argument on the worklist.
+    ++(Item.I);
 
-    for (ExplodedNodeSet::iterator DI=DstTmp.begin(), DE=DstTmp.end(); DI != DE;
-         ++DI)
-      VisitCallRec(CE, *DI, AI, AE, Dst, Proto, ParamIdx + 1);
-
-    return;
+    for (ExplodedNodeSet::iterator NI=Tmp.begin(), NE=Tmp.end(); NI!=NE; ++NI)
+      WorkList.push_back(CallExprWLItem(Item.I, *NI));
   }
 
-  // If we reach here we have processed all of the arguments.  Evaluate
-  // the callee expression.
+  // Now process the call itself.
   ExplodedNodeSet DstTmp;
   Expr* Callee = CE->getCallee()->IgnoreParens();
-
-  { // Enter new scope to make the lifetime of 'DstTmp2' bounded.
+  
+  for (ExplodedNodeSet::iterator NI=ArgsEvaluated.begin(),
+                                 NE=ArgsEvaluated.end(); NI != NE; ++NI) {
+    // Evaluate the callee.
     ExplodedNodeSet DstTmp2;
-    Visit(Callee, Pred, DstTmp2);
-
+    Visit(Callee, *NI, DstTmp2);    
     // Perform the previsit of the CallExpr, storing the results in DstTmp.
     CheckerVisit(CE, DstTmp, DstTmp2, true);
   }
+  
+  // Finally, evaluate the function call.  We try each of the checkers
+  // to see if the can evaluate the function call.
+  ExplodedNodeSet DstTmp3;
 
-  // Finally, evaluate the function call.
+  
   for (ExplodedNodeSet::iterator DI = DstTmp.begin(), DE = DstTmp.end();
        DI != DE; ++DI) {
-
+    
     const GRState* state = GetState(*DI);
     SVal L = state->getSVal(Callee);
-
+    
     // FIXME: Add support for symbolic function calls (calls involving
     //  function pointer values that are symbolic).
-
-    // Check for the "noreturn" attribute.
-
     SaveAndRestore<bool> OldSink(Builder->BuildSinks);
-    const FunctionDecl* FD = L.getAsFunctionDecl();
-
-    MarkNoReturnFunction(FD, CE, state, Builder);
-
-    // Evaluate the call.
-    if (EvalBuiltinFunction(FD, CE, *DI, Dst))
-      continue;
-
-    // Dispatch to the plug-in transfer function.
-    SaveOr OldHasGen(Builder->HasGeneratedNode);
-    Pred = *DI;
-
-    // Dispatch to transfer function logic to handle the call itself.
-    // FIXME: Allow us to chain together transfer functions.
-    assert(Builder && "GRStmtNodeBuilder must be defined.");
-    ExplodedNodeSet DstTmp;
+    ExplodedNodeSet DstChecker;
     
-    if (!EvalOSAtomic(DstTmp, *this, *Builder, CE, L, Pred))
-      getTF().EvalCall(DstTmp, *this, *Builder, CE, L, Pred);
-
-    // Handle the case where no nodes where generated.  Auto-generate that
-    // contains the updated state if we aren't generating sinks.
-    if (!Builder->BuildSinks && DstTmp.empty() &&
-        !Builder->HasGeneratedNode)
-      MakeNode(DstTmp, CE, Pred, state);
-    
-    // Perform the post-condition check of the CallExpr.
-    CheckerVisit(CE, Dst, DstTmp, false);
+    // If the callee is processed by a checker, skip the rest logic.
+    if (CheckerEvalCall(CE, DstChecker, *DI))
+      DstTmp3.insert(DstChecker);
+    else {
+      for (ExplodedNodeSet::iterator DI_Checker = DstChecker.begin(),
+           DE_Checker = DstChecker.end();
+           DI_Checker != DE_Checker; ++DI_Checker) {
+        
+        // Dispatch to the plug-in transfer function.
+        unsigned OldSize = DstTmp3.size();
+        SaveOr OldHasGen(Builder->HasGeneratedNode);
+        Pred = *DI_Checker;
+        
+        // Dispatch to transfer function logic to handle the call itself.
+        // FIXME: Allow us to chain together transfer functions.
+        assert(Builder && "GRStmtNodeBuilder must be defined.");        
+        getTF().EvalCall(DstTmp3, *this, *Builder, CE, L, Pred);
+        
+        // Handle the case where no nodes where generated.  Auto-generate that
+        // contains the updated state if we aren't generating sinks.
+        if (!Builder->BuildSinks && DstTmp3.size() == OldSize &&
+            !Builder->HasGeneratedNode)
+          MakeNode(DstTmp3, CE, Pred, state);
+      }
+    }
+  }
+  
+  // Finally, perform the post-condition check of the CallExpr and store
+  // the created nodes in 'Dst'.
+  
+  if (!(!asLValue && CalleeReturnsReference(CE))) {
+    CheckerVisit(CE, Dst, DstTmp3, false);
+    return;
+  }
+  
+  // Handle the case where the called function returns a reference but
+  // we expect an rvalue.  For such cases, convert the reference to
+  // an rvalue.  
+  // FIXME: This conversion doesn't actually happen unless the result
+  //  of CallExpr is consumed by another expression.
+  ExplodedNodeSet DstTmp4;
+  CheckerVisit(CE, DstTmp4, DstTmp3, false);
+  QualType LoadTy = CE->getType();
+  
+  static int *ConvertToRvalueTag = 0;
+  for (ExplodedNodeSet::iterator NI = DstTmp4.begin(), NE = DstTmp4.end();
+       NI!=NE; ++NI) {
+    const GRState *state = GetState(*NI);
+    EvalLoad(Dst, CE, *NI, state, state->getSVal(CE),
+             &ConvertToRvalueTag, LoadTy);
   }
 }
 
@@ -1808,16 +1994,18 @@ void GRExprEngine::VisitObjCForCollectionStmtAux(ObjCForCollectionStmt* S,
 //===----------------------------------------------------------------------===//
 
 void GRExprEngine::VisitObjCMessageExpr(ObjCMessageExpr* ME, ExplodedNode* Pred,
-                                        ExplodedNodeSet& Dst){
+                                        ExplodedNodeSet& Dst, bool asLValue){
 
   VisitObjCMessageExprArgHelper(ME, ME->arg_begin(), ME->arg_end(),
-                                Pred, Dst);
+                                Pred, Dst, asLValue);
 }
 
 void GRExprEngine::VisitObjCMessageExprArgHelper(ObjCMessageExpr* ME,
-                                              ObjCMessageExpr::arg_iterator AI,
-                                              ObjCMessageExpr::arg_iterator AE,
-                                     ExplodedNode* Pred, ExplodedNodeSet& Dst) {
+                                               ObjCMessageExpr::arg_iterator AI,
+                                               ObjCMessageExpr::arg_iterator AE,
+                                                 ExplodedNode* Pred,
+                                                 ExplodedNodeSet& Dst,
+                                                 bool asLValue) {
   if (AI == AE) {
 
     // Process the receiver.
@@ -1828,12 +2016,12 @@ void GRExprEngine::VisitObjCMessageExprArgHelper(ObjCMessageExpr* ME,
 
       for (ExplodedNodeSet::iterator NI = Tmp.begin(), NE = Tmp.end(); NI != NE;
            ++NI)
-        VisitObjCMessageExprDispatchHelper(ME, *NI, Dst);
+        VisitObjCMessageExprDispatchHelper(ME, *NI, Dst, asLValue);
 
       return;
     }
 
-    VisitObjCMessageExprDispatchHelper(ME, Pred, Dst);
+    VisitObjCMessageExprDispatchHelper(ME, Pred, Dst, asLValue);
     return;
   }
 
@@ -1843,204 +2031,142 @@ void GRExprEngine::VisitObjCMessageExprArgHelper(ObjCMessageExpr* ME,
   ++AI;
 
   for (ExplodedNodeSet::iterator NI = Tmp.begin(), NE = Tmp.end();NI != NE;++NI)
-    VisitObjCMessageExprArgHelper(ME, AI, AE, *NI, Dst);
+    VisitObjCMessageExprArgHelper(ME, AI, AE, *NI, Dst, asLValue);
 }
 
 void GRExprEngine::VisitObjCMessageExprDispatchHelper(ObjCMessageExpr* ME,
                                                       ExplodedNode* Pred,
-                                                      ExplodedNodeSet& Dst) {
-
-  // FIXME: More logic for the processing the method call.
-
-  const GRState* state = GetState(Pred);
-  bool RaisesException = false;
-
-
-  if (Expr* Receiver = ME->getReceiver()) {
-
-    SVal L_untested = state->getSVal(Receiver);
-
-    // Check for undefined control-flow.
-    if (L_untested.isUndef()) {
-      ExplodedNode* N = Builder->generateNode(ME, state, Pred);
-
-      if (N) {
-        N->markAsSink();
-        UndefReceivers.insert(N);
-      }
-
-      return;
-    }
-
-    // "Assume" that the receiver is not NULL.
-    DefinedOrUnknownSVal L = cast<DefinedOrUnknownSVal>(L_untested);
-    const GRState *StNotNull = state->Assume(L, true);
-
-    // "Assume" that the receiver is NULL.
-    const GRState *StNull = state->Assume(L, false);
-
-    if (StNull) {
-      QualType RetTy = ME->getType();
-
-      // Check if the receiver was nil and the return value a struct.
-      if (RetTy->isRecordType()) {
-        if (Pred->getParentMap().isConsumedExpr(ME)) {
-          // The [0 ...] expressions will return garbage.  Flag either an
-          // explicit or implicit error.  Because of the structure of this
-          // function we currently do not bifurfacte the state graph at
-          // this point.
-          // FIXME: We should bifurcate and fill the returned struct with
-          //  garbage.
-          if (ExplodedNode* N = Builder->generateNode(ME, StNull, Pred)) {
-            N->markAsSink();
-            if (StNotNull)
-              NilReceiverStructRetImplicit.insert(N);
-            else
-              NilReceiverStructRetExplicit.insert(N);
-          }
-        }
-      }
-      else {
-        ASTContext& Ctx = getContext();
-        if (RetTy != Ctx.VoidTy) {
-          if (Pred->getParentMap().isConsumedExpr(ME)) {
-            // sizeof(void *)
-            const uint64_t voidPtrSize = Ctx.getTypeSize(Ctx.VoidPtrTy);
-            // sizeof(return type)
-            const uint64_t returnTypeSize = Ctx.getTypeSize(ME->getType());
-
-            if (voidPtrSize < returnTypeSize) {
-              if (ExplodedNode* N = Builder->generateNode(ME, StNull, Pred)) {
-                N->markAsSink();
-                if (StNotNull)
-                  NilReceiverLargerThanVoidPtrRetImplicit.insert(N);
-                else
-                  NilReceiverLargerThanVoidPtrRetExplicit.insert(N);
-              }
-            }
-            else if (!StNotNull) {
-              // Handle the safe cases where the return value is 0 if the
-              // receiver is nil.
-              //
-              // FIXME: For now take the conservative approach that we only
-              // return null values if we *know* that the receiver is nil.
-              // This is because we can have surprises like:
-              //
-              //   ... = [[NSScreens screens] objectAtIndex:0];
-              //
-              // What can happen is that [... screens] could return nil, but
-              // it most likely isn't nil.  We should assume the semantics
-              // of this case unless we have *a lot* more knowledge.
-              //
-              SVal V = ValMgr.makeZeroVal(ME->getType());
-              MakeNode(Dst, ME, Pred, StNull->BindExpr(ME, V));
-              return;
-            }
-          }
-        }
-      }
-      // We have handled the cases where the receiver is nil.  The remainder
-      // of this method should assume that the receiver is not nil.
-      if (!StNotNull)
-        return;
-
-      state = StNotNull;
-    }
-
-    // Check if the "raise" message was sent.
-    if (ME->getSelector() == RaiseSel)
-      RaisesException = true;
-  }
-  else {
-
-    IdentifierInfo* ClsName = ME->getClassName();
-    Selector S = ME->getSelector();
-
-    // Check for special instance methods.
-
-    if (!NSExceptionII) {
-      ASTContext& Ctx = getContext();
-
-      NSExceptionII = &Ctx.Idents.get("NSException");
-    }
-
-    if (ClsName == NSExceptionII) {
-
-      enum { NUM_RAISE_SELECTORS = 2 };
-
-      // Lazily create a cache of the selectors.
-
-      if (!NSExceptionInstanceRaiseSelectors) {
-
-        ASTContext& Ctx = getContext();
-
-        NSExceptionInstanceRaiseSelectors = new Selector[NUM_RAISE_SELECTORS];
-
-        llvm::SmallVector<IdentifierInfo*, NUM_RAISE_SELECTORS> II;
-        unsigned idx = 0;
-
-        // raise:format:
-        II.push_back(&Ctx.Idents.get("raise"));
-        II.push_back(&Ctx.Idents.get("format"));
-        NSExceptionInstanceRaiseSelectors[idx++] =
-          Ctx.Selectors.getSelector(II.size(), &II[0]);
-
-        // raise:format::arguments:
-        II.push_back(&Ctx.Idents.get("arguments"));
-        NSExceptionInstanceRaiseSelectors[idx++] =
-          Ctx.Selectors.getSelector(II.size(), &II[0]);
-      }
-
-      for (unsigned i = 0; i < NUM_RAISE_SELECTORS; ++i)
-        if (S == NSExceptionInstanceRaiseSelectors[i]) {
-          RaisesException = true; break;
-        }
-    }
-  }
-
-  // Check for any arguments that are uninitialized/undefined.
-
-  for (ObjCMessageExpr::arg_iterator I = ME->arg_begin(), E = ME->arg_end();
-       I != E; ++I) {
-
-    if (state->getSVal(*I).isUndef()) {
-
-      // Generate an error node for passing an uninitialized/undefined value
-      // as an argument to a message expression.  This node is a sink.
-      ExplodedNode* N = Builder->generateNode(ME, state, Pred);
-
-      if (N) {
-        N->markAsSink();
-        MsgExprUndefArgs[N] = *I;
-      }
-
-      return;
-    }
-  }
+                                                      ExplodedNodeSet& Dst,
+                                                      bool asLValue) {
 
   // Handle previsits checks.
   ExplodedNodeSet Src, DstTmp;
-  Src.Add(Pred);  
+  Src.Add(Pred);
+  
   CheckerVisit(ME, DstTmp, Src, true);
   
-  // Check if we raise an exception.  For now treat these as sinks.  Eventually
-  // we will want to handle exceptions properly.
-  SaveAndRestore<bool> OldSink(Builder->BuildSinks);
-  if (RaisesException)
-    Builder->BuildSinks = true;
+  ExplodedNodeSet PostVisitSrc;
 
-  // Dispatch to plug-in transfer function.
-  unsigned size = Dst.size();
-  SaveOr OldHasGen(Builder->HasGeneratedNode);
-  
   for (ExplodedNodeSet::iterator DI = DstTmp.begin(), DE = DstTmp.end();
-       DI!=DE; ++DI)
-    EvalObjCMessageExpr(Dst, ME, *DI);
+       DI!=DE; ++DI) {    
 
-  // Handle the case where no nodes where generated.  Auto-generate that
-  // contains the updated state if we aren't generating sinks.
-  if (!Builder->BuildSinks && Dst.size() == size && !Builder->HasGeneratedNode)
-    MakeNode(Dst, ME, Pred, state);
+    Pred = *DI;
+    bool RaisesException = false;
+    
+    unsigned OldSize = PostVisitSrc.size();
+    SaveAndRestore<bool> OldSink(Builder->BuildSinks);
+    SaveOr OldHasGen(Builder->HasGeneratedNode);  
+
+    if (const Expr *Receiver = ME->getReceiver()) {
+      const GRState *state = Pred->getState();
+
+      // Bifurcate the state into nil and non-nil ones.
+      DefinedOrUnknownSVal receiverVal = 
+        cast<DefinedOrUnknownSVal>(state->getSVal(Receiver));
+
+      const GRState *notNilState, *nilState;
+      llvm::tie(notNilState, nilState) = state->Assume(receiverVal);
+
+      // There are three cases: can be nil or non-nil, must be nil, must be 
+      // non-nil. We handle must be nil, and merge the rest two into non-nil.
+      if (nilState && !notNilState) {
+        CheckerEvalNilReceiver(ME, PostVisitSrc, nilState, Pred);
+        continue;
+      }
+
+      assert(notNilState);
+
+      // Check if the "raise" message was sent.
+      if (ME->getSelector() == RaiseSel)
+        RaisesException = true;
+
+      // Check if we raise an exception.  For now treat these as sinks.
+      // Eventually we will want to handle exceptions properly.
+      if (RaisesException)
+        Builder->BuildSinks = true;
+
+      // Dispatch to plug-in transfer function.
+      EvalObjCMessageExpr(PostVisitSrc, ME, Pred, notNilState);
+    }
+    else {
+      IdentifierInfo* ClsName = ME->getClassName();
+      Selector S = ME->getSelector();
+
+      // Check for special instance methods.
+      if (!NSExceptionII) {
+        ASTContext& Ctx = getContext();
+        NSExceptionII = &Ctx.Idents.get("NSException");
+      }
+
+      if (ClsName == NSExceptionII) {
+        enum { NUM_RAISE_SELECTORS = 2 };
+
+        // Lazily create a cache of the selectors.
+        if (!NSExceptionInstanceRaiseSelectors) {
+          ASTContext& Ctx = getContext();
+          NSExceptionInstanceRaiseSelectors = new Selector[NUM_RAISE_SELECTORS];
+          llvm::SmallVector<IdentifierInfo*, NUM_RAISE_SELECTORS> II;
+          unsigned idx = 0;
+
+          // raise:format:
+          II.push_back(&Ctx.Idents.get("raise"));
+          II.push_back(&Ctx.Idents.get("format"));
+          NSExceptionInstanceRaiseSelectors[idx++] =
+            Ctx.Selectors.getSelector(II.size(), &II[0]);
+
+          // raise:format::arguments:
+          II.push_back(&Ctx.Idents.get("arguments"));
+          NSExceptionInstanceRaiseSelectors[idx++] =
+            Ctx.Selectors.getSelector(II.size(), &II[0]);
+        }
+
+        for (unsigned i = 0; i < NUM_RAISE_SELECTORS; ++i)
+          if (S == NSExceptionInstanceRaiseSelectors[i]) {
+            RaisesException = true;
+            break;
+          }
+      }
+
+      // Check if we raise an exception.  For now treat these as sinks.
+      // Eventually we will want to handle exceptions properly.
+      if (RaisesException)
+        Builder->BuildSinks = true;
+
+      // Dispatch to plug-in transfer function.
+      EvalObjCMessageExpr(PostVisitSrc, ME, Pred, Builder->GetState(Pred));
+    }
+    
+    // Handle the case where no nodes where generated.  Auto-generate that
+    // contains the updated state if we aren't generating sinks.
+    if (!Builder->BuildSinks && PostVisitSrc.size() == OldSize &&
+        !Builder->HasGeneratedNode)
+      MakeNode(PostVisitSrc, ME, Pred, GetState(Pred));
+  }
+
+  // Finally, perform the post-condition check of the ObjCMessageExpr and store
+  // the created nodes in 'Dst'.
+  if (!(!asLValue && ReceiverReturnsReference(ME))) {
+    CheckerVisit(ME, Dst, PostVisitSrc, false);
+    return;
+  }
+  
+  // Handle the case where the message expression returns a reference but
+  // we expect an rvalue.  For such cases, convert the reference to
+  // an rvalue.  
+  // FIXME: This conversion doesn't actually happen unless the result
+  //  of ObjCMessageExpr is consumed by another expression.
+  ExplodedNodeSet DstRValueConvert;
+  CheckerVisit(ME, DstRValueConvert, PostVisitSrc, false);
+  QualType LoadTy = ME->getType();
+  
+  static int *ConvertToRvalueTag = 0;
+  for (ExplodedNodeSet::iterator NI = DstRValueConvert.begin(),
+       NE = DstRValueConvert.end();
+       NI!=NE; ++NI) {
+    const GRState *state = GetState(*NI);
+    EvalLoad(Dst, ME, *NI, state, state->getSVal(ME),
+             &ConvertToRvalueTag, LoadTy);
+  }
 }
 
 //===----------------------------------------------------------------------===//
@@ -2048,7 +2174,7 @@ void GRExprEngine::VisitObjCMessageExprDispatchHelper(ObjCMessageExpr* ME,
 //===----------------------------------------------------------------------===//
 
 void GRExprEngine::VisitCast(Expr* CastE, Expr* Ex, ExplodedNode* Pred, 
-                             ExplodedNodeSet& Dst){
+                             ExplodedNodeSet& Dst, bool asLValue){
   ExplodedNodeSet S1;
   QualType T = CastE->getType();
   QualType ExTy = Ex->getType();
@@ -2056,7 +2182,8 @@ void GRExprEngine::VisitCast(Expr* CastE, Expr* Ex, ExplodedNode* Pred,
   if (const ExplicitCastExpr *ExCast=dyn_cast_or_null<ExplicitCastExpr>(CastE))
     T = ExCast->getTypeAsWritten();
 
-  if (ExTy->isArrayType() || ExTy->isFunctionType() || T->isReferenceType())
+  if (ExTy->isArrayType() || ExTy->isFunctionType() || T->isReferenceType() ||
+      asLValue)
     VisitLValue(Ex, Pred, S1);
   else
     Visit(Ex, Pred, S1);
@@ -2066,9 +2193,18 @@ void GRExprEngine::VisitCast(Expr* CastE, Expr* Ex, ExplodedNode* Pred,
 
   // Check for casting to "void".
   if (T->isVoidType()) {
+    assert(!asLValue);
     for (ExplodedNodeSet::iterator I = S2.begin(), E = S2.end(); I != E; ++I)
       Dst.Add(*I);
     return;
+  }
+  
+  // If we are evaluating the cast in an lvalue context, we implicitly want
+  // the cast to evaluate to a location.
+  if (asLValue) {
+    ASTContext &Ctx = getContext();
+    T = Ctx.getPointerType(Ctx.getCanonicalType(T));
+    ExTy = Ctx.getPointerType(Ctx.getCanonicalType(ExTy));
   }
 
   for (ExplodedNodeSet::iterator I = S2.begin(), E = S2.end(); I != E; ++I) {
@@ -2092,10 +2228,12 @@ void GRExprEngine::VisitCompoundLiteralExpr(CompoundLiteralExpr* CL,
   for (ExplodedNodeSet::iterator I = Tmp.begin(), EI = Tmp.end(); I!=EI; ++I) {
     const GRState* state = GetState(*I);
     SVal ILV = state->getSVal(ILE);
-    state = state->bindCompoundLiteral(CL, ILV);
+    const LocationContext *LC = (*I)->getLocationContext();
+    state = state->bindCompoundLiteral(CL, LC, ILV);
 
-    if (asLValue)
-      MakeNode(Dst, CL, *I, state->BindExpr(CL, state->getLValue(CL)));
+    if (asLValue) {
+      MakeNode(Dst, CL, *I, state->BindExpr(CL, state->getLValue(CL, LC)));
+    }
     else
       MakeNode(Dst, CL, *I, state->BindExpr(CL, ILV));
   }
@@ -2117,8 +2255,12 @@ void GRExprEngine::VisitDeclStmt(DeclStmt *DS, ExplodedNode *Pred,
   //  time a function is called those values may not be current.
   ExplodedNodeSet Tmp;
 
-  if (InitEx)
-    Visit(InitEx, Pred, Tmp);
+  if (InitEx) {
+    if (VD->getType()->isReferenceType())
+      VisitLValue(InitEx, Pred, Tmp);
+    else
+      Visit(InitEx, Pred, Tmp);
+  }
   else
     Tmp.Add(Pred);
 
@@ -2134,7 +2276,6 @@ void GRExprEngine::VisitDeclStmt(DeclStmt *DS, ExplodedNode *Pred,
 
     if (InitEx) {
       SVal InitVal = state->getSVal(InitEx);
-      QualType T = VD->getType();
 
       // Recover some path-sensitivity if a scalar value evaluated to
       // UnknownVal.
@@ -2145,7 +2286,7 @@ void GRExprEngine::VisitDeclStmt(DeclStmt *DS, ExplodedNode *Pred,
       }
       
       EvalBind(Dst, DS, DS, *I, state,
-               loc::MemRegionVal(state->getRegion(VD, LC)), InitVal, true);                                                     
+               loc::MemRegionVal(state->getRegion(VD, LC)), InitVal, true);   
     }
     else {
       state = state->bindDeclWithNoInit(state->getRegion(VD, LC));
@@ -2154,10 +2295,37 @@ void GRExprEngine::VisitDeclStmt(DeclStmt *DS, ExplodedNode *Pred,
   }
 }
 
+void GRExprEngine::VisitCondInit(VarDecl *VD, Stmt *S,
+                                 ExplodedNode *Pred, ExplodedNodeSet& Dst) {
+  
+  Expr* InitEx = VD->getInit();  
+  ExplodedNodeSet Tmp;
+  Visit(InitEx, Pred, Tmp);
+
+  for (ExplodedNodeSet::iterator I=Tmp.begin(), E=Tmp.end(); I!=E; ++I) {
+    ExplodedNode *N = *I;
+    const GRState *state = GetState(N);
+    
+    const LocationContext *LC = N->getLocationContext();
+    SVal InitVal = state->getSVal(InitEx);
+      
+    // Recover some path-sensitivity if a scalar value evaluated to
+    // UnknownVal.
+    if (InitVal.isUnknown() ||
+        !getConstraintManager().canReasonAbout(InitVal)) {
+      InitVal = ValMgr.getConjuredSymbolVal(NULL, InitEx, 
+                                            Builder->getCurrentBlockCount());
+    }
+      
+    EvalBind(Dst, S, S, N, state,
+             loc::MemRegionVal(state->getRegion(VD, LC)), InitVal, true);
+  }
+}
+
 namespace {
   // This class is used by VisitInitListExpr as an item in a worklist
   // for processing the values contained in an InitListExpr.
-class VISIBILITY_HIDDEN InitListWLItem {
+class InitListWLItem {
 public:
   llvm::ImmutableList<SVal> Vals;
   ExplodedNode* N;
@@ -2207,7 +2375,7 @@ void GRExprEngine::VisitInitListExpr(InitListExpr* E, ExplodedNode* Pred,
 
       InitListExpr::reverse_iterator NewItr = X.Itr + 1;
 
-      for (ExplodedNodeSet::iterator NI=Tmp.begin(), NE=Tmp.end(); NI!=NE; ++NI) {
+      for (ExplodedNodeSet::iterator NI=Tmp.begin(),NE=Tmp.end();NI!=NE;++NI) {
         // Get the last initializer value.
         state = GetState(*NI);
         SVal InitV = state->getSVal(cast<Expr>(*X.Itr));
@@ -2239,7 +2407,7 @@ void GRExprEngine::VisitInitListExpr(InitListExpr* E, ExplodedNode* Pred,
     ExplodedNodeSet Tmp;
     Expr* Init = E->getInit(0);
     Visit(Init, Pred, Tmp);
-    for (ExplodedNodeSet::iterator I = Tmp.begin(), EI = Tmp.end(); I != EI; ++I) {
+    for (ExplodedNodeSet::iterator I=Tmp.begin(), EI=Tmp.end(); I != EI; ++I) {
       state = GetState(*I);
       MakeNode(Dst, E, *I, state->BindExpr(E, state->getSVal(Init)));
     }
@@ -2254,12 +2422,12 @@ void GRExprEngine::VisitSizeOfAlignOfExpr(SizeOfAlignOfExpr* Ex,
                                           ExplodedNode* Pred,
                                           ExplodedNodeSet& Dst) {
   QualType T = Ex->getTypeOfArgument();
-  uint64_t amt;
+  CharUnits amt;
 
   if (Ex->isSizeOf()) {
     if (T == getContext().VoidTy) {
       // sizeof(void) == 1 byte.
-      amt = 1;
+      amt = CharUnits::One();
     }
     else if (!T.getTypePtr()->isConstantSizeType()) {
       // FIXME: Add support for VLAs.
@@ -2273,14 +2441,15 @@ void GRExprEngine::VisitSizeOfAlignOfExpr(SizeOfAlignOfExpr* Ex,
     }
     else {
       // All other cases.
-      amt = getContext().getTypeSize(T) / 8;
+      amt = getContext().getTypeSizeInChars(T);
     }
   }
   else  // Get alignment of the type.
-    amt = getContext().getTypeAlign(T) / 8;
+    amt = CharUnits::fromQuantity(getContext().getTypeAlign(T) / 8);
 
   MakeNode(Dst, Ex, Pred,
-           GetState(Pred)->BindExpr(Ex, ValMgr.makeIntVal(amt, Ex->getType())));
+           GetState(Pred)->BindExpr(Ex, 
+              ValMgr.makeIntVal(amt.getQuantity(), Ex->getType())));
 }
 
 
@@ -2507,7 +2676,7 @@ void GRExprEngine::VisitUnaryOperator(UnaryOperator* U, ExplodedNode* Pred,
     ExplodedNodeSet Tmp2;
     EvalLoad(Tmp2, Ex, *I, state, V1);
 
-    for (ExplodedNodeSet::iterator I2 = Tmp2.begin(), E2 = Tmp2.end(); I2!=E2; ++I2) {
+    for (ExplodedNodeSet::iterator I2=Tmp2.begin(), E2=Tmp2.end();I2!=E2;++I2) {
 
       state = GetState(*I2);
       SVal V2_untested = state->getSVal(Ex);
@@ -2570,14 +2739,28 @@ void GRExprEngine::VisitUnaryOperator(UnaryOperator* U, ExplodedNode* Pred,
   }
 }
 
-void GRExprEngine::VisitAsmStmt(AsmStmt* A, ExplodedNode* Pred, ExplodedNodeSet& Dst) {
+
+void GRExprEngine::VisitCXXThisExpr(CXXThisExpr *TE, ExplodedNode *Pred, 
+                                    ExplodedNodeSet & Dst) {
+  // Get the this object region from StoreManager.
+  const MemRegion *R =
+    ValMgr.getRegionManager().getCXXThisRegion(TE->getType(),
+                                               Pred->getLocationContext());
+  
+  const GRState *state = GetState(Pred);
+  SVal V = state->getSVal(loc::MemRegionVal(R));
+  MakeNode(Dst, TE, Pred, state->BindExpr(TE, V));
+}
+
+void GRExprEngine::VisitAsmStmt(AsmStmt* A, ExplodedNode* Pred, 
+                                ExplodedNodeSet& Dst) {
   VisitAsmStmtHelperOutputs(A, A->begin_outputs(), A->end_outputs(), Pred, Dst);
 }
 
 void GRExprEngine::VisitAsmStmtHelperOutputs(AsmStmt* A,
                                              AsmStmt::outputs_iterator I,
                                              AsmStmt::outputs_iterator E,
-                                             ExplodedNode* Pred, ExplodedNodeSet& Dst) {
+                                     ExplodedNode* Pred, ExplodedNodeSet& Dst) {
   if (I == E) {
     VisitAsmStmtHelperInputs(A, A->begin_inputs(), A->end_inputs(), Pred, Dst);
     return;
@@ -2588,14 +2771,15 @@ void GRExprEngine::VisitAsmStmtHelperOutputs(AsmStmt* A,
 
   ++I;
 
-  for (ExplodedNodeSet::iterator NI = Tmp.begin(), NE = Tmp.end(); NI != NE; ++NI)
+  for (ExplodedNodeSet::iterator NI = Tmp.begin(), NE = Tmp.end();NI != NE;++NI)
     VisitAsmStmtHelperOutputs(A, I, E, *NI, Dst);
 }
 
 void GRExprEngine::VisitAsmStmtHelperInputs(AsmStmt* A,
                                             AsmStmt::inputs_iterator I,
                                             AsmStmt::inputs_iterator E,
-                                            ExplodedNode* Pred, ExplodedNodeSet& Dst) {
+                                            ExplodedNode* Pred, 
+                                            ExplodedNodeSet& Dst) {
   if (I == E) {
 
     // We have processed both the inputs and the outputs.  All of the outputs
@@ -2687,6 +2871,8 @@ void GRExprEngine::VisitBinaryOperator(BinaryOperator* B,
   else
     Visit(LHS, Pred, Tmp1);
 
+  ExplodedNodeSet Tmp3;
+
   for (ExplodedNodeSet::iterator I1=Tmp1.begin(), E1=Tmp1.end(); I1!=E1; ++I1) {
     SVal LeftV = (*I1)->getState()->getSVal(LHS);
     ExplodedNodeSet Tmp2;
@@ -2721,7 +2907,7 @@ void GRExprEngine::VisitBinaryOperator(BinaryOperator* B,
 
         // Simulate the effects of a "store":  bind the value of the RHS
         // to the L-Value represented by the LHS.
-        EvalStore(Dst, B, LHS, *I2, state->BindExpr(B, ExprVal), LeftV, RightV);
+        EvalStore(Tmp3, B, LHS, *I2, state->BindExpr(B, ExprVal), LeftV,RightV);
         continue;
       }
       
@@ -2733,28 +2919,17 @@ void GRExprEngine::VisitBinaryOperator(BinaryOperator* B,
         if (Result.isUnknown()) {
           if (OldSt != state) {
             // Generate a new node if we have already created a new state.
-            MakeNode(Dst, B, *I2, state);
+            MakeNode(Tmp3, B, *I2, state);
           }
           else
-            Dst.Add(*I2);
+            Tmp3.Add(*I2);
           
           continue;
         }
         
         state = state->BindExpr(B, Result);
         
-        if (Result.isUndef()) {
-          // The operands were *not* undefined, but the result is undefined.
-          // This is a special node that should be flagged as an error.
-          if (ExplodedNode *UndefNode = Builder->generateNode(B, state, *I2)){
-            UndefNode->markAsSink();
-            UndefResults.insert(UndefNode);
-          }
-          continue;
-        }
-        
-        // Otherwise, create a new node.
-        MakeNode(Dst, B, *I2, state);
+        MakeNode(Tmp3, B, *I2, state);
         continue;
       }
 
@@ -2807,15 +2982,6 @@ void GRExprEngine::VisitBinaryOperator(BinaryOperator* B,
                                                              RightV, CTy),
                                                    state, B->getType(), CTy);
 
-        if (Result.isUndef()) {
-          // The operands were not undefined, but the result is undefined.
-          if (ExplodedNode* UndefNode = Builder->generateNode(B, state, *I3)) {
-            UndefNode->markAsSink();
-            UndefResults.insert(UndefNode);
-          }
-          continue;
-        }
-
         // EXPERIMENTAL: "Conjured" symbols.
         // FIXME: Handle structs.
 
@@ -2842,11 +3008,33 @@ void GRExprEngine::VisitBinaryOperator(BinaryOperator* B,
           llvm::tie(state, LHSVal) = SVator.EvalCast(Result, state, LTy, CTy);
         }
 
-        EvalStore(Dst, B, LHS, *I3, state->BindExpr(B, Result),
+        EvalStore(Tmp3, B, LHS, *I3, state->BindExpr(B, Result),
                   location, LHSVal);
       }
     }
   }
+
+  CheckerVisit(B, Dst, Tmp3, false);
+}
+
+void GRExprEngine::CreateCXXTemporaryObject(Expr *Ex, ExplodedNode *Pred, 
+                                            ExplodedNodeSet &Dst) {
+  ExplodedNodeSet Tmp;
+  Visit(Ex, Pred, Tmp);
+  for (ExplodedNodeSet::iterator I = Tmp.begin(), E = Tmp.end(); I != E; ++I) {
+    const GRState *state = GetState(*I);
+    
+    // Bind the temporary object to the value of the expression. Then bind
+    // the expression to the location of the object.
+    SVal V = state->getSVal(Ex);
+
+    const MemRegion *R = 
+      ValMgr.getRegionManager().getCXXObjectRegion(Ex,
+                                                   Pred->getLocationContext());
+
+    state = state->bindLoc(loc::MemRegionVal(R), V);
+    MakeNode(Dst, Ex, Pred, state->BindExpr(Ex, loc::MemRegionVal(R)));
+  }  
 }
 
 //===----------------------------------------------------------------------===//
@@ -2868,8 +3056,11 @@ static SourceManager* GraphPrintSourceManager;
 
 namespace llvm {
 template<>
-struct VISIBILITY_HIDDEN DOTGraphTraits<ExplodedNode*> :
+struct DOTGraphTraits<ExplodedNode*> :
   public DefaultDOTGraphTraits {
+
+  DOTGraphTraits (bool isSimple=false) : DefaultDOTGraphTraits(isSimple) {}
+
   // FIXME: Since we do not cache error nodes in GRExprEngine now, this does not
   // work.
   static std::string getNodeAttributes(const ExplodedNode* N, void*) {
@@ -2886,15 +3077,14 @@ struct VISIBILITY_HIDDEN DOTGraphTraits<ExplodedNode*> :
         GraphPrintCheckerState->isBadCall(N) ||
         GraphPrintCheckerState->isUndefArg(N))
       return "color=\"red\",style=\"filled\"";
-#endif
 
     if (GraphPrintCheckerState->isNoReturnCall(N))
       return "color=\"blue\",style=\"filled\"";
-
+#endif
     return "";
   }
 
-  static std::string getNodeLabel(const ExplodedNode* N, void*,bool ShortNames){
+  static std::string getNodeLabel(const ExplodedNode* N, void*){
 
     std::string sbuf;
     llvm::raw_string_ostream Out(sbuf);

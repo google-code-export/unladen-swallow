@@ -55,8 +55,7 @@ const char *DeclContext::getDeclKindName() const {
 }
 
 bool Decl::CollectingStats(bool Enable) {
-  if (Enable)
-    StatSwitch = true;
+  if (Enable) StatSwitch = true;
   return StatSwitch;
 }
 
@@ -119,7 +118,7 @@ void PrettyStackTraceDecl::print(llvm::raw_ostream &OS) const {
 
   OS << Message;
 
-  if (NamedDecl *DN = dyn_cast_or_null<NamedDecl>(TheDecl))
+  if (const NamedDecl *DN = dyn_cast_or_null<NamedDecl>(TheDecl))
     OS << " '" << DN->getQualifiedNameAsString() << '\'';
   OS << '\n';
 }
@@ -130,9 +129,6 @@ void PrettyStackTraceDecl::print(llvm::raw_ostream &OS) const {
 
 // Out-of-line virtual method providing a home for Decl.
 Decl::~Decl() {
-  if (isOutOfSemaDC())
-    delete getMultipleDC();
-
   assert(!HasAttrs && "attributes should have been freed by Destroy");
 }
 
@@ -148,7 +144,7 @@ void Decl::setLexicalDeclContext(DeclContext *DC) {
     return;
 
   if (isInSemaDC()) {
-    MultipleDC *MDC = new MultipleDC();
+    MultipleDC *MDC = new (getASTContext()) MultipleDC();
     MDC->SemanticDC = getDeclContext();
     MDC->LexicalDC = DC;
     DeclCtx = MDC;
@@ -194,7 +190,6 @@ unsigned Decl::getIdentifierNamespaceForKind(Kind DeclKind) {
     case CXXConstructor:
     case CXXDestructor:
     case CXXConversion:
-    case OverloadedFunction:
     case Typedef:
     case EnumConstant:
     case Var:
@@ -203,7 +198,6 @@ unsigned Decl::getIdentifierNamespaceForKind(Kind DeclKind) {
     case NonTypeTemplateParm:
     case ObjCMethod:
     case ObjCContainer:
-    case ObjCCategory:
     case ObjCInterface:
     case ObjCProperty:
     case ObjCCompatibleAlias:
@@ -225,8 +219,9 @@ unsigned Decl::getIdentifierNamespaceForKind(Kind DeclKind) {
     case ObjCImplementation:
       return IDNS_ObjCImplementation;
 
+    case ObjCCategory:
     case ObjCCategoryImpl:
-      return IDNS_ObjCCategoryImpl;
+      return IDNS_ObjCCategoryName;
 
     case Field:
     case ObjCAtDefsField:
@@ -343,9 +338,12 @@ void Decl::Destroy(ASTContext &C) {
     N = Tmp;
   }
 
+  if (isOutOfSemaDC())
+    delete (C) getMultipleDC();
+  
   this->~Decl();
   C.Deallocate((void *)this);
-#endif
+#endif  
 }
 
 Decl *Decl::castFromDeclContext (const DeclContext *D) {
@@ -638,6 +636,46 @@ bool DeclContext::decls_empty() const {
   return !FirstDecl;
 }
 
+void DeclContext::removeDecl(Decl *D) {
+  assert(D->getLexicalDeclContext() == this &&
+         "decl being removed from non-lexical context");
+  assert((D->NextDeclInContext || D == LastDecl) &&
+         "decl is not in decls list");
+
+  // Remove D from the decl chain.  This is O(n) but hopefully rare.
+  if (D == FirstDecl) {
+    if (D == LastDecl)
+      FirstDecl = LastDecl = 0;
+    else
+      FirstDecl = D->NextDeclInContext;
+  } else {
+    for (Decl *I = FirstDecl; true; I = I->NextDeclInContext) {
+      assert(I && "decl not found in linked list");
+      if (I->NextDeclInContext == D) {
+        I->NextDeclInContext = D->NextDeclInContext;
+        if (D == LastDecl) LastDecl = I;
+        break;
+      }
+    }
+  }
+  
+  // Mark that D is no longer in the decl chain.
+  D->NextDeclInContext = 0;
+
+  // Remove D from the lookup table if necessary.
+  if (isa<NamedDecl>(D)) {
+    NamedDecl *ND = cast<NamedDecl>(D);
+
+    void *OpaqueMap = getPrimaryContext()->LookupPtr;
+    if (!OpaqueMap) return;
+
+    StoredDeclsMap *Map = static_cast<StoredDeclsMap*>(OpaqueMap);
+    StoredDeclsMap::iterator Pos = Map->find(ND->getDeclName());
+    assert(Pos != Map->end() && "no lookup entry for decl");
+    Pos->second.remove(ND);
+  }
+}
+
 void DeclContext::addHiddenDecl(Decl *D) {
   assert(D->getLexicalDeclContext() == this &&
          "Decl inserted into wrong lexical context");
@@ -743,6 +781,9 @@ void DeclContext::makeDeclVisibleInContext(NamedDecl *D, bool Recoverable) {
   // from being visible?
   if (isa<ClassTemplateSpecializationDecl>(D))
     return;
+  if (FunctionDecl *FD = dyn_cast<FunctionDecl>(D))
+    if (FD->isFunctionTemplateSpecialization())
+      return;
 
   DeclContext *PrimaryContext = getPrimaryContext();
   if (PrimaryContext != this) {

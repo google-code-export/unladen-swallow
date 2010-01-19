@@ -20,6 +20,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/Analysis/DebugInfo.h"
 #include "llvm/Support/ValueHandle.h"
+#include "llvm/Support/Allocator.h"
 #include <map>
 
 #include "CGBuilder.h"
@@ -35,12 +36,13 @@ namespace clang {
 namespace CodeGen {
   class CodeGenModule;
   class CodeGenFunction;
+  class GlobalDecl;
 
 /// CGDebugInfo - This class gathers all debug information during compilation
 /// and is responsible for emitting to llvm globals or pass directly to
 /// the backend.
 class CGDebugInfo {
-  CodeGenModule *M;
+  CodeGenModule &CGM;
   bool isMainCompileUnitCreated;
   llvm::DIFactory DebugFactory;
 
@@ -58,6 +60,10 @@ class CGDebugInfo {
 
   std::vector<llvm::TrackingVH<llvm::MDNode> > RegionStack;
 
+  /// FunctionNames - This is a storage for function names that are
+  /// constructed on demand. For example, C++ destructors, C++ operators etc..
+  llvm::BumpPtrAllocator FunctionNames;
+
   /// Helper functions for getOrCreateType.
   llvm::DIType CreateType(const BuiltinType *Ty, llvm::DICompileUnit U);
   llvm::DIType CreateType(const ComplexType *Ty, llvm::DICompileUnit U);
@@ -74,12 +80,13 @@ class CGDebugInfo {
   llvm::DIType CreateType(const EnumType *Ty, llvm::DICompileUnit U);
   llvm::DIType CreateType(const ArrayType *Ty, llvm::DICompileUnit U);
   llvm::DIType CreateType(const LValueReferenceType *Ty, llvm::DICompileUnit U);
-
+  llvm::DIType CreateType(const MemberPointerType *Ty, llvm::DICompileUnit U);
+  
   llvm::DIType CreatePointerLikeType(unsigned Tag,
                                      const Type *Ty, QualType PointeeTy,
                                      llvm::DICompileUnit U);
 public:
-  CGDebugInfo(CodeGenModule *m);
+  CGDebugInfo(CodeGenModule &CGM);
   ~CGDebugInfo();
 
   /// setLocation - Update the current source location. If \arg loc is
@@ -92,7 +99,7 @@ public:
 
   /// EmitFunctionStart - Emit a call to llvm.dbg.function.start to indicate
   /// start of a new function.
-  void EmitFunctionStart(const char *Name, QualType FnType,
+  void EmitFunctionStart(GlobalDecl GD, QualType FnType,
                          llvm::Function *Fn, CGBuilderTy &Builder);
 
   /// EmitRegionStart - Emit a call to llvm.dbg.region.start to indicate start
@@ -148,6 +155,11 @@ private:
 
   /// CreateTypeNode - Create type metadata for a source language type.
   llvm::DIType CreateTypeNode(QualType Ty, llvm::DICompileUnit Unit);
+
+  /// getFunctionName - Get function name for the given FunctionDecl. If the
+  /// name is constructred on demand (e.g. C++ destructor) then the name
+  /// is stored on the side.
+  llvm::StringRef getFunctionName(const FunctionDecl *FD);
 };
 } // namespace CodeGen
 } // namespace clang

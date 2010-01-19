@@ -33,7 +33,6 @@
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Bitcode/BitstreamWriter.h"
-#include "llvm/Support/Compiler.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/System/Path.h"
 #include <cstdio>
@@ -44,7 +43,7 @@ using namespace clang;
 //===----------------------------------------------------------------------===//
 
 namespace {
-  class VISIBILITY_HIDDEN PCHTypeWriter {
+  class PCHTypeWriter {
     PCHWriter &Writer;
     PCHWriter::RecordData &Record;
 
@@ -68,12 +67,6 @@ namespace {
 
 void PCHTypeWriter::VisitBuiltinType(const BuiltinType *T) {
   assert(false && "Built-in types are never serialized");
-}
-
-void PCHTypeWriter::VisitFixedWidthIntType(const FixedWidthIntType *T) {
-  Record.push_back(T->getWidth());
-  Record.push_back(T->isSigned());
-  Code = pch::TYPE_FIXED_WIDTH_INT;
 }
 
 void PCHTypeWriter::VisitComplexType(const ComplexType *T) {
@@ -145,6 +138,7 @@ void PCHTypeWriter::VisitExtVectorType(const ExtVectorType *T) {
 
 void PCHTypeWriter::VisitFunctionType(const FunctionType *T) {
   Writer.AddTypeRef(T->getResultType(), Record);
+  Record.push_back(T->getNoReturnAttr());
 }
 
 void PCHTypeWriter::VisitFunctionNoProtoType(const FunctionNoProtoType *T) {
@@ -166,6 +160,14 @@ void PCHTypeWriter::VisitFunctionProtoType(const FunctionProtoType *T) {
     Writer.AddTypeRef(T->getExceptionType(I), Record);
   Code = pch::TYPE_FUNCTION_PROTO;
 }
+
+#if 0
+// For when we want it....
+void PCHTypeWriter::VisitUnresolvedUsingType(const UnresolvedUsingType *T) {
+  Writer.AddDeclRef(T->getDecl(), Record);
+  Code = pch::TYPE_UNRESOLVED_USING;
+}
+#endif
 
 void PCHTypeWriter::VisitTypedefType(const TypedefType *T) {
   Writer.AddDeclRef(T->getDecl(), Record);
@@ -275,9 +277,6 @@ void TypeLocWriter::VisitQualifiedTypeLoc(QualifiedTypeLoc TL) {
 void TypeLocWriter::VisitBuiltinTypeLoc(BuiltinTypeLoc TL) {
   Writer.AddSourceLocation(TL.getNameLoc(), Record);
 }
-void TypeLocWriter::VisitFixedWidthIntTypeLoc(FixedWidthIntTypeLoc TL) {
-  Writer.AddSourceLocation(TL.getNameLoc(), Record);
-}
 void TypeLocWriter::VisitComplexTypeLoc(ComplexTypeLoc TL) {
   Writer.AddSourceLocation(TL.getNameLoc(), Record);
 }
@@ -338,14 +337,22 @@ void TypeLocWriter::VisitFunctionProtoTypeLoc(FunctionProtoTypeLoc TL) {
 void TypeLocWriter::VisitFunctionNoProtoTypeLoc(FunctionNoProtoTypeLoc TL) {
   VisitFunctionTypeLoc(TL);
 }
+void TypeLocWriter::VisitUnresolvedUsingTypeLoc(UnresolvedUsingTypeLoc TL) {
+  Writer.AddSourceLocation(TL.getNameLoc(), Record);
+}
 void TypeLocWriter::VisitTypedefTypeLoc(TypedefTypeLoc TL) {
   Writer.AddSourceLocation(TL.getNameLoc(), Record);
 }
 void TypeLocWriter::VisitTypeOfExprTypeLoc(TypeOfExprTypeLoc TL) {
-  Writer.AddSourceLocation(TL.getNameLoc(), Record);
+  Writer.AddSourceLocation(TL.getTypeofLoc(), Record);
+  Writer.AddSourceLocation(TL.getLParenLoc(), Record);
+  Writer.AddSourceLocation(TL.getRParenLoc(), Record);
 }
 void TypeLocWriter::VisitTypeOfTypeLoc(TypeOfTypeLoc TL) {
-  Writer.AddSourceLocation(TL.getNameLoc(), Record);
+  Writer.AddSourceLocation(TL.getTypeofLoc(), Record);
+  Writer.AddSourceLocation(TL.getLParenLoc(), Record);
+  Writer.AddSourceLocation(TL.getRParenLoc(), Record);
+  Writer.AddTypeSourceInfo(TL.getUnderlyingTInfo(), Record);
 }
 void TypeLocWriter::VisitDecltypeTypeLoc(DecltypeTypeLoc TL) {
   Writer.AddSourceLocation(TL.getNameLoc(), Record);
@@ -548,7 +555,6 @@ void PCHWriter::WriteBlockInfoBlock() {
   // Decls and Types block.
   BLOCK(DECLTYPES_BLOCK);
   RECORD(TYPE_EXT_QUAL);
-  RECORD(TYPE_FIXED_WIDTH_INT);
   RECORD(TYPE_COMPLEX);
   RECORD(TYPE_POINTER);
   RECORD(TYPE_BLOCK_POINTER);
@@ -771,6 +777,7 @@ void PCHWriter::WriteLanguageOptions(const LangOptions &LangOpts) {
   Record.push_back(LangOpts.getStackProtectorMode());
   Record.push_back(LangOpts.InstantiationDepth);
   Record.push_back(LangOpts.OpenCL);
+  Record.push_back(LangOpts.CatchUndefined);
   Record.push_back(LangOpts.ElideConstructors);
   Stream.EmitRecord(pch::LANGUAGE_OPTIONS, Record);
 }
@@ -781,7 +788,7 @@ void PCHWriter::WriteLanguageOptions(const LangOptions &LangOpts) {
 
 namespace {
 // Trait used for the on-disk hash table of stat cache results.
-class VISIBILITY_HIDDEN PCHStatCacheTrait {
+class PCHStatCacheTrait {
 public:
   typedef const char * key_type;
   typedef key_type key_type_ref;
@@ -1146,7 +1153,6 @@ void PCHWriter::WritePreprocessor(const Preprocessor &PP) {
 
   // Loop over all the macro definitions that are live at the end of the file,
   // emitting each to the PP section.
-  // FIXME: Make sure that this sees macros defined in included PCH files.
   for (Preprocessor::macro_iterator I = PP.macro_begin(), E = PP.macro_end();
        I != E; ++I) {
     // FIXME: This emits macros in hash table order, we should do it in a stable
@@ -1158,7 +1164,6 @@ void PCHWriter::WritePreprocessor(const Preprocessor &PP) {
     if (MI->isBuiltinMacro())
       continue;
 
-    // FIXME: Remove this identifier reference?
     AddIdentifierRef(I->first, Record);
     MacroOffsets[I->first] = Stream.GetCurrentBitNo();
     Record.push_back(MI->getDefinitionLoc().getRawEncoding());
@@ -1359,7 +1364,7 @@ uint64_t PCHWriter::WriteDeclContextVisibleBlock(ASTContext &Context,
 
 namespace {
 // Trait used for the on-disk hash table used in the method pool.
-class VISIBILITY_HIDDEN PCHMethodPoolTrait {
+class PCHMethodPoolTrait {
   PCHWriter &Writer;
 
 public:
@@ -1561,7 +1566,7 @@ void PCHWriter::WriteMethodPool(Sema &SemaRef) {
 //===----------------------------------------------------------------------===//
 
 namespace {
-class VISIBILITY_HIDDEN PCHIdentifierTableTrait {
+class PCHIdentifierTableTrait {
   PCHWriter &Writer;
   Preprocessor &PP;
 
@@ -1634,10 +1639,10 @@ public:
       II->hasMacroDefinition() &&
       !PP.getMacroInfo(const_cast<IdentifierInfo *>(II))->isBuiltinMacro();
     Bits = (uint32_t)II->getObjCOrBuiltinID();
-    Bits = (Bits << 1) | hasMacroDefinition;
-    Bits = (Bits << 1) | II->isExtensionToken();
-    Bits = (Bits << 1) | II->isPoisoned();
-    Bits = (Bits << 1) | II->isCPlusPlusOperatorKeyword();
+    Bits = (Bits << 1) | unsigned(hasMacroDefinition);
+    Bits = (Bits << 1) | unsigned(II->isExtensionToken());
+    Bits = (Bits << 1) | unsigned(II->isPoisoned());
+    Bits = (Bits << 1) | unsigned(II->isCPlusPlusOperatorKeyword());
     clang::io::Emit16(Out, Bits);
 
     if (hasMacroDefinition)
@@ -1739,9 +1744,12 @@ void PCHWriter::WriteIdentifierTable(Preprocessor &PP) {
 void PCHWriter::WriteAttributeRecord(const Attr *Attr) {
   RecordData Record;
   for (; Attr; Attr = Attr->getNext()) {
-    Record.push_back(Attr->getKind()); // FIXME: stable encoding
+    Record.push_back(Attr->getKind()); // FIXME: stable encoding, target attrs
     Record.push_back(Attr->isInherited());
     switch (Attr->getKind()) {
+    default:
+      assert(0 && "Does not support PCH writing for this attribute yet!");
+      break;
     case Attr::Alias:
       AddString(cast<AliasAttr>(Attr)->getAliasee(), Record);
       break;
@@ -1762,6 +1770,9 @@ void PCHWriter::WriteAttributeRecord(const Attr *Attr) {
 
     case Attr::AsmLabel:
       AddString(cast<AsmLabelAttr>(Attr)->getLabel(), Record);
+      break;
+
+    case Attr::BaseCheck:
       break;
 
     case Attr::Blocks:
@@ -1792,6 +1803,7 @@ void PCHWriter::WriteAttributeRecord(const Attr *Attr) {
       break;
 
     case Attr::FastCall:
+    case Attr::Final:
       break;
 
     case Attr::Format: {
@@ -1816,6 +1828,7 @@ void PCHWriter::WriteAttributeRecord(const Attr *Attr) {
     }
 
     case Attr::GNUInline:
+    case Attr::Hiding:
     case Attr::IBOutletKind:
     case Attr::Malloc:
     case Attr::NoDebug:
@@ -1836,6 +1849,7 @@ void PCHWriter::WriteAttributeRecord(const Attr *Attr) {
     case Attr::CFReturnsRetained:
     case Attr::NSReturnsRetained:
     case Attr::Overloadable:
+    case Attr::Override:
       break;
 
     case Attr::PragmaPack:
@@ -1989,6 +2003,10 @@ void PCHWriter::WritePCH(Sema &SemaRef, MemorizeStatCalls *StatCalls,
   AddTypeRef(Context.getsigjmp_bufType(), Record);
   AddTypeRef(Context.ObjCIdRedefinitionType, Record);
   AddTypeRef(Context.ObjCClassRedefinitionType, Record);
+#if 0
+  // FIXME. Accommodate for this in several PCH/Indexer tests
+  AddTypeRef(Context.ObjCSelRedefinitionType, Record);
+#endif
   AddTypeRef(Context.getRawBlockdescriptorType(), Record);
   AddTypeRef(Context.getRawBlockdescriptorExtendedType(), Record);
   Stream.EmitRecord(pch::SPECIAL_TYPES, Record);
@@ -2120,7 +2138,7 @@ void PCHWriter::AddTemplateArgumentLoc(const TemplateArgumentLoc &Arg,
     AddStmt(Arg.getLocInfo().getAsExpr());
     break;
   case TemplateArgument::Type:
-    AddDeclaratorInfo(Arg.getLocInfo().getAsDeclaratorInfo(), Record);
+    AddTypeSourceInfo(Arg.getLocInfo().getAsTypeSourceInfo(), Record);
     break;
   case TemplateArgument::Template:
     Record.push_back(
@@ -2136,15 +2154,15 @@ void PCHWriter::AddTemplateArgumentLoc(const TemplateArgumentLoc &Arg,
   }
 }
 
-void PCHWriter::AddDeclaratorInfo(DeclaratorInfo *DInfo, RecordData &Record) {
-  if (DInfo == 0) {
+void PCHWriter::AddTypeSourceInfo(TypeSourceInfo *TInfo, RecordData &Record) {
+  if (TInfo == 0) {
     AddTypeRef(QualType(), Record);
     return;
   }
 
-  AddTypeRef(DInfo->getType(), Record);
+  AddTypeRef(TInfo->getType(), Record);
   TypeLocWriter TLW(*this, Record);
-  for (TypeLoc TL = DInfo->getTypeLoc(); !TL.isNull(); TL = TL.getNextTypeLoc())
+  for (TypeLoc TL = TInfo->getTypeLoc(); !TL.isNull(); TL = TL.getNextTypeLoc())
     TLW.Visit(TL);  
 }
 
@@ -2204,6 +2222,7 @@ void PCHWriter::AddTypeRef(QualType T, RecordData &Record) {
     case BuiltinType::Dependent:  ID = pch::PREDEF_TYPE_DEPENDENT_ID;  break;
     case BuiltinType::ObjCId:     ID = pch::PREDEF_TYPE_OBJC_ID;       break;
     case BuiltinType::ObjCClass:  ID = pch::PREDEF_TYPE_OBJC_CLASS;    break;
+    case BuiltinType::ObjCSel:    ID = pch::PREDEF_TYPE_OBJC_SEL;      break;
     case BuiltinType::UndeducedAuto:
       assert(0 && "Should not see undeduced auto here");
       break;
@@ -2272,6 +2291,10 @@ void PCHWriter::AddDeclarationName(DeclarationName Name, RecordData &Record) {
 
   case DeclarationName::CXXOperatorName:
     Record.push_back(Name.getCXXOverloadedOperator());
+    break;
+
+  case DeclarationName::CXXLiteralOperatorName:
+    AddIdentifierRef(Name.getCXXLiteralIdentifier(), Record);
     break;
 
   case DeclarationName::CXXUsingDirective:

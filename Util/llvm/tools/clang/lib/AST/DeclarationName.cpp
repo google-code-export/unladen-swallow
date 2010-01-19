@@ -50,6 +50,22 @@ public:
   void *FETokenInfo;
 };
 
+/// CXXLiberalOperatorName - Contains the actual identifier that makes up the
+/// name.
+///
+/// This identifier is stored here rather than directly in DeclarationName so as
+/// to allow Objective-C selectors, which are about a million times more common,
+/// to consume minimal memory.
+class CXXLiteralOperatorIdName
+  : public DeclarationNameExtra, public llvm::FoldingSetNode {
+public:
+  IdentifierInfo *ID;
+
+  void Profile(llvm::FoldingSetNodeID &FSID) {
+    FSID.AddPointer(ID);
+  }
+};
+
 bool operator<(DeclarationName LHS, DeclarationName RHS) {
   if (LHS.getNameKind() != RHS.getNameKind())
     return LHS.getNameKind() < RHS.getNameKind();
@@ -89,6 +105,10 @@ bool operator<(DeclarationName LHS, DeclarationName RHS) {
               
   case DeclarationName::CXXOperatorName:
     return LHS.getCXXOverloadedOperator() < RHS.getCXXOverloadedOperator();
+
+  case DeclarationName::CXXLiteralOperatorName:
+    return LHS.getCXXLiteralIdentifier()->getName() <
+                                       RHS.getCXXLiteralIdentifier()->getName();
               
   case DeclarationName::CXXUsingDirective:
     return false;
@@ -143,6 +163,9 @@ DeclarationName::NameKind DeclarationName::getNameKind() const {
     case DeclarationNameExtra::CXXConversionFunction:
       return CXXConversionFunctionName;
 
+    case DeclarationNameExtra::CXXLiteralOperator:
+      return CXXLiteralOperatorName;
+
     case DeclarationNameExtra::CXXUsingDirective:
       return CXXUsingDirective;
 
@@ -160,6 +183,11 @@ DeclarationName::NameKind DeclarationName::getNameKind() const {
   // Can't actually get here.
   assert(0 && "This should be unreachable!");
   return Identifier;
+}
+
+bool DeclarationName::isDependentName() const {
+  QualType T = getCXXNameType();
+  return !T.isNull() && T->isDependentType();
 }
 
 std::string DeclarationName::getAsString() const {
@@ -192,7 +220,7 @@ std::string DeclarationName::getAsString() const {
   }
 
   case CXXOperatorName: {
-    static const char *OperatorNames[NUM_OVERLOADED_OPERATORS] = {
+    static const char* const OperatorNames[NUM_OVERLOADED_OPERATORS] = {
       0,
 #define OVERLOADED_OPERATOR(Name,Spelling,Token,Unary,Binary,MemberOnly) \
       Spelling,
@@ -206,6 +234,10 @@ std::string DeclarationName::getAsString() const {
       Result += ' ';
     Result += OpName;
     return Result;
+  }
+
+  case CXXLiteralOperatorName: {
+    return "operator \"\" " + std::string(getCXXLiteralIdentifier()->getName());
   }
 
   case CXXConversionFunctionName: {
@@ -242,6 +274,13 @@ OverloadedOperatorKind DeclarationName::getCXXOverloadedOperator() const {
   }
 }
 
+IdentifierInfo *DeclarationName::getCXXLiteralIdentifier() const {
+  if (CXXLiteralOperatorIdName *CXXLit = getAsCXXLiteralOperatorIdName())
+    return CXXLit->ID;
+  else
+    return 0;
+}
+
 Selector DeclarationName::getObjCSelector() const {
   switch (getNameKind()) {
   case ObjCZeroArgSelector:
@@ -273,6 +312,9 @@ void *DeclarationName::getFETokenInfoAsVoid() const {
   case CXXOperatorName:
     return getAsCXXOperatorIdName()->FETokenInfo;
 
+  case CXXLiteralOperatorName:
+    return getCXXLiteralIdentifier()->getFETokenInfo<void>();
+
   default:
     assert(false && "Declaration name has no FETokenInfo");
   }
@@ -295,6 +337,10 @@ void DeclarationName::setFETokenInfo(void *T) {
     getAsCXXOperatorIdName()->FETokenInfo = T;
     break;
 
+  case CXXLiteralOperatorName:
+    getCXXLiteralIdentifier()->setFETokenInfo(T);
+    break;
+
   default:
     assert(false && "Declaration name has no FETokenInfo");
   }
@@ -302,7 +348,7 @@ void DeclarationName::setFETokenInfo(void *T) {
 
 DeclarationName DeclarationName::getUsingDirectiveName() {
   // Single instance of DeclarationNameExtra for using-directive
-  static DeclarationNameExtra UDirExtra =
+  static const DeclarationNameExtra UDirExtra =
     { DeclarationNameExtra::CXXUsingDirective };
 
   uintptr_t Ptr = reinterpret_cast<uintptr_t>(&UDirExtra);
@@ -317,6 +363,7 @@ void DeclarationName::dump() const {
 
 DeclarationNameTable::DeclarationNameTable() {
   CXXSpecialNamesImpl = new llvm::FoldingSet<CXXSpecialName>;
+  CXXLiteralOperatorNames = new llvm::FoldingSet<CXXLiteralOperatorIdName>;
 
   // Initialize the overloaded operator names.
   CXXOperatorNames = new CXXOperatorIdName[NUM_OVERLOADED_OPERATORS];
@@ -328,16 +375,30 @@ DeclarationNameTable::DeclarationNameTable() {
 }
 
 DeclarationNameTable::~DeclarationNameTable() {
-  llvm::FoldingSet<CXXSpecialName> *set =
+  llvm::FoldingSet<CXXSpecialName> *SpecialNames =
     static_cast<llvm::FoldingSet<CXXSpecialName>*>(CXXSpecialNamesImpl);
-  llvm::FoldingSetIterator<CXXSpecialName> I = set->begin(), E = set->end();
+  llvm::FoldingSetIterator<CXXSpecialName>
+                           SI = SpecialNames->begin(), SE = SpecialNames->end();
 
-  while (I != E) {
-    CXXSpecialName *n = &*I++;
+  while (SI != SE) {
+    CXXSpecialName *n = &*SI++;
     delete n;
   }
 
-  delete set;
+
+  llvm::FoldingSet<CXXLiteralOperatorIdName> *LiteralNames
+    = static_cast<llvm::FoldingSet<CXXLiteralOperatorIdName>*>
+                                                      (CXXLiteralOperatorNames);
+  llvm::FoldingSetIterator<CXXLiteralOperatorIdName>
+                           LI = LiteralNames->begin(), LE = LiteralNames->end();
+
+  while (LI != LE) {
+    CXXLiteralOperatorIdName *n = &*LI++;
+    delete n;
+  }
+
+  delete SpecialNames;
+  delete LiteralNames;
   delete [] CXXOperatorNames;
 }
 
@@ -388,6 +449,28 @@ DeclarationNameTable::getCXXSpecialName(DeclarationName::NameKind Kind,
 DeclarationName
 DeclarationNameTable::getCXXOperatorName(OverloadedOperatorKind Op) {
   return DeclarationName(&CXXOperatorNames[(unsigned)Op]);
+}
+
+DeclarationName
+DeclarationNameTable::getCXXLiteralOperatorName(IdentifierInfo *II) {
+  llvm::FoldingSet<CXXLiteralOperatorIdName> *LiteralNames
+    = static_cast<llvm::FoldingSet<CXXLiteralOperatorIdName>*>
+                                                      (CXXLiteralOperatorNames);
+
+  llvm::FoldingSetNodeID ID;
+  ID.AddPointer(II);
+
+  void *InsertPos = 0;
+  if (CXXLiteralOperatorIdName *Name =
+                               LiteralNames->FindNodeOrInsertPos(ID, InsertPos))
+    return DeclarationName (Name);
+  
+  CXXLiteralOperatorIdName *LiteralName = new CXXLiteralOperatorIdName;
+  LiteralName->ExtraKindOrNumArgs = DeclarationNameExtra::CXXLiteralOperator;
+  LiteralName->ID = II;
+
+  LiteralNames->InsertNode(LiteralName, InsertPos);
+  return DeclarationName(LiteralName);
 }
 
 unsigned

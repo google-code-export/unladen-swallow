@@ -24,11 +24,13 @@
 
 namespace clang {
   class AttributeList;
+  struct CXX0XAttributeList;
   class PragmaHandler;
   class Scope;
   class DiagnosticBuilder;
   class Parser;
   class PragmaUnusedHandler;
+  class ColonProtectionRAIIObject;
 
 /// PrettyStackTraceParserEntry - If a crash happens while the parser is active,
 /// an entry is printed for it.
@@ -46,6 +48,7 @@ public:
 ///
 class Parser {
   friend class PragmaUnusedHandler;
+  friend class ColonProtectionRAIIObject;
   PrettyStackTraceParserEntry CrashInfo;
 
   Preprocessor &PP;
@@ -89,25 +92,15 @@ class Parser {
   /// template argument list, where the '>' closes the template
   /// argument list.
   bool GreaterThanIsOperator;
+  
+  /// ColonIsSacred - When this is false, we aggressively try to recover from
+  /// code like "foo : bar" as if it were a typo for "foo :: bar".  This is not
+  /// safe in case statements and a few other things.  This is managed by the
+  /// ColonProtectionRAIIObject RAII object.
+  bool ColonIsSacred;
 
   /// The "depth" of the template parameters currently being parsed.
   unsigned TemplateParameterDepth;
-
-  /// \brief RAII object that makes '>' behave either as an operator
-  /// or as the closing angle bracket for a template argument list.
-  struct GreaterThanIsOperatorScope {
-    bool &GreaterThanIsOperator;
-    bool OldGreaterThanIsOperator;
-
-    GreaterThanIsOperatorScope(bool &GTIO, bool Val)
-      : GreaterThanIsOperator(GTIO), OldGreaterThanIsOperator(GTIO) {
-      GreaterThanIsOperator = Val;
-    }
-
-    ~GreaterThanIsOperatorScope() {
-      GreaterThanIsOperator = OldGreaterThanIsOperator;
-    }
-  };
 
 public:
   Parser(Preprocessor &PP, Action &Actions);
@@ -753,12 +746,15 @@ private:
 
   //===--------------------------------------------------------------------===//
   // C99 6.9: External Definitions.
-  DeclGroupPtrTy ParseExternalDeclaration();
+  DeclGroupPtrTy ParseExternalDeclaration(CXX0XAttributeList Attr);
   bool isDeclarationAfterDeclarator();
   bool isStartOfFunctionDefinition();
-  DeclGroupPtrTy ParseDeclarationOrFunctionDefinition(
+  DeclGroupPtrTy ParseDeclarationOrFunctionDefinition(AttributeList *Attr,
             AccessSpecifier AS = AS_none);
-
+  DeclGroupPtrTy ParseDeclarationOrFunctionDefinition(ParsingDeclSpec &DS,
+                                                  AttributeList *Attr,
+                                                  AccessSpecifier AS = AS_none);
+  
   DeclPtrTy ParseFunctionDefinition(ParsingDeclarator &D,
                  const ParsedTemplateInfo &TemplateInfo = ParsedTemplateInfo());
   void ParseKNRParamDeclarations(Declarator &D);
@@ -788,7 +784,7 @@ private:
   llvm::SmallVector<DeclPtrTy, 4> PendingObjCImpDecl;
 
   DeclPtrTy ParseObjCAtImplementationDeclaration(SourceLocation atLoc);
-  DeclPtrTy ParseObjCAtEndDeclaration(SourceLocation atLoc);
+  DeclPtrTy ParseObjCAtEndDeclaration(SourceRange atEnd);
   DeclPtrTy ParseObjCAtAliasDeclaration(SourceLocation atLoc);
   DeclPtrTy ParseObjCPropertySynthesize(SourceLocation atLoc);
   DeclPtrTy ParseObjCPropertyDynamic(SourceLocation atLoc);
@@ -832,10 +828,10 @@ private:
   OwningExprResult ParseCastExpression(bool isUnaryExpression,
                                        bool isAddressOfOperand,
                                        bool &NotCastExpr,
-                                       bool parseParenAsExprList);
+                                       TypeTy *TypeOfCast);
   OwningExprResult ParseCastExpression(bool isUnaryExpression,
                                        bool isAddressOfOperand = false,
-                                       bool parseParenAsExprList = false);
+                                       TypeTy *TypeOfCast = 0);
   OwningExprResult ParsePostfixExpressionSuffix(OwningExprResult LHS);
   OwningExprResult ParseSizeofAlignofExpression();
   OwningExprResult ParseBuiltinPrimaryExpression();
@@ -865,7 +861,7 @@ private:
   };
   OwningExprResult ParseParenExpression(ParenParseOption &ExprType,
                                         bool stopIfCastExpr,
-                                        bool parseAsExprList,
+                                        TypeTy *TypeOfCast,
                                         TypeTy *&CastTy,
                                         SourceLocation &RParenLoc);
 
@@ -933,8 +929,8 @@ private:
                                             SourceLocation Start);
 
   //===--------------------------------------------------------------------===//
-  // C++ if/switch/while/for condition expression.
-  OwningExprResult ParseCXXCondition();
+  // C++ if/switch/while condition expression.
+  bool ParseCXXCondition(OwningExprResult &ExprResult, DeclPtrTy &DeclResult);
 
   //===--------------------------------------------------------------------===//
   // C++ types
@@ -994,24 +990,23 @@ private:
     return ParseStatementOrDeclaration(true);
   }
   OwningStmtResult ParseStatementOrDeclaration(bool OnlyStatement = false);
-  OwningStmtResult ParseLabeledStatement();
-  OwningStmtResult ParseCaseStatement();
-  OwningStmtResult ParseDefaultStatement();
-  OwningStmtResult ParseCompoundStatement(bool isStmtExpr = false);
+  OwningStmtResult ParseLabeledStatement(AttributeList *Attr);
+  OwningStmtResult ParseCaseStatement(AttributeList *Attr);
+  OwningStmtResult ParseDefaultStatement(AttributeList *Attr);
+  OwningStmtResult ParseCompoundStatement(AttributeList *Attr,
+                                          bool isStmtExpr = false);
   OwningStmtResult ParseCompoundStatementBody(bool isStmtExpr = false);
-  bool ParseParenExprOrCondition(OwningExprResult &CondExp,
-                                 bool OnlyAllowCondition = false,
-                                 SourceLocation *LParenLoc = 0,
-                                 SourceLocation *RParenLoc = 0);
-  OwningStmtResult ParseIfStatement();
-  OwningStmtResult ParseSwitchStatement();
-  OwningStmtResult ParseWhileStatement();
-  OwningStmtResult ParseDoStatement();
-  OwningStmtResult ParseForStatement();
-  OwningStmtResult ParseGotoStatement();
-  OwningStmtResult ParseContinueStatement();
-  OwningStmtResult ParseBreakStatement();
-  OwningStmtResult ParseReturnStatement();
+  bool ParseParenExprOrCondition(OwningExprResult &ExprResult,
+                                 DeclPtrTy &DeclResult);
+  OwningStmtResult ParseIfStatement(AttributeList *Attr);
+  OwningStmtResult ParseSwitchStatement(AttributeList *Attr);
+  OwningStmtResult ParseWhileStatement(AttributeList *Attr);
+  OwningStmtResult ParseDoStatement(AttributeList *Attr);
+  OwningStmtResult ParseForStatement(AttributeList *Attr);
+  OwningStmtResult ParseGotoStatement(AttributeList *Attr);
+  OwningStmtResult ParseContinueStatement(AttributeList *Attr);
+  OwningStmtResult ParseBreakStatement(AttributeList *Attr);
+  OwningStmtResult ParseReturnStatement(AttributeList *Attr);
   OwningStmtResult ParseAsmStatement(bool &msAsm);
   OwningStmtResult FuzzyParseMicrosoftAsmStatement();
   bool ParseAsmOperandsOpt(llvm::SmallVectorImpl<std::string> &Names,
@@ -1021,7 +1016,7 @@ private:
   //===--------------------------------------------------------------------===//
   // C++ 6: Statements and Blocks
 
-  OwningStmtResult ParseCXXTryBlock();
+  OwningStmtResult ParseCXXTryBlock(AttributeList *Attr);
   OwningStmtResult ParseCXXTryBlockCommon(SourceLocation TryLoc);
   OwningStmtResult ParseCXXCatchBlock();
 
@@ -1042,12 +1037,15 @@ private:
   /// would be best implemented in the parser.
   enum DeclSpecContext {
     DSC_normal, // normal context
-    DSC_class   // class context, enables 'friend'
+    DSC_class,  // class context, enables 'friend'
+    DSC_top_level // top-level/namespace declaration context
   };
 
-  DeclGroupPtrTy ParseDeclaration(unsigned Context, SourceLocation &DeclEnd);
+  DeclGroupPtrTy ParseDeclaration(unsigned Context, SourceLocation &DeclEnd,
+                                  CXX0XAttributeList Attr);
   DeclGroupPtrTy ParseSimpleDeclaration(unsigned Context,
-                                        SourceLocation &DeclEnd);
+                                        SourceLocation &DeclEnd,
+                                        AttributeList *Attr);
   DeclGroupPtrTy ParseDeclGroup(ParsingDeclSpec &DS, unsigned Context,
                                 bool AllowFunctionDefinitions,
                                 SourceLocation *DeclEnd = 0);
@@ -1059,6 +1057,7 @@ private:
   bool ParseImplicitInt(DeclSpec &DS, CXXScopeSpec *SS,
                         const ParsedTemplateInfo &TemplateInfo,
                         AccessSpecifier AS);
+  DeclSpecContext getDeclSpecContextFromDeclaratorContext(unsigned Context);
   void ParseDeclarationSpecifiers(DeclSpec &DS,
                 const ParsedTemplateInfo &TemplateInfo = ParsedTemplateInfo(),
                                   AccessSpecifier AS = AS_none,
@@ -1085,6 +1084,7 @@ private:
   private:
     virtual void _anchor();
   };
+  struct ObjCPropertyCallback;
 
   void ParseStructDeclaration(DeclSpec &DS, FieldCallback &Callback);
 
@@ -1110,6 +1110,11 @@ private:
       return isCXXSimpleDeclaration();
     return isDeclarationSpecifier();
   }
+
+  /// \brief Starting with a scope specifier, identifier, or
+  /// template-id that refers to the current class, determine whether
+  /// this is a constructor declarator.
+  bool isConstructorDeclarator();
 
   /// \brief Specifies the context in which type-id/expression
   /// disambiguation will occur.
@@ -1217,11 +1222,14 @@ private:
   void ParseBlockId();
   // EndLoc, if non-NULL, is filled with the location of the last token of
   // the attribute list.
-  AttributeList *ParseAttributes(SourceLocation *EndLoc = 0);
+  CXX0XAttributeList ParseCXX0XAttributes(SourceLocation *EndLoc = 0);
+  AttributeList *ParseGNUAttributes(SourceLocation *EndLoc = 0);
   AttributeList *ParseMicrosoftDeclSpec(AttributeList* CurrAttr = 0);
   AttributeList *ParseMicrosoftTypeAttributes(AttributeList* CurrAttr = 0);
   void ParseTypeofSpecifier(DeclSpec &DS);
   void ParseDecltypeSpecifier(DeclSpec &DS);
+  
+  OwningExprResult ParseCXX0XAlignArgument(SourceLocation Start);
 
   /// DeclaratorScopeObj - RAII object used in Parser::ParseDirectDeclarator to
   /// enter a new C++ declarator scope and exit it when the function is
@@ -1242,10 +1250,7 @@ private:
       CreatedScope = true;
       P.EnterScope(0); // Not a decl scope.
 
-      if (P.Actions.ActOnCXXEnterDeclaratorScope(P.CurScope, SS))
-        SS.setScopeRep(0);
-      
-      if (!SS.isInvalid())
+      if (!P.Actions.ActOnCXXEnterDeclaratorScope(P.CurScope, SS))
         EnteredScope = true;
     }
 
@@ -1265,7 +1270,8 @@ private:
   typedef void (Parser::*DirectDeclParseFunction)(Declarator&);
   void ParseDeclaratorInternal(Declarator &D,
                                DirectDeclParseFunction DirectDeclParser);
-  void ParseTypeQualifierListOpt(DeclSpec &DS, bool AttributesAllowed = true);
+  void ParseTypeQualifierListOpt(DeclSpec &DS, bool GNUAttributesAllowed = true,
+                                 bool CXX0XAttributesAllowed = true);
   void ParseDirectDeclarator(Declarator &D);
   void ParseParenDeclarator(Declarator &D);
   void ParseFunctionDeclarator(SourceLocation LParenLoc, Declarator &D,
@@ -1278,12 +1284,17 @@ private:
   //===--------------------------------------------------------------------===//
   // C++ 7: Declarations [dcl.dcl]
 
+  bool isCXX0XAttributeSpecifier(bool FullLookahead = false, 
+                                 tok::TokenKind *After = 0);
+  
   DeclPtrTy ParseNamespace(unsigned Context, SourceLocation &DeclEnd);
-  DeclPtrTy ParseLinkage(unsigned Context);
+  DeclPtrTy ParseLinkage(ParsingDeclSpec &DS, unsigned Context);
   DeclPtrTy ParseUsingDirectiveOrDeclaration(unsigned Context,
-                                             SourceLocation &DeclEnd);
+                                             SourceLocation &DeclEnd,
+                                             CXX0XAttributeList Attrs);
   DeclPtrTy ParseUsingDirective(unsigned Context, SourceLocation UsingLoc,
-                                SourceLocation &DeclEnd);
+                                SourceLocation &DeclEnd,
+                                AttributeList *Attr);
   DeclPtrTy ParseUsingDeclaration(unsigned Context, SourceLocation UsingLoc,
                                   SourceLocation &DeclEnd,
                                   AccessSpecifier AS = AS_none);
@@ -1353,6 +1364,7 @@ private:
                                SourceLocation &RAngleLoc);
   bool ParseTemplateParameterList(unsigned Depth,
                                   TemplateParameterList &TemplateParams);
+  bool isStartOfTemplateTypeParameter();
   DeclPtrTy ParseTemplateParameter(unsigned Depth, unsigned Position);
   DeclPtrTy ParseTypeParameter(unsigned Depth, unsigned Position);
   DeclPtrTy ParseTemplateTemplateParameter(unsigned Depth, unsigned Position);

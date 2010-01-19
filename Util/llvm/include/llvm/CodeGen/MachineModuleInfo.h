@@ -43,6 +43,7 @@
 #include "llvm/GlobalValue.h"
 #include "llvm/Pass.h"
 #include "llvm/Metadata.h"
+#include "llvm/Support/ValueHandle.h"
 
 namespace llvm {
 
@@ -134,9 +135,6 @@ class MachineModuleInfo : public ImmutablePass {
   /// searchable format.  This does not include the functions in
   /// llvm.compiler.used.
   SmallPtrSet<const Function *, 32> UsedFunctions;
-
-  /// UsedDbgLabels - labels are used by debug info entries.
-  SmallSet<unsigned, 8> UsedDbgLabels;
 
   bool CallsEHReturn;
   bool CallsUnwindInit;
@@ -230,19 +228,6 @@ public:
   unsigned MappedLabel(unsigned LabelID) const {
     assert(LabelID <= LabelIDList.size() && "Debug label ID out of range.");
     return LabelID ? LabelIDList[LabelID - 1] : 0;
-  }
-
-  /// isDbgLabelUsed - Return true if label with LabelID is used by
-  /// DwarfWriter.
-  bool isDbgLabelUsed(unsigned LabelID) {
-    return UsedDbgLabels.count(LabelID);
-  }
-  
-  /// RecordUsedDbgLabel - Mark label with LabelID as used. This is used
-  /// by DwarfWriter to inform DebugLabelFolder that certain labels are
-  /// not to be deleted.
-  void RecordUsedDbgLabel(unsigned LabelID) {
-    UsedDbgLabels.insert(LabelID);
   }
 
   /// getFrameMoves - Returns a reference to a list of moves done in the current

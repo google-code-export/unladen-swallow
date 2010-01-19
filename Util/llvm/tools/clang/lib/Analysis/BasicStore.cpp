@@ -15,7 +15,6 @@
 #include "clang/Analysis/Analyses/LiveVariables.h"
 #include "clang/Analysis/PathSensitive/AnalysisContext.h"
 #include "clang/Analysis/PathSensitive/GRState.h"
-#include "llvm/Support/Compiler.h"
 #include "llvm/ADT/ImmutableMap.h"
 
 using namespace clang;
@@ -24,7 +23,7 @@ typedef llvm::ImmutableMap<const MemRegion*,SVal> BindingsTy;
 
 namespace {
 
-class VISIBILITY_HIDDEN BasicStoreSubRegionMap : public SubRegionMap {
+class BasicStoreSubRegionMap : public SubRegionMap {
 public:
   BasicStoreSubRegionMap() {}
 
@@ -33,7 +32,7 @@ public:
   }
 };
 
-class VISIBILITY_HIDDEN BasicStoreManager : public StoreManager {
+class BasicStoreManager : public StoreManager {
   BindingsTy::Factory VBFactory;
 public:
   BasicStoreManager(GRStateManager& mgr)
@@ -69,14 +68,14 @@ public:
   }
 
   const GRState *BindCompoundLiteral(const GRState *state,
-                                     const CompoundLiteralExpr* cl,
+                                     const CompoundLiteralExpr*,
+                                     const LocationContext*,
                                      SVal val) {
     return state;
   }
 
   SVal getLValueVar(const VarDecl *VD, const LocationContext *LC);
   SVal getLValueString(const StringLiteral *S);
-  SVal getLValueCompoundLiteral(const CompoundLiteralExpr *CL);
   SVal getLValueIvar(const ObjCIvarDecl* D, SVal Base);
   SVal getLValueField(const FieldDecl *D, SVal Base);
   SVal getLValueElement(QualType elementType, SVal Offset, SVal Base);
@@ -129,10 +128,6 @@ SVal BasicStoreManager::getLValueVar(const VarDecl* VD,
 
 SVal BasicStoreManager::getLValueString(const StringLiteral* S) {
   return ValMgr.makeLoc(MRMgr.getStringRegion(S));
-}
-
-SVal BasicStoreManager::getLValueCompoundLiteral(const CompoundLiteralExpr* CL){
-  return ValMgr.makeLoc(MRMgr.getCompoundLiteralRegion(CL));
 }
 
 SVal BasicStoreManager::getLValueIvar(const ObjCIvarDecl* D, SVal Base) {
@@ -369,7 +364,7 @@ BasicStoreManager::RemoveDeadBindings(GRState &state, Stmt* Loc,
   // Iterate over the variable bindings.
   for (BindingsTy::iterator I=B.begin(), E=B.end(); I!=E ; ++I) {
     if (const VarRegion *VR = dyn_cast<VarRegion>(I.getKey())) {
-      if (SymReaper.isLive(Loc, VR->getDecl()))
+      if (SymReaper.isLive(Loc, VR))
         RegionRoots.push_back(VR);
       else
         continue;
@@ -484,15 +479,14 @@ Store BasicStoreManager::getInitialStore(const LocationContext *InitLoc) {
       const Decl& CD = *InitLoc->getDecl();
       if (const ObjCMethodDecl* MD = dyn_cast<ObjCMethodDecl>(&CD)) {
         if (MD->getSelfDecl() == PD) {
-          // FIXME: Just use a symbolic region, and remove ObjCObjectRegion
-          // entirely.
-          const ObjCObjectRegion *SelfRegion =
-            MRMgr.getObjCObjectRegion(MD->getClassInterface(),
-                                      MRMgr.getHeapRegion());
-
-          St = BindInternal(St, ValMgr.makeLoc(MRMgr.getVarRegion(PD, InitLoc)),
-                            ValMgr.makeLoc(SelfRegion));
-
+          // FIXME: Add type constraints (when they become available) to
+          // SelfRegion?  (i.e., it implements MD->getClassInterface()).
+          const MemRegion *VR = MRMgr.getVarRegion(PD, InitLoc);
+          const MemRegion *SelfRegion =
+            ValMgr.getRegionValueSymbolVal(VR).getAsRegion();          
+          assert(SelfRegion);          
+          St = BindInternal(St, ValMgr.makeLoc(VR),
+                            loc::MemRegionVal(SelfRegion));
           // Scan the method for ivar references.  While this requires an
           // entire AST scan, the cost should not be high in practice.
           St = scanForIvars(MD->getBody(), PD, SelfRegion, St);

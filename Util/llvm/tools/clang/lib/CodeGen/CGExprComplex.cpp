@@ -18,7 +18,6 @@
 #include "llvm/Constants.h"
 #include "llvm/Function.h"
 #include "llvm/ADT/SmallString.h"
-#include "llvm/Support/Compiler.h"
 using namespace clang;
 using namespace CodeGen;
 
@@ -29,7 +28,7 @@ using namespace CodeGen;
 typedef CodeGenFunction::ComplexPairTy ComplexPairTy;
 
 namespace  {
-class VISIBILITY_HIDDEN ComplexExprEmitter
+class ComplexExprEmitter
   : public StmtVisitor<ComplexExprEmitter, ComplexPairTy> {
   CodeGenFunction &CGF;
   CGBuilderTy &Builder;
@@ -146,7 +145,10 @@ public:
 
   // Operators.
   ComplexPairTy VisitPrePostIncDec(const UnaryOperator *E,
-                                   bool isInc, bool isPre);
+                                   bool isInc, bool isPre) {
+    LValue LV = CGF.EmitLValue(E->getSubExpr());
+    return CGF.EmitComplexPrePostIncDec(E, LV, isInc, isPre);
+  }
   ComplexPairTy VisitUnaryPostDec(const UnaryOperator *E) {
     return VisitPrePostIncDec(E, false, false);
   }
@@ -261,34 +263,18 @@ public:
 /// load the real and imaginary pieces, returning them as Real/Imag.
 ComplexPairTy ComplexExprEmitter::EmitLoadOfComplex(llvm::Value *SrcPtr,
                                                     bool isVolatile) {
-  llvm::SmallString<64> Name(SrcPtr->getName().begin(),
-                             SrcPtr->getName().end());
-
   llvm::Value *Real=0, *Imag=0;
 
   if (!IgnoreReal) {
-    // FIXME: Clean this up once builder takes Twine/StringRef.
-    Name += ".realp";
-    llvm::Value *RealPtr = Builder.CreateStructGEP(SrcPtr, 0,
-                                                   Name.str().str().c_str());
-
-    Name.pop_back();  // .realp -> .real
-    // FIXME: Clean this up once builder takes Twine/StringRef.
-    Real = Builder.CreateLoad(RealPtr, isVolatile,
-                              Name.str().str().c_str());
-    Name.resize(Name.size()-4); // .real -> .imagp
+    llvm::Value *RealP = Builder.CreateStructGEP(SrcPtr, 0,
+                                                 SrcPtr->getName() + ".realp");
+    Real = Builder.CreateLoad(RealP, isVolatile, SrcPtr->getName() + ".real");
   }
 
   if (!IgnoreImag) {
-    Name += "imagp";
-
-    // FIXME: Clean this up once builder takes Twine/StringRef.
-    llvm::Value *ImagPtr = Builder.CreateStructGEP(SrcPtr, 1,
-                                                   Name.str().str().c_str());
-
-    Name.pop_back();  // .imagp -> .imag
-    // FIXME: Clean this up once builder takes Twine/StringRef.
-    Imag = Builder.CreateLoad(ImagPtr, isVolatile, Name.str().str().c_str());
+    llvm::Value *ImagP = Builder.CreateStructGEP(SrcPtr, 1,
+                                                 SrcPtr->getName() + ".imagp");
+    Imag = Builder.CreateLoad(ImagP, isVolatile, SrcPtr->getName() + ".imag");
   }
   return ComplexPairTy(Real, Imag);
 }
@@ -370,40 +356,6 @@ ComplexPairTy ComplexExprEmitter::EmitCast(Expr *Op, QualType DestTy) {
 
   // Return (realval, 0).
   return ComplexPairTy(Elt, llvm::Constant::getNullValue(Elt->getType()));
-}
-
-ComplexPairTy ComplexExprEmitter::VisitPrePostIncDec(const UnaryOperator *E,
-                                                     bool isInc, bool isPre) {
-  LValue LV = CGF.EmitLValue(E->getSubExpr());
-  ComplexPairTy InVal = EmitLoadOfComplex(LV.getAddress(),
-                                          LV.isVolatileQualified());
-
-  llvm::Value *NextVal;
-  if (isa<llvm::IntegerType>(InVal.first->getType())) {
-    uint64_t AmountVal = isInc ? 1 : -1;
-    NextVal = llvm::ConstantInt::get(InVal.first->getType(), AmountVal, true);
-
-    // Add the inc/dec to the real part.
-    NextVal = Builder.CreateAdd(InVal.first, NextVal, isInc ? "inc" : "dec");
-  } else {
-    QualType ElemTy = E->getType()->getAs<ComplexType>()->getElementType();
-    llvm::APFloat FVal(CGF.getContext().getFloatTypeSemantics(ElemTy), 1);
-    if (!isInc)
-      FVal.changeSign();
-    NextVal = llvm::ConstantFP::get(CGF.getLLVMContext(), FVal);
-
-    // Add the inc/dec to the real part.
-    NextVal = Builder.CreateFAdd(InVal.first, NextVal, isInc ? "inc" : "dec");
-  }
-
-  ComplexPairTy IncVal(NextVal, InVal.second);
-
-  // Store the updated result through the lvalue.
-  EmitStoreOfComplex(IncVal, LV.getAddress(), LV.isVolatileQualified());
-
-  // If this is a postinc, return the value read from memory, otherwise use the
-  // updated value.
-  return isPre ? IncVal : InVal;
 }
 
 ComplexPairTy ComplexExprEmitter::VisitUnaryMinus(const UnaryOperator *E) {
@@ -643,6 +595,14 @@ ComplexPairTy ComplexExprEmitter::VisitBinComma(const BinaryOperator *E) {
 
 ComplexPairTy ComplexExprEmitter::
 VisitConditionalOperator(const ConditionalOperator *E) {
+  if (!E->getLHS()) {
+    CGF.ErrorUnsupported(E, "conditional operator with missing LHS");
+    const llvm::Type *EltTy =
+      CGF.ConvertType(E->getType()->getAs<ComplexType>()->getElementType());
+    llvm::Value *U = llvm::UndefValue::get(EltTy);
+    return ComplexPairTy(U, U);
+  }
+
   TestAndClearIgnoreReal();
   TestAndClearIgnoreImag();
   TestAndClearIgnoreRealAssign();
@@ -651,8 +611,7 @@ VisitConditionalOperator(const ConditionalOperator *E) {
   llvm::BasicBlock *RHSBlock = CGF.createBasicBlock("cond.false");
   llvm::BasicBlock *ContBlock = CGF.createBasicBlock("cond.end");
 
-  llvm::Value *Cond = CGF.EvaluateExprAsBool(E->getCond());
-  Builder.CreateCondBr(Cond, LHSBlock, RHSBlock);
+  CGF.EmitBranchOnBoolExpr(E->getCond(), LHSBlock, RHSBlock);
 
   CGF.EmitBlock(LHSBlock);
 

@@ -20,6 +20,7 @@
 #include "clang/AST/PrettyPrinter.h"
 #include "clang/AST/StmtIterator.h"
 #include "clang/AST/DeclGroup.h"
+#include "clang/AST/FullExpr.h"
 #include "llvm/ADT/SmallVector.h"
 #include "clang/AST/ASTContext.h"
 #include <string>
@@ -171,6 +172,14 @@ public:
   }
   virtual ~Stmt() {}
 
+#ifndef NDEBUG
+  /// \brief True if this statement's refcount is in a valid state.
+  /// Should be used only in assertions.
+  bool isRetained() const {
+    return (RefCount >= 1);
+  }
+#endif
+
   /// \brief Destroy the current statement and its children.
   void Destroy(ASTContext &Ctx) {
     assert(RefCount >= 1);
@@ -203,7 +212,7 @@ public:
 
   // global temp stats (until we have a per-module visitor)
   static void addStmtClass(const StmtClass s);
-  static bool CollectingStats(bool enable=false);
+  static bool CollectingStats(bool Enable = false);
   static void PrintStats();
 
   /// dump - This does a local dump of the specified AST fragment.  It dumps the
@@ -284,6 +293,9 @@ public:
 class DeclStmt : public Stmt {
   DeclGroupRef DG;
   SourceLocation StartLoc, EndLoc;
+
+protected:
+  virtual void DoDestroy(ASTContext &Ctx);
 
 public:
   DeclStmt(DeclGroupRef dg, SourceLocation startLoc,
@@ -604,22 +616,36 @@ public:
 class IfStmt : public Stmt {
   enum { COND, THEN, ELSE, END_EXPR };
   Stmt* SubExprs[END_EXPR];
+
+  /// \brief If non-NULL, the declaration in the "if" statement.
+  VarDecl *Var;
+  
   SourceLocation IfLoc;
   SourceLocation ElseLoc;
+  
 public:
-  IfStmt(SourceLocation IL, Expr *cond, Stmt *then,
+  IfStmt(SourceLocation IL, VarDecl *var, Expr *cond, Stmt *then,
          SourceLocation EL = SourceLocation(), Stmt *elsev = 0)
-    : Stmt(IfStmtClass)  {
+    : Stmt(IfStmtClass), Var(var), IfLoc(IL), ElseLoc(EL)  {
     SubExprs[COND] = reinterpret_cast<Stmt*>(cond);
     SubExprs[THEN] = then;
     SubExprs[ELSE] = elsev;
-    IfLoc = IL;
-    ElseLoc = EL;
   }
 
   /// \brief Build an empty if/then/else statement
   explicit IfStmt(EmptyShell Empty) : Stmt(IfStmtClass, Empty) { }
 
+  /// \brief Retrieve the variable declared in this "if" statement, if any.
+  ///
+  /// In the following example, "x" is the condition variable.
+  /// \code
+  /// if (int x = foo()) {
+  ///   printf("x is %d", x);
+  /// }
+  /// \endcode
+  VarDecl *getConditionVariable() const { return Var; }
+  void setConditionVariable(VarDecl *V) { Var = V; }
+  
   const Expr *getCond() const { return reinterpret_cast<Expr*>(SubExprs[COND]);}
   void setCond(Expr *E) { SubExprs[COND] = reinterpret_cast<Stmt *>(E); }
   const Stmt *getThen() const { return SubExprs[THEN]; }
@@ -648,9 +674,13 @@ public:
   }
   static bool classof(const IfStmt *) { return true; }
 
-  // Iterators
+  // Iterators over subexpressions.  The iterators will include iterating
+  // over the initialization expression referenced by the condition variable.
   virtual child_iterator child_begin();
   virtual child_iterator child_end();
+
+protected:
+  virtual void DoDestroy(ASTContext &Ctx);
 };
 
 /// SwitchStmt - This represents a 'switch' stmt.
@@ -658,6 +688,7 @@ public:
 class SwitchStmt : public Stmt {
   enum { COND, BODY, END_EXPR };
   Stmt* SubExprs[END_EXPR];
+  VarDecl *Var;
   // This points to a linked list of case and default statements.
   SwitchCase *FirstCase;
   SourceLocation SwitchLoc;
@@ -666,13 +697,27 @@ protected:
   virtual void DoDestroy(ASTContext &Ctx);
 
 public:
-  SwitchStmt(Expr *cond) : Stmt(SwitchStmtClass), FirstCase(0) {
-      SubExprs[COND] = reinterpret_cast<Stmt*>(cond);
-      SubExprs[BODY] = NULL;
-    }
+  SwitchStmt(VarDecl *Var, Expr *cond) 
+    : Stmt(SwitchStmtClass), Var(Var), FirstCase(0) 
+  {
+    SubExprs[COND] = reinterpret_cast<Stmt*>(cond);
+    SubExprs[BODY] = NULL;
+  }
 
   /// \brief Build a empty switch statement.
   explicit SwitchStmt(EmptyShell Empty) : Stmt(SwitchStmtClass, Empty) { }
+
+  /// \brief Retrieve the variable declared in this "switch" statement, if any.
+  ///
+  /// In the following example, "x" is the condition variable.
+  /// \code
+  /// switch (int x = foo()) {
+  ///   case 0: break;
+  ///   // ...
+  /// }
+  /// \endcode
+  VarDecl *getConditionVariable() const { return Var; }
+  void setConditionVariable(VarDecl *V) { Var = V; }
 
   const Expr *getCond() const { return reinterpret_cast<Expr*>(SubExprs[COND]);}
   const Stmt *getBody() const { return SubExprs[BODY]; }
@@ -721,10 +766,13 @@ public:
 ///
 class WhileStmt : public Stmt {
   enum { COND, BODY, END_EXPR };
+  VarDecl *Var;
   Stmt* SubExprs[END_EXPR];
   SourceLocation WhileLoc;
 public:
-  WhileStmt(Expr *cond, Stmt *body, SourceLocation WL) : Stmt(WhileStmtClass) {
+  WhileStmt(VarDecl *Var, Expr *cond, Stmt *body, SourceLocation WL)
+    : Stmt(WhileStmtClass), Var(Var) 
+  {
     SubExprs[COND] = reinterpret_cast<Stmt*>(cond);
     SubExprs[BODY] = body;
     WhileLoc = WL;
@@ -732,6 +780,17 @@ public:
 
   /// \brief Build an empty while statement.
   explicit WhileStmt(EmptyShell Empty) : Stmt(WhileStmtClass, Empty) { }
+
+  /// \brief Retrieve the variable declared in this "while" statement, if any.
+  ///
+  /// In the following example, "x" is the condition variable.
+  /// \code
+  /// while (int x = random()) {
+  ///   // ...
+  /// }
+  /// \endcode
+  VarDecl *getConditionVariable() const { return Var; }
+  void setConditionVariable(VarDecl *V) { Var = V; }
 
   Expr *getCond() { return reinterpret_cast<Expr*>(SubExprs[COND]); }
   const Expr *getCond() const { return reinterpret_cast<Expr*>(SubExprs[COND]);}
@@ -754,6 +813,9 @@ public:
   // Iterators
   virtual child_iterator child_begin();
   virtual child_iterator child_end();
+  
+protected:
+  virtual void DoDestroy(ASTContext &Ctx);
 };
 
 /// DoStmt - This represents a 'do/while' stmt.
@@ -812,26 +874,38 @@ public:
 class ForStmt : public Stmt {
   enum { INIT, COND, INC, BODY, END_EXPR };
   Stmt* SubExprs[END_EXPR]; // SubExprs[INIT] is an expression or declstmt.
+  VarDecl *CondVar;
   SourceLocation ForLoc;
   SourceLocation LParenLoc, RParenLoc;
 
 public:
-  ForStmt(Stmt *Init, Expr *Cond, Expr *Inc, Stmt *Body, SourceLocation FL,
-          SourceLocation LP, SourceLocation RP)
-    : Stmt(ForStmtClass) {
+  ForStmt(Stmt *Init, Expr *Cond, VarDecl *condVar, Expr *Inc, Stmt *Body, 
+          SourceLocation FL, SourceLocation LP, SourceLocation RP)
+    : Stmt(ForStmtClass), CondVar(condVar), ForLoc(FL), LParenLoc(LP), 
+      RParenLoc(RP) 
+  {
     SubExprs[INIT] = Init;
     SubExprs[COND] = reinterpret_cast<Stmt*>(Cond);
     SubExprs[INC] = reinterpret_cast<Stmt*>(Inc);
     SubExprs[BODY] = Body;
-    ForLoc = FL;
-    LParenLoc = LP;
-    RParenLoc = RP;
   }
 
   /// \brief Build an empty for statement.
   explicit ForStmt(EmptyShell Empty) : Stmt(ForStmtClass, Empty) { }
 
   Stmt *getInit() { return SubExprs[INIT]; }
+  
+  /// \brief Retrieve the variable declared in this "for" statement, if any.
+  ///
+  /// In the following example, "y" is the condition variable.
+  /// \code
+  /// for (int x = random(); int y = mangle(x); ++x) {
+  ///   // ...
+  /// }
+  /// \endcode
+  VarDecl *getConditionVariable() const { return CondVar; }
+  void setConditionVariable(VarDecl *V) { CondVar = V; }
+  
   Expr *getCond() { return reinterpret_cast<Expr*>(SubExprs[COND]); }
   Expr *getInc()  { return reinterpret_cast<Expr*>(SubExprs[INC]); }
   Stmt *getBody() { return SubExprs[BODY]; }
@@ -864,6 +938,9 @@ public:
   // Iterators
   virtual child_iterator child_begin();
   virtual child_iterator child_end();
+  
+protected:
+  virtual void DoDestroy(ASTContext &Ctx);
 };
 
 /// GotoStmt - This represents a direct goto.
@@ -1039,6 +1116,7 @@ class AsmStmt : public Stmt {
 
   bool IsSimple;
   bool IsVolatile;
+  bool MSAsm;
 
   unsigned NumOutputs;
   unsigned NumInputs;
@@ -1049,7 +1127,7 @@ class AsmStmt : public Stmt {
 
   llvm::SmallVector<StringLiteral*, 4> Clobbers;
 public:
-  AsmStmt(SourceLocation asmloc, bool issimple, bool isvolatile,
+  AsmStmt(SourceLocation asmloc, bool issimple, bool isvolatile, bool msasm,
           unsigned numoutputs, unsigned numinputs,
           std::string *names, StringLiteral **constraints,
           Expr **exprs, StringLiteral *asmstr, unsigned numclobbers,
@@ -1066,7 +1144,9 @@ public:
   bool isVolatile() const { return IsVolatile; }
   void setVolatile(bool V) { IsVolatile = V; }
   bool isSimple() const { return IsSimple; }
-  void setSimple(bool V) { IsSimple = false; }
+  void setSimple(bool V) { IsSimple = V; }
+  bool isMSAsm() const { return MSAsm; }
+  void setMSAsm(bool V) { MSAsm = V; }
 
   //===--- Asm String Analysis ---===//
 

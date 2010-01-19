@@ -19,6 +19,7 @@ namespace clang {
 namespace driver {
   class Compilation;
   class DerivedArgList;
+  class Driver;
   class HostInfo;
   class InputArgList;
   class JobAction;
@@ -49,7 +50,7 @@ public:
 
   // Accessors
 
-  const HostInfo &getHost() const { return Host; }
+  const Driver &getDriver() const;
   const llvm::Triple &getTriple() const { return Triple; }
 
   std::string getArchName() const { return Triple.getArchName(); }
@@ -86,10 +87,6 @@ public:
 
   // Platform defaults information
 
-  /// IsMathErrnoDefault - Does this tool chain set -fmath-errno by
-  /// default.
-  virtual bool IsMathErrnoDefault() const = 0;
-
   /// IsBlocksDefault - Does this tool chain enable -fblocks by default.
   virtual bool IsBlocksDefault() const { return false; }
 
@@ -113,6 +110,10 @@ public:
   /// for this tool chain, or 0 if this tool chain does not force a
   /// particular PIC mode.
   virtual const char *GetForcedPicModel() const = 0;
+
+  /// UseDwarfDebugFlags - Embed the compile options to clang into the Dwarf
+  /// compile unit information.
+  virtual bool UseDwarfDebugFlags() const { return false; }
 };
 
 } // end namespace driver

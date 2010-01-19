@@ -1,8 +1,12 @@
 // NOTE: Use '-fobjc-gc' to test the analysis being run twice, and multiple reports are not issued.
-// RUN: clang-cc -analyze -analyzer-experimental-internal-checks -checker-cfref --analyzer-store=basic -fobjc-gc -analyzer-constraints=basic --verify -fblocks %s
-// RUN: clang-cc -analyze -analyzer-experimental-internal-checks -checker-cfref --analyzer-store=basic -analyzer-constraints=range --verify -fblocks %s
-// RUN: clang-cc -analyze -analyzer-experimental-internal-checks -checker-cfref --analyzer-store=region -analyzer-constraints=basic --verify -fblocks %s
-// RUN: clang-cc -analyze -analyzer-experimental-internal-checks -checker-cfref --analyzer-store=region -analyzer-constraints=range --verify -fblocks %s
+// RUN: %clang_cc1 -triple i386-apple-darwin10 -analyze -analyzer-experimental-internal-checks -checker-cfref -analyzer-store=basic -fobjc-gc -analyzer-constraints=basic -verify -fblocks %s
+// RUN: %clang_cc1 -triple i386-apple-darwin10 -analyze -analyzer-experimental-internal-checks -checker-cfref -analyzer-store=basic -analyzer-constraints=range -verify -fblocks %s
+// RUN: %clang_cc1 -triple i386-apple-darwin10 -analyze -analyzer-experimental-internal-checks -checker-cfref -analyzer-store=region -analyzer-constraints=basic -verify -fblocks %s
+// RUN: %clang_cc1 -triple i386-apple-darwin10 -analyze -analyzer-experimental-internal-checks -checker-cfref -analyzer-store=region -analyzer-constraints=range -verify -fblocks %s
+// RUN: %clang_cc1 -triple x86_64-apple-darwin10 -analyze -analyzer-experimental-internal-checks -checker-cfref -analyzer-store=basic -fobjc-gc -analyzer-constraints=basic -verify -fblocks %s
+// RUN: %clang_cc1 -triple x86_64-apple-darwin10 -analyze -analyzer-experimental-internal-checks -checker-cfref -analyzer-store=basic -analyzer-constraints=range -verify -fblocks %s
+// RUN: %clang_cc1 -triple x86_64-apple-darwin10 -analyze -analyzer-experimental-internal-checks -checker-cfref -analyzer-store=region -analyzer-constraints=basic -verify -fblocks %s
+// RUN: %clang_cc1 -triple x86_64-apple-darwin10 -analyze -analyzer-experimental-internal-checks -checker-cfref -analyzer-store=region -analyzer-constraints=range -verify -fblocks %s
 
 typedef struct objc_ivar *Ivar;
 typedef struct objc_selector *SEL;
@@ -87,16 +91,16 @@ void r6268365() {
 
 void divzeroassume(unsigned x, unsigned j) {  
   x /= j;  
-  if (j == 0) x /= 0;     // no-warning
-  if (j == 0) x /= j;     // no-warning
-  if (j == 0) x = x / 0;  // no-warning
+  if (j == 0) x /= 0;     // no static-analyzer warning    expected-warning {{division by zero is undefined}}
+  if (j == 0) x /= j;     // no static-analyzer warning
+  if (j == 0) x = x / 0;  // no static-analyzer warning    expected-warning {{division by zero is undefined}}
 }
 
 void divzeroassumeB(unsigned x, unsigned j) {  
   x = x / j;  
-  if (j == 0) x /= 0;     // no-warning
-  if (j == 0) x /= j;     // no-warning
-  if (j == 0) x = x / 0;  // no-warning
+  if (j == 0) x /= 0;     // no static-analyzer warning     expected-warning {{division by zero is undefined}}
+  if (j == 0) x /= j;     // no static-analyzer warning
+  if (j == 0) x = x / 0;  // no static-analyzer warning     expected-warning {{division by zero is undefined}}
 }
 
 // InitListExpr processing
@@ -460,6 +464,8 @@ void test_block_cast() {
   (void (^)(void *))test_block_cast_aux(); // expected-warning{{expression result unused}}
 }
 
+int OSAtomicCompareAndSwap32Barrier();
+
 // Test comparison of 'id' instance variable to a null void* constant after
 // performing an OSAtomicCompareAndSwap32Barrier.
 // This previously was a crash in RegionStoreManager.
@@ -492,6 +498,8 @@ void test_invalidate_cast_int() {
   if (i < 0)
     return;
 }
+
+int ivar_getOffset();
 
 // Reduced from a crash involving the cast of an Objective-C symbolic region to
 // 'char *'
@@ -750,3 +758,46 @@ void test_undefined_array_subscript() {
   int *p = &a[i]; // expected-warning{{Array subscript is undefined}}
 }
 @end
+
+//===----------------------------------------------------------------------===//
+// Test using an uninitialized value as a branch condition.
+//===----------------------------------------------------------------------===//
+
+int test_uninit_branch(void) {
+  int x;
+  if (x) // expected-warning{{Branch condition evaluates to a garbage value}}
+    return 1;
+  return 0; 
+}
+
+int test_uninit_branch_b(void) {
+  int x;
+  return x ? 1 : 0; // expected-warning{{Branch condition evaluates to a garbage value}}
+}
+
+int test_uninit_branch_c(void) {
+  int x;
+  if ((short)x) // expected-warning{{Branch condition evaluates to a garbage value}}
+    return 1;
+  return 0; 
+}
+
+//===----------------------------------------------------------------------===//
+// Test passing an undefined value in a message or function call.
+//===----------------------------------------------------------------------===//
+
+void test_bad_call_aux(int x);
+void test_bad_call(void) {
+  int y;
+  test_bad_call_aux(y); // expected-warning{{Pass-by-value argument in function call is undefined}}
+}
+
+@interface TestBadArg {}
+- (void) testBadArg:(int) x;
+@end
+
+void test_bad_msg(TestBadArg *p) {
+  int y;
+  [p testBadArg:y]; // expected-warning{{Pass-by-value argument in message expression is undefined}}
+}
+

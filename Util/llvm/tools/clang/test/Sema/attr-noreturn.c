@@ -1,6 +1,8 @@
-// RUN: clang-cc -verify -fsyntax-only %s
+// RUN: %clang_cc1 -verify -fsyntax-only %s
 
 static void (*fp0)(void) __attribute__((noreturn));
+
+void fatal();
 
 static void __attribute__((noreturn)) f0(void) {
   fatal();
@@ -32,4 +34,9 @@ void
 f5 (unsigned long size)
 {
   
+}
+
+// PR2461
+__attribute__((noreturn)) void f(__attribute__((noreturn)) void (*x)(void)) {
+  x();
 }

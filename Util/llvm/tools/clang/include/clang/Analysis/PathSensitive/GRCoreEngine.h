@@ -75,8 +75,7 @@ class GRCoreEngine {
 
   void ProcessEndPath(GREndPathNodeBuilder& Builder);
 
-  void ProcessStmt(Stmt* S, GRStmtNodeBuilder& Builder);
-
+  void ProcessStmt(CFGElement E, GRStmtNodeBuilder& Builder);
 
   bool ProcessBlockEntrance(CFGBlock* Blk, const GRState* State,
                             GRBlockCounter BC);
@@ -212,10 +211,12 @@ public:
   ///  of this builder.
   CFGBlock* getBlock() const { return &B; }
 
+  unsigned getIndex() const { return Idx; }
+
   void setAuditor(GRAuditor* A) { Auditor = A; }
 
   const GRState* GetState(ExplodedNode* Pred) const {
-    if ((ExplodedNode*) Pred == getBasePredecessor())
+    if (Pred == getBasePredecessor())
       return CleanedState;
     else
       return Pred->getState();
@@ -402,9 +403,11 @@ public:
 };
 
 class GREndPathNodeBuilder {
-  GRCoreEngine& Eng;
+  GRCoreEngine &Eng;
   CFGBlock& B;
   ExplodedNode* Pred;
+
+public:
   bool HasGeneratedNode;
 
 public:
@@ -412,6 +415,8 @@ public:
     : Eng(*e), B(*b), Pred(N), HasGeneratedNode(false) {}
 
   ~GREndPathNodeBuilder();
+
+  GRWorkList &getWorkList() { return *Eng.WList; }
 
   ExplodedNode* getPredecessor() const { return Pred; }
 

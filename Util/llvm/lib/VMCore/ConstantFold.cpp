@@ -1162,7 +1162,7 @@ Constant *llvm::ConstantFoldBinaryInstruction(LLVMContext &Context,
   }
 
   // i1 can be simplified in many cases.
-  if (C1->getType() == Type::getInt1Ty(Context)) {
+  if (C1->getType()->isInteger(1)) {
     switch (Opcode) {
     case Instruction::Add:
     case Instruction::Sub:
@@ -1229,10 +1229,10 @@ static int IdxCompare(LLVMContext &Context, Constant *C1, Constant *C2,
 
   // Ok, we have two differing integer indices.  Sign extend them to be the same
   // type.  Long is always big enough, so we use it.
-  if (C1->getType() != Type::getInt64Ty(Context))
+  if (!C1->getType()->isInteger(64))
     C1 = ConstantExpr::getSExt(C1, Type::getInt64Ty(Context));
 
-  if (C2->getType() != Type::getInt64Ty(Context))
+  if (!C2->getType()->isInteger(64))
     C2 = ConstantExpr::getSExt(C2, Type::getInt64Ty(Context));
 
   if (C1 == C2) return 0;  // They are equal
@@ -1587,7 +1587,7 @@ Constant *llvm::ConstantFoldCompareInstruction(LLVMContext &Context,
   }
 
   // If the comparison is a comparison between two i1's, simplify it.
-  if (C1->getType() == Type::getInt1Ty(Context)) {
+  if (C1->getType()->isInteger(1)) {
     switch(pred) {
     case ICmpInst::ICMP_EQ:
       if (isa<ConstantInt>(C2))
@@ -1839,14 +1839,16 @@ Constant *llvm::ConstantFoldCompareInstruction(LLVMContext &Context,
       }
     }
 
-    if (!isa<ConstantExpr>(C1) && isa<ConstantExpr>(C2)) {
+    if ((!isa<ConstantExpr>(C1) && isa<ConstantExpr>(C2)) ||
+        (C1->isNullValue() && !C2->isNullValue())) {
       // If C2 is a constant expr and C1 isn't, flip them around and fold the
       // other way if possible.
+      // Also, if C1 is null and C2 isn't, flip them around.
       switch (pred) {
       case ICmpInst::ICMP_EQ:
       case ICmpInst::ICMP_NE:
         // No change of predicate required.
-        return ConstantFoldCompareInstruction(Context, pred, C2, C1);
+        return ConstantExpr::getICmp(pred, C2, C1);
 
       case ICmpInst::ICMP_ULT:
       case ICmpInst::ICMP_SLT:
@@ -1858,7 +1860,7 @@ Constant *llvm::ConstantFoldCompareInstruction(LLVMContext &Context,
       case ICmpInst::ICMP_SGE:
         // Change the predicate as necessary to swap the operands.
         pred = ICmpInst::getSwappedPredicate((ICmpInst::Predicate)pred);
-        return ConstantFoldCompareInstruction(Context, pred, C2, C1);
+        return ConstantExpr::getICmp(pred, C2, C1);
 
       default:  // These predicates cannot be flopped around.
         break;
@@ -2040,10 +2042,10 @@ Constant *llvm::ConstantFoldGetElementPtr(LLVMContext &Context,
 
             // Before adding, extend both operands to i64 to avoid
             // overflow trouble.
-            if (PrevIdx->getType() != Type::getInt64Ty(Context))
+            if (!PrevIdx->getType()->isInteger(64))
               PrevIdx = ConstantExpr::getSExt(PrevIdx,
                                               Type::getInt64Ty(Context));
-            if (Div->getType() != Type::getInt64Ty(Context))
+            if (!Div->getType()->isInteger(64))
               Div = ConstantExpr::getSExt(Div,
                                           Type::getInt64Ty(Context));
 

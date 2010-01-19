@@ -21,7 +21,6 @@
 #include "llvm/InlineAsm.h"
 #include "llvm/Instructions.h"
 #include "llvm/IntrinsicInst.h"
-#include "llvm/LLVMContext.h"
 #include "llvm/Pass.h"
 #include "llvm/Analysis/ProfileInfo.h"
 #include "llvm/Target/TargetData.h"
@@ -49,7 +48,7 @@ namespace {
     /// TLI - Keep a pointer of a TargetLowering to consult for determining
     /// transformation profitability.
     const TargetLowering *TLI;
-    ProfileInfo *PI;
+    ProfileInfo *PFI;
 
     /// BackEdges - Keep a set of all the loop back edges.
     ///
@@ -100,7 +99,7 @@ void CodeGenPrepare::findLoopBackEdges(const Function &F) {
 bool CodeGenPrepare::runOnFunction(Function &F) {
   bool EverMadeChange = false;
 
-  PI = getAnalysisIfAvailable<ProfileInfo>();
+  PFI = getAnalysisIfAvailable<ProfileInfo>();
   // First pass, eliminate blocks that contain only PHI nodes and an
   // unconditional branch.
   EverMadeChange |= EliminateMostlyEmptyBlocks(F);
@@ -238,7 +237,7 @@ void CodeGenPrepare::EliminateMostlyEmptyBlock(BasicBlock *BB) {
   BranchInst *BI = cast<BranchInst>(BB->getTerminator());
   BasicBlock *DestBB = BI->getSuccessor(0);
 
-  DEBUG(errs() << "MERGING MOSTLY EMPTY BLOCKS - BEFORE:\n" << *BB << *DestBB);
+  DEBUG(dbgs() << "MERGING MOSTLY EMPTY BLOCKS - BEFORE:\n" << *BB << *DestBB);
 
   // If the destination block has a single pred, then this is a trivial edge,
   // just collapse it.
@@ -252,7 +251,7 @@ void CodeGenPrepare::EliminateMostlyEmptyBlock(BasicBlock *BB) {
       if (isEntry && BB != &BB->getParent()->getEntryBlock())
         BB->moveBefore(&BB->getParent()->getEntryBlock());
       
-      DEBUG(errs() << "AFTER:\n" << *DestBB << "\n\n\n");
+      DEBUG(dbgs() << "AFTER:\n" << *DestBB << "\n\n\n");
       return;
     }
   }
@@ -289,13 +288,13 @@ void CodeGenPrepare::EliminateMostlyEmptyBlock(BasicBlock *BB) {
   // The PHIs are now updated, change everything that refers to BB to use
   // DestBB and remove BB.
   BB->replaceAllUsesWith(DestBB);
-  if (PI) {
-    PI->replaceAllUses(BB, DestBB);
-    PI->removeEdge(ProfileInfo::getEdge(BB, DestBB));
+  if (PFI) {
+    PFI->replaceAllUses(BB, DestBB);
+    PFI->removeEdge(ProfileInfo::getEdge(BB, DestBB));
   }
   BB->eraseFromParent();
 
-  DEBUG(errs() << "AFTER:\n" << *DestBB << "\n\n\n");
+  DEBUG(dbgs() << "AFTER:\n" << *DestBB << "\n\n\n");
 }
 
 
@@ -369,9 +368,9 @@ static void SplitEdgeNicely(TerminatorInst *TI, unsigned SuccNum,
 
       // If we found a workable predecessor, change TI to branch to Succ.
       if (FoundMatch) {
-        ProfileInfo *PI = P->getAnalysisIfAvailable<ProfileInfo>();
-        if (PI)
-          PI->splitEdge(TIBB, Dest, Pred);
+        ProfileInfo *PFI = P->getAnalysisIfAvailable<ProfileInfo>();
+        if (PFI)
+          PFI->splitEdge(TIBB, Dest, Pred);
         Dest->removePredecessor(TIBB);
         TI->setSuccessor(SuccNum, Pred);
         return;
@@ -563,7 +562,7 @@ static bool IsNonLocalValue(Value *V, BasicBlock *BB) {
   return false;
 }
 
-/// OptimizeMemoryInst - Load and Store Instructions have often have
+/// OptimizeMemoryInst - Load and Store Instructions often have
 /// addressing modes that can do significant amounts of computation.  As such,
 /// instruction selection will try to get the load or store to do as much
 /// computation as possible for the program.  The problem is that isel can only
@@ -592,7 +591,7 @@ bool CodeGenPrepare::OptimizeMemoryInst(Instruction *MemoryInst, Value *Addr,
 
   // If all the instructions matched are already in this BB, don't do anything.
   if (!AnyNonLocal) {
-    DEBUG(errs() << "CGP: Found      local addrmode: " << AddrMode << "\n");
+    DEBUG(dbgs() << "CGP: Found      local addrmode: " << AddrMode << "\n");
     return false;
   }
 
@@ -607,12 +606,12 @@ bool CodeGenPrepare::OptimizeMemoryInst(Instruction *MemoryInst, Value *Addr,
   // computation.
   Value *&SunkAddr = SunkAddrs[Addr];
   if (SunkAddr) {
-    DEBUG(errs() << "CGP: Reusing nonlocal addrmode: " << AddrMode << " for "
+    DEBUG(dbgs() << "CGP: Reusing nonlocal addrmode: " << AddrMode << " for "
                  << *MemoryInst);
     if (SunkAddr->getType() != Addr->getType())
       SunkAddr = new BitCastInst(SunkAddr, Addr->getType(), "tmp", InsertPt);
   } else {
-    DEBUG(errs() << "CGP: SINKING nonlocal addrmode: " << AddrMode << " for "
+    DEBUG(dbgs() << "CGP: SINKING nonlocal addrmode: " << AddrMode << " for "
                  << *MemoryInst);
     const Type *IntPtrTy =
           TLI->getTargetData()->getIntPtrType(AccessTy->getContext());

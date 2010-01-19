@@ -8,16 +8,14 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/Driver/CC1Options.h"
-#include "clang/Driver/OptTable.h"
 #include "clang/Driver/Option.h"
-#include "clang/Frontend/CompilerInvocation.h"
-#include "llvm/ADT/SmallVector.h"
-
+#include "clang/Driver/OptTable.h"
+using namespace clang;
 using namespace clang::driver;
 using namespace clang::driver::options;
 using namespace clang::driver::cc1options;
 
-static OptTable::Info CC1InfoTable[] = {
+static const OptTable::Info CC1InfoTable[] = {
 #define OPTION(NAME, ID, KIND, GROUP, ALIAS, FLAGS, PARAM, \
                HELPTEXT, METAVAR)   \
   { NAME, HELPTEXT, METAVAR, Option::KIND##Class, FLAGS, PARAM, \
@@ -37,12 +35,4 @@ public:
 
 OptTable *clang::driver::createCC1OptTable() {
   return new CC1OptTable();
-}
-
-//
-
-using namespace clang;
-
-void CompilerInvocation::CreateFromArgs(CompilerInvocation &Res,
-                           const llvm::SmallVectorImpl<llvm::StringRef> &Args) {
 }

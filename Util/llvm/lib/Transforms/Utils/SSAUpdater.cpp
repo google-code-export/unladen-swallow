@@ -149,7 +149,29 @@ Value *SSAUpdater::GetValueInMiddleOfBlock(BasicBlock *BB) {
   if (SingularValue != 0)
     return SingularValue;
 
-  // Otherwise, we do need a PHI: insert one now.
+  // Otherwise, we do need a PHI: check to see if we already have one available
+  // in this block that produces the right value.
+  if (isa<PHINode>(BB->begin())) {
+    DenseMap<BasicBlock*, Value*> ValueMapping(PredValues.begin(),
+                                               PredValues.end());
+    PHINode *SomePHI;
+    for (BasicBlock::iterator It = BB->begin();
+         (SomePHI = dyn_cast<PHINode>(It)); ++It) {
+      // Scan this phi to see if it is what we need.
+      bool Equal = true;
+      for (unsigned i = 0, e = SomePHI->getNumIncomingValues(); i != e; ++i)
+        if (ValueMapping[SomePHI->getIncomingBlock(i)] !=
+            SomePHI->getIncomingValue(i)) {
+          Equal = false;
+          break;
+        }
+         
+      if (Equal)
+        return SomePHI;
+    }
+  }
+  
+  // Ok, we have no way out, insert a new one now.
   PHINode *InsertedPHI = PHINode::Create(PrototypeValue->getType(),
                                          PrototypeValue->getName(),
                                          &BB->front());
@@ -169,7 +191,7 @@ Value *SSAUpdater::GetValueInMiddleOfBlock(BasicBlock *BB) {
   // If the client wants to know about all new instructions, tell it.
   if (InsertedPHIs) InsertedPHIs->push_back(InsertedPHI);
 
-  DEBUG(errs() << "  Inserted PHI: " << *InsertedPHI << "\n");
+  DEBUG(dbgs() << "  Inserted PHI: " << *InsertedPHI << "\n");
   return InsertedPHI;
 }
 
@@ -198,7 +220,7 @@ Value *SSAUpdater::GetValueAtEndOfBlockInternal(BasicBlock *BB) {
 
   // Query AvailableVals by doing an insertion of null.
   std::pair<AvailableValsTy::iterator, bool> InsertRes =
-  AvailableVals.insert(std::make_pair(BB, WeakVH()));
+    AvailableVals.insert(std::make_pair(BB, TrackingVH<Value>()));
 
   // Handle the case when the insertion fails because we have already seen BB.
   if (!InsertRes.second) {
@@ -214,8 +236,8 @@ Value *SSAUpdater::GetValueAtEndOfBlockInternal(BasicBlock *BB) {
     // it.  When we get back to the first instance of the recursion we will fill
     // in the PHI node.
     return InsertRes.first->second =
-    PHINode::Create(PrototypeValue->getType(), PrototypeValue->getName(),
-                    &BB->front());
+      PHINode::Create(PrototypeValue->getType(), PrototypeValue->getName(),
+                      &BB->front());
   }
 
   // Okay, the value isn't in the map and we just inserted a null in the entry
@@ -295,10 +317,14 @@ Value *SSAUpdater::GetValueAtEndOfBlockInternal(BasicBlock *BB) {
       InsertedVal = SingularValue;
     }
 
+    // Either path through the 'if' should have set insertedVal -> SingularVal.
+    assert((InsertedVal == SingularValue || isa<UndefValue>(InsertedVal)) &&
+           "RAUW didn't change InsertedVal to be SingularVal");
+
     // Drop the entries we added in IncomingPredInfo to restore the stack.
     IncomingPredInfo.erase(IncomingPredInfo.begin()+FirstPredInfoEntry,
                            IncomingPredInfo.end());
-    return InsertedVal;
+    return SingularValue;
   }
 
   // Otherwise, we do need a PHI: insert one now if we don't already have one.
@@ -326,7 +352,7 @@ Value *SSAUpdater::GetValueAtEndOfBlockInternal(BasicBlock *BB) {
     InsertedPHI->eraseFromParent();
     InsertedVal = ConstVal;
   } else {
-    DEBUG(errs() << "  Inserted PHI: " << *InsertedPHI << "\n");
+    DEBUG(dbgs() << "  Inserted PHI: " << *InsertedPHI << "\n");
 
     // If the client wants to know about all new instructions, tell it.
     if (InsertedPHIs) InsertedPHIs->push_back(InsertedPHI);

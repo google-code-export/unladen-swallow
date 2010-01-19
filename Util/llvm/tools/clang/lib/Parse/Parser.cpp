@@ -17,7 +17,7 @@
 #include "clang/Parse/Scope.h"
 #include "clang/Parse/Template.h"
 #include "llvm/Support/raw_ostream.h"
-#include "ExtensionRAIIObject.h"
+#include "RAIIObjectsForParser.h"
 #include "ParsePragma.h"
 using namespace clang;
 
@@ -36,7 +36,8 @@ public:
 
 Parser::Parser(Preprocessor &pp, Action &actions)
   : CrashInfo(*this), PP(pp), Actions(actions), Diags(PP.getDiagnostics()),
-    GreaterThanIsOperator(true), TemplateParameterDepth(0) {
+    GreaterThanIsOperator(true), ColonIsSacred(false),
+    TemplateParameterDepth(0) {
   Tok.setKind(tok::eof);
   CurScope = 0;
   NumCachedScopes = 0;
@@ -355,7 +356,10 @@ bool Parser::ParseTopLevelDecl(DeclGroupPtrTy &Result) {
     return true;
   }
 
-  Result = ParseExternalDeclaration();
+  CXX0XAttributeList Attr;
+  if (getLang().CPlusPlus0x && isCXX0XAttributeSpecifier())
+    Attr = ParseCXX0XAttributes();
+  Result = ParseExternalDeclaration(Attr);
   return false;
 }
 
@@ -396,13 +400,13 @@ void Parser::ParseTranslationUnit() {
 ///           ';'
 ///
 /// [C++0x/GNU] 'extern' 'template' declaration
-Parser::DeclGroupPtrTy Parser::ParseExternalDeclaration() {
+Parser::DeclGroupPtrTy Parser::ParseExternalDeclaration(CXX0XAttributeList Attr) {
   DeclPtrTy SingleDecl;
   switch (Tok.getKind()) {
   case tok::semi:
     if (!getLang().CPlusPlus0x)
       Diag(Tok, diag::ext_top_level_semi)
-        << CodeModificationHint::CreateRemoval(SourceRange(Tok.getLocation()));
+        << CodeModificationHint::CreateRemoval(Tok.getLocation());
 
     ConsumeToken();
     // TODO: Invoke action for top-level semicolon.
@@ -418,9 +422,13 @@ Parser::DeclGroupPtrTy Parser::ParseExternalDeclaration() {
     // __extension__ silences extension warnings in the subexpression.
     ExtensionRAIIObject O(Diags);  // Use RAII to do this.
     ConsumeToken();
-    return ParseExternalDeclaration();
+    return ParseExternalDeclaration(Attr);
   }
   case tok::kw_asm: {
+    if (Attr.HasAttr)
+      Diag(Attr.Range.getBegin(), diag::err_attributes_not_allowed)
+        << Attr.Range;
+
     OwningExprResult Result(ParseSimpleAsm());
 
     ExpectAndConsume(tok::semi, diag::err_expected_semi_after,
@@ -447,9 +455,11 @@ Parser::DeclGroupPtrTy Parser::ParseExternalDeclaration() {
     SingleDecl = ParseObjCMethodDefinition();
     break;
   case tok::code_completion:
-    Actions.CodeCompleteOrdinaryName(CurScope);
+      Actions.CodeCompleteOrdinaryName(CurScope, 
+                                   ObjCImpDecl? Action::CCC_ObjCImplementation
+                                              : Action::CCC_Namespace);
     ConsumeToken();
-    return ParseExternalDeclaration();
+    return ParseExternalDeclaration(Attr);
   case tok::kw_using:
   case tok::kw_namespace:
   case tok::kw_typedef:
@@ -459,7 +469,7 @@ Parser::DeclGroupPtrTy Parser::ParseExternalDeclaration() {
     // A function definition cannot start with a these keywords.
     {
       SourceLocation DeclEnd;
-      return ParseDeclaration(Declarator::FileContext, DeclEnd);
+      return ParseDeclaration(Declarator::FileContext, DeclEnd, Attr);
     }
   case tok::kw_extern:
     if (getLang().CPlusPlus && NextToken().is(tok::kw_template)) {
@@ -477,7 +487,7 @@ Parser::DeclGroupPtrTy Parser::ParseExternalDeclaration() {
 
   default:
     // We can't tell whether this is a function-definition or declaration yet.
-    return ParseDeclarationOrFunctionDefinition();
+    return ParseDeclarationOrFunctionDefinition(Attr.AttrList);
   }
 
   // This routine returns a DeclGroup, if the thing we parsed only contains a
@@ -500,12 +510,13 @@ bool Parser::isDeclarationAfterDeclarator() {
 /// \brief Determine whether the current token, if it occurs after a
 /// declarator, indicates the start of a function definition.
 bool Parser::isStartOfFunctionDefinition() {
-  return Tok.is(tok::l_brace) ||    // int X() {}
-    (!getLang().CPlusPlus &&
-     isDeclarationSpecifier()) ||   // int X(f) int f; {}
-    (getLang().CPlusPlus &&
-     (Tok.is(tok::colon) ||         // X() : Base() {} (used for ctors)
-      Tok.is(tok::kw_try)));        // X() try { ... }
+  if (Tok.is(tok::l_brace))   // int X() {}
+    return true;
+  
+  if (!getLang().CPlusPlus)
+    return isDeclarationSpecifier();   // int X(f) int f; {}
+  return Tok.is(tok::colon) ||         // X() : Base() {} (used for ctors)
+         Tok.is(tok::kw_try);          // X() try { ... }
 }
 
 /// ParseDeclarationOrFunctionDefinition - Parse either a function-definition or
@@ -525,10 +536,14 @@ bool Parser::isStartOfFunctionDefinition() {
 /// [OMP]   threadprivate-directive                              [TODO]
 ///
 Parser::DeclGroupPtrTy
-Parser::ParseDeclarationOrFunctionDefinition(AccessSpecifier AS) {
+Parser::ParseDeclarationOrFunctionDefinition(ParsingDeclSpec &DS,
+                                             AttributeList *Attr,
+                                             AccessSpecifier AS) {
   // Parse the common declaration-specifiers piece.
-  ParsingDeclSpec DS(*this);
-  ParseDeclarationSpecifiers(DS, ParsedTemplateInfo(), AS);
+  if (Attr)
+    DS.AddAttributes(Attr);
+
+  ParseDeclarationSpecifiers(DS, ParsedTemplateInfo(), AS, DSC_top_level);
 
   // C99 6.7.2.3p6: Handle "struct-or-union identifier;", "enum { X };"
   // declaration-specifiers init-declarator-list[opt] ';'
@@ -573,11 +588,18 @@ Parser::ParseDeclarationOrFunctionDefinition(AccessSpecifier AS) {
       DS.getStorageClassSpec() == DeclSpec::SCS_extern &&
       DS.getParsedSpecifiers() == DeclSpec::PQ_StorageClassSpecifier) {
     DS.abort();
-    DeclPtrTy TheDecl = ParseLinkage(Declarator::FileContext);
+    DeclPtrTy TheDecl = ParseLinkage(DS, Declarator::FileContext);
     return Actions.ConvertDeclToDeclGroup(TheDecl);
   }
 
   return ParseDeclGroup(DS, Declarator::FileContext, true);
+}
+
+Parser::DeclGroupPtrTy
+Parser::ParseDeclarationOrFunctionDefinition(AttributeList *Attr,
+                                             AccessSpecifier AS) {
+  ParsingDeclSpec DS(*this);
+  return ParseDeclarationOrFunctionDefinition(DS, Attr, AS);
 }
 
 /// ParseFunctionDefinition - We parsed and verified that the specified
@@ -719,7 +741,7 @@ void Parser::ParseKNRParamDeclarations(Declarator &D) {
       // If attributes are present, parse them.
       if (Tok.is(tok::kw___attribute))
         // FIXME: attach attributes too.
-        AttrList = ParseAttributes();
+        AttrList = ParseGNUAttributes();
 
       // Ask the actions module to compute the type for this declarator.
       Action::DeclPtrTy Param =
@@ -860,7 +882,7 @@ Parser::OwningExprResult Parser::ParseSimpleAsm(SourceLocation *EndLoc) {
 /// as the current tokens, so only call it in contexts where these are invalid.
 bool Parser::TryAnnotateTypeOrScopeToken(bool EnteringContext) {
   assert((Tok.is(tok::identifier) || Tok.is(tok::coloncolon)
-          || Tok.is(tok::kw_typename)) &&
+          || Tok.is(tok::kw_typename) || Tok.is(tok::annot_cxxscope)) &&
          "Cannot be a type or scope token!");
 
   if (Tok.is(tok::kw_typename)) {
@@ -914,6 +936,9 @@ bool Parser::TryAnnotateTypeOrScopeToken(bool EnteringContext) {
     PP.AnnotateCachedTokens(Tok);
     return true;
   }
+
+  // Remembers whether the token was originally a scope annotation.
+  bool wasScopeAnnotation = Tok.is(tok::annot_cxxscope);
 
   CXXScopeSpec SS;
   if (getLang().CPlusPlus)
@@ -997,9 +1022,11 @@ bool Parser::TryAnnotateTypeOrScopeToken(bool EnteringContext) {
   Tok.setAnnotationValue(SS.getScopeRep());
   Tok.setAnnotationRange(SS.getRange());
 
-  // In case the tokens were cached, have Preprocessor replace them with the
-  // annotation token.
-  PP.AnnotateCachedTokens(Tok);
+  // In case the tokens were cached, have Preprocessor replace them
+  // with the annotation token.  We don't need to do this if we've
+  // just reverted back to the state we were in before being called.
+  if (!wasScopeAnnotation)
+    PP.AnnotateCachedTokens(Tok);
   return true;
 }
 
@@ -1018,7 +1045,9 @@ bool Parser::TryAnnotateCXXScopeToken(bool EnteringContext) {
 
   CXXScopeSpec SS;
   if (!ParseOptionalCXXScopeSpecifier(SS, /*ObjectType=*/0, EnteringContext))
-    return Tok.is(tok::annot_template_id);
+    // If the token left behind is not an identifier, we either had an error or
+    // successfully turned it into an annotation token.
+    return Tok.isNot(tok::identifier);
 
   // Push the current token back into the token stream (or revert it if it is
   // cached) and use an annotation scope token for current token.

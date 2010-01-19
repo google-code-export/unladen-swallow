@@ -35,7 +35,9 @@ namespace clang {
     TypeAlignmentInBits = 3,
     TypeAlignment = 1 << TypeAlignmentInBits
   };
-  class Type; class ExtQuals;
+  class Type;
+  class ExtQuals;
+  class QualType;
 }
 
 namespace llvm {
@@ -59,6 +61,9 @@ namespace llvm {
     }
     enum { NumLowBitsAvailable = clang::TypeAlignmentInBits };
   };
+
+  template <>
+  struct isPodLike<clang::QualType> { static const bool value = true; };
 }
 
 namespace clang {
@@ -76,12 +81,14 @@ namespace clang {
   class ObjCInterfaceDecl;
   class ObjCProtocolDecl;
   class ObjCMethodDecl;
+  class UnresolvedUsingTypenameDecl;
   class Expr;
   class Stmt;
   class SourceLocation;
   class StmtIteratorBase;
   class TemplateArgument;
   class TemplateArgumentLoc;
+  class TemplateArgumentListInfo;
   class QualifiedNameType;
   struct PrintingPolicy;
 
@@ -524,7 +531,12 @@ public:
   /// \brief Retrieve the set of CVR (const-volatile-restrict) qualifiers 
   /// applied to this type.
   unsigned getCVRQualifiers() const;
-  
+
+  /// \brief Retrieve the set of CVR (const-volatile-restrict) qualifiers
+  /// applied to this type, looking through any number of unqualified array
+  /// types to their element types' qualifiers.
+  unsigned getCVRQualifiersThroughArrayTypes() const;
+
   bool isConstant(ASTContext& Ctx) const {
     return QualType::isConstant(*this, Ctx);
   }
@@ -790,6 +802,10 @@ public:
   /// isPODType - Return true if this is a plain-old-data type (C++ 3.9p10).
   bool isPODType() const;
 
+  /// isLiteralType - Return true if this is a literal type
+  /// (C++0x [basic.types]p10)
+  bool isLiteralType() const;
+
   /// isVariablyModifiedType (C99 6.7.5.2p2) - Return true for variable array
   /// types that have a non-constant expression. This does not include "[]".
   bool isVariablyModifiedType() const;
@@ -807,8 +823,9 @@ public:
   bool isBooleanType() const;
   bool isCharType() const;
   bool isWideCharType() const;
+  bool isAnyCharacterType() const;
   bool isIntegralType() const;
-
+  
   /// Floating point categories.
   bool isRealFloatingType() const; // C99 6.2.5p10 (float, double, long double)
   /// isComplexType() does *not* include complex integers (a GCC extension).
@@ -859,6 +876,7 @@ public:
   bool isObjCQualifiedClassType() const;        // Class<foo>
   bool isObjCIdType() const;                    // id
   bool isObjCClassType() const;                 // Class
+  bool isObjCSelType() const;                 // Class
   bool isObjCBuiltinType() const;               // 'id' or 'Class'
   bool isTemplateTypeParmType() const;          // C++ template type parameter
   bool isNullPtrType() const;                   // C++0x nullptr_t
@@ -1000,7 +1018,8 @@ public:
     UndeducedAuto, // In C++0x, this represents the type of an auto variable
                    // that has not been deduced yet.
     ObjCId,    // This represents the ObjC 'id' type.
-    ObjCClass  // This represents the ObjC 'Class' type.
+    ObjCClass, // This represents the ObjC 'Class' type.
+    ObjCSel    // This represents the ObjC 'SEL' type.
   };
 private:
   Kind TypeKind;
@@ -1033,28 +1052,6 @@ public:
 
   static bool classof(const Type *T) { return T->getTypeClass() == Builtin; }
   static bool classof(const BuiltinType *) { return true; }
-};
-
-/// FixedWidthIntType - Used for arbitrary width types that we either don't
-/// want to or can't map to named integer types.  These always have a lower
-/// integer rank than builtin types of the same width.
-class FixedWidthIntType : public Type {
-private:
-  unsigned Width;
-  bool Signed;
-public:
-  FixedWidthIntType(unsigned W, bool S) : Type(FixedWidthInt, QualType(), false),
-                                          Width(W), Signed(S) {}
-
-  unsigned getWidth() const { return Width; }
-  bool isSigned() const { return Signed; }
-  const char *getName() const;
-
-  bool isSugared() const { return false; }
-  QualType desugar() const { return QualType(this, 0); }
-
-  static bool classof(const Type *T) { return T->getTypeClass() == FixedWidthInt; }
-  static bool classof(const FixedWidthIntType *) { return true; }
 };
 
 /// ComplexType - C99 6.2.5p11 - Complex values.  This supports the C99 complex
@@ -1856,6 +1853,38 @@ public:
 };
 
 
+/// \brief Represents the dependent type named by a dependently-scoped
+/// typename using declaration, e.g.
+///   using typename Base<T>::foo;
+/// Template instantiation turns these into the underlying type.
+class UnresolvedUsingType : public Type {
+  UnresolvedUsingTypenameDecl *Decl;
+
+  UnresolvedUsingType(UnresolvedUsingTypenameDecl *D)
+    : Type(UnresolvedUsing, QualType(), true), Decl(D) {}
+  friend class ASTContext; // ASTContext creates these.
+public:
+
+  UnresolvedUsingTypenameDecl *getDecl() const { return Decl; }
+
+  bool isSugared() const { return false; }
+  QualType desugar() const { return QualType(this, 0); }
+
+  static bool classof(const Type *T) {
+    return T->getTypeClass() == UnresolvedUsing;
+  }
+  static bool classof(const UnresolvedUsingType *) { return true; }
+
+  void Profile(llvm::FoldingSetNodeID &ID) {
+    return Profile(ID, Decl);
+  }
+  static void Profile(llvm::FoldingSetNodeID &ID,
+                      UnresolvedUsingTypenameDecl *D) {
+    ID.AddPointer(D);
+  }
+};
+
+
 class TypedefType : public Type {
   TypedefDecl *Decl;
 protected:
@@ -2278,6 +2307,8 @@ public:
   static bool anyDependentTemplateArguments(const TemplateArgumentLoc *Args,
                                             unsigned NumArgs);
 
+  static bool anyDependentTemplateArguments(const TemplateArgumentListInfo &);
+
   /// \brief Print a template argument list, including the '<' and '>'
   /// enclosing the template arguments.
   static std::string PrintTemplateArgumentList(const TemplateArgument *Args,
@@ -2286,6 +2317,9 @@ public:
 
   static std::string PrintTemplateArgumentList(const TemplateArgumentLoc *Args,
                                                unsigned NumArgs,
+                                               const PrintingPolicy &Policy);
+
+  static std::string PrintTemplateArgumentList(const TemplateArgumentListInfo &,
                                                const PrintingPolicy &Policy);
 
   typedef const TemplateArgument * iterator;
@@ -2540,6 +2574,7 @@ public:
     return getPointeeType()->isSpecificBuiltinType(BuiltinType::ObjCClass) &&
            !Protocols.size();
   }
+  
   /// isObjCQualifiedIdType - true for "id <p>".
   bool isObjCQualifiedIdType() const {
     return getPointeeType()->isSpecificBuiltinType(BuiltinType::ObjCId) &&
@@ -2656,7 +2691,20 @@ inline unsigned QualType::getCVRQualifiers() const {
   return getLocalCVRQualifiers() | 
               getTypePtr()->getCanonicalTypeInternal().getLocalCVRQualifiers();
 }
-  
+
+/// getCVRQualifiersThroughArrayTypes - If there are CVR qualifiers for this
+/// type, returns them. Otherwise, if this is an array type, recurses
+/// on the element type until some qualifiers have been found or a non-array
+/// type reached.
+inline unsigned QualType::getCVRQualifiersThroughArrayTypes() const {
+  if (unsigned Quals = getCVRQualifiers())
+    return Quals;
+  QualType CT = getTypePtr()->getCanonicalTypeInternal();
+  if (const ArrayType *AT = dyn_cast<ArrayType>(CT))
+    return AT->getElementType().getCVRQualifiersThroughArrayTypes();
+  return 0;
+}
+
 inline void QualType::removeConst() {
   removeFastQualifiers(Qualifiers::Const);
 }
@@ -2756,8 +2804,8 @@ inline bool QualType::getNoReturnAttr() const {
 /// int".
 inline bool QualType::isMoreQualifiedThan(QualType Other) const {
   // FIXME: work on arbitrary qualifiers
-  unsigned MyQuals = this->getCVRQualifiers();
-  unsigned OtherQuals = Other.getCVRQualifiers();
+  unsigned MyQuals = this->getCVRQualifiersThroughArrayTypes();
+  unsigned OtherQuals = Other.getCVRQualifiersThroughArrayTypes();
   if (getAddressSpace() != Other.getAddressSpace())
     return false;
   return MyQuals != OtherQuals && (MyQuals | OtherQuals) == MyQuals;
@@ -2769,8 +2817,8 @@ inline bool QualType::isMoreQualifiedThan(QualType Other) const {
 /// "int", and "const volatile int".
 inline bool QualType::isAtLeastAsQualifiedAs(QualType Other) const {
   // FIXME: work on arbitrary qualifiers
-  unsigned MyQuals = this->getCVRQualifiers();
-  unsigned OtherQuals = Other.getCVRQualifiers();
+  unsigned MyQuals = this->getCVRQualifiersThroughArrayTypes();
+  unsigned OtherQuals = Other.getCVRQualifiersThroughArrayTypes();
   if (getAddressSpace() != Other.getAddressSpace())
     return false;
   return (MyQuals | OtherQuals) == MyQuals;
@@ -2887,8 +2935,13 @@ inline bool Type::isObjCClassType() const {
     return OPT->isObjCClassType();
   return false;
 }
+inline bool Type::isObjCSelType() const {
+  if (const PointerType *OPT = getAs<PointerType>())
+    return OPT->getPointeeType()->isSpecificBuiltinType(BuiltinType::ObjCSel);
+  return false;
+}
 inline bool Type::isObjCBuiltinType() const {
-  return isObjCIdType() || isObjCClassType();
+  return isObjCIdType() || isObjCClassType() || isObjCSelType();
 }
 inline bool Type::isTemplateTypeParmType() const {
   return isa<TemplateTypeParmType>(CanonicalType);

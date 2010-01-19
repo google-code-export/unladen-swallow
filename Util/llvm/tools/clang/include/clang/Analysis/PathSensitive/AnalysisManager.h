@@ -56,8 +56,7 @@ public:
                   const LangOptions &lang, PathDiagnosticClient *pd,
                   StoreManagerCreator storemgr,
                   ConstraintManagerCreator constraintmgr,
-                  bool displayProgress, bool vizdot, bool vizubi,
-                  bool purge, bool eager, bool trim)
+                  bool vizdot, bool vizubi, bool purge, bool eager, bool trim)
 
     : Ctx(ctx), Diags(diags), LangInfo(lang), PD(pd),
       CreateStoreMgr(storemgr), CreateConstraintMgr(constraintmgr),
@@ -74,7 +73,7 @@ public:
 
   StoreManagerCreator getStoreManagerCreator() {
     return CreateStoreMgr;
-  };
+  }
 
   ConstraintManagerCreator getConstraintManagerCreator() {
     return CreateConstraintMgr;
@@ -132,15 +131,16 @@ public:
   }
 
   // Get the top level stack frame.
-  StackFrameContext *getStackFrame(Decl const *D) {
-    return LocCtxMgr.getStackFrame(AnaCtxMgr.getContext(D), 0, 0);
+  const StackFrameContext *getStackFrame(Decl const *D) {
+    return LocCtxMgr.getStackFrame(AnaCtxMgr.getContext(D), 0, 0, 0, 0);
   }
 
   // Get a stack frame with parent.
   StackFrameContext const *getStackFrame(Decl const *D, 
                                          LocationContext const *Parent,
-                                         Stmt const *S) {
-    return LocCtxMgr.getStackFrame(AnaCtxMgr.getContext(D), Parent, S);
+                                         Stmt const *S, const CFGBlock *Blk,
+                                         unsigned Idx) {
+    return LocCtxMgr.getStackFrame(AnaCtxMgr.getContext(D), Parent, S, Blk,Idx);
   }
 };
 

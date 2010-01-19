@@ -56,6 +56,7 @@
 #include "llvm/CodeGen/ValueTypes.h"
 #include "llvm/Support/CallSite.h"
 #include "llvm/Support/CFG.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/InstVisitor.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
@@ -85,9 +86,9 @@ namespace {  // Anonymous namespace for class
 
       for (Function::iterator I = F.begin(), E = F.end(); I != E; ++I) {
         if (I->empty() || !I->back().isTerminator()) {
-          errs() << "Basic Block does not have terminator!\n";
-          WriteAsOperand(errs(), I, true);
-          errs() << "\n";
+          dbgs() << "Basic Block does not have terminator!\n";
+          WriteAsOperand(dbgs(), I, true);
+          dbgs() << "\n";
           Broken = true;
         }
       }
@@ -262,12 +263,12 @@ namespace {
       default: llvm_unreachable("Unknown action");
       case AbortProcessAction:
         MessagesStr << "compilation aborted!\n";
-        errs() << MessagesStr.str();
+        dbgs() << MessagesStr.str();
         // Client should choose different reaction if abort is not desired
         abort();
       case PrintMessageAction:
         MessagesStr << "verification continues.\n";
-        errs() << MessagesStr.str();
+        dbgs() << MessagesStr.str();
         return false;
       case ReturnStatusAction:
         MessagesStr << "compilation terminated.\n";
@@ -329,6 +330,8 @@ namespace {
                           int VT, unsigned ArgNo, std::string &Suffix);
     void VerifyIntrinsicPrototype(Intrinsic::ID ID, Function *F,
                                   unsigned RetNum, unsigned ParamNum, ...);
+    void VerifyFunctionLocalMetadata(MDNode *N, Function *F,
+                                     SmallPtrSet<MDNode *, 32> &Visited);
     void VerifyParameterAttrs(Attributes Attrs, const Type *Ty,
                               bool isReturnValue, const Value *V);
     void VerifyFunctionAttrs(const FunctionType *FT, const AttrListPtr &Attrs,
@@ -1475,6 +1478,9 @@ void Verifier::visitInstruction(Instruction &I) {
 void Verifier::VerifyType(const Type *Ty) {
   if (!Types.insert(Ty)) return;
 
+  Assert1(&Mod->getContext() == &Ty->getContext(),
+          "Type context does not match Module context!", Ty);
+
   switch (Ty->getTypeID()) {
   case Type::FunctionTyID: {
     const FunctionType *FTy = cast<FunctionType>(Ty);
@@ -1523,6 +1529,38 @@ void Verifier::VerifyType(const Type *Ty) {
   }
 }
 
+/// VerifyFunctionLocalMetadata - Verify that the specified MDNode is local to
+/// specified Function.
+void Verifier::VerifyFunctionLocalMetadata(MDNode *N, Function *F,
+                                           SmallPtrSet<MDNode *, 32> &Visited) {
+  assert(N->isFunctionLocal() && "Should only be called on function-local MD");
+
+  // Only visit each node once.
+  if (!Visited.insert(N))
+    return;
+  
+  for (unsigned i = 0, e = N->getNumOperands(); i != e; ++i) {
+    Value *V = N->getOperand(i);
+    if (!V) continue;
+    
+    Function *ActualF = 0;
+    if (Instruction *I = dyn_cast<Instruction>(V))
+      ActualF = I->getParent()->getParent();
+    else if (BasicBlock *BB = dyn_cast<BasicBlock>(V))
+      ActualF = BB->getParent();
+    else if (Argument *A = dyn_cast<Argument>(V))
+      ActualF = A->getParent();
+    else if (MDNode *MD = dyn_cast<MDNode>(V))
+      if (MD->isFunctionLocal())
+        VerifyFunctionLocalMetadata(MD, F, Visited);
+
+    // If this was an instruction, bb, or argument, verify that it is in the
+    // function that we expect.
+    Assert1(ActualF == 0 || ActualF == F,
+            "function-local metadata used in wrong function", N);
+  }
+}
+
 // Flags used by TableGen to mark intrinsic parameters with the
 // LLVMExtendedElementVectorType and LLVMTruncatedElementVectorType classes.
 static const unsigned ExtendedElementVectorType = 0x40000000;
@@ -1538,6 +1576,15 @@ void Verifier::visitIntrinsicFunctionCall(Intrinsic::ID ID, CallInst &CI) {
 #define GET_INTRINSIC_VERIFIER
 #include "llvm/Intrinsics.gen"
 #undef GET_INTRINSIC_VERIFIER
+
+  // If the intrinsic takes MDNode arguments, verify that they are either global
+  // or are local to *this* function.
+  for (unsigned i = 0, e = CI.getNumOperands(); i != e; ++i)
+    if (MDNode *MD = dyn_cast<MDNode>(CI.getOperand(i))) {
+      if (!MD->isFunctionLocal()) continue;
+      SmallPtrSet<MDNode *, 32> Visited;
+      VerifyFunctionLocalMetadata(MD, CI.getParent()->getParent(), Visited);
+    }
 
   switch (ID) {
   default:

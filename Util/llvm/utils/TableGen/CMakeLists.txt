@@ -8,6 +8,7 @@ add_executable(tblgen
   CodeGenInstruction.cpp
   CodeGenTarget.cpp
   DAGISelEmitter.cpp
+  DisassemblerEmitter.cpp
   FastISelEmitter.cpp
   InstrEnumEmitter.cpp
   InstrInfoEmitter.cpp
@@ -22,6 +23,8 @@ add_executable(tblgen
   TGValueTypes.cpp
   TableGen.cpp
   TableGenBackend.cpp
+  X86DisassemblerTables.cpp
+  X86RecognizableInstr.cpp
   )
 
 target_link_libraries(tblgen LLVMSupport LLVMSystem)

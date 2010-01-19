@@ -62,8 +62,12 @@ SValuator::CastResult SValuator::EvalCast(SVal val, const GRState *state,
   ASTContext &C = ValMgr.getContext();
 
   // For const casts, just propagate the value.
-  if (C.hasSameUnqualifiedType(castTy, originalTy))
-    return CastResult(state, val);
+  if (!castTy->isVariableArrayType() && !originalTy->isVariableArrayType())
+    if (C.hasSameUnqualifiedType(castTy, originalTy))
+      return CastResult(state, val);
+
+  if (castTy->isIntegerType() && originalTy->isIntegerType())
+    return CastResult(state, EvalCastNL(cast<NonLoc>(val), castTy));
 
   // Check for casts from pointers to integers.
   if (castTy->isIntegerType() && Loc::IsLocType(originalTy))
@@ -72,10 +76,14 @@ SValuator::CastResult SValuator::EvalCast(SVal val, const GRState *state,
   // Check for casts from integers to pointers.
   if (Loc::IsLocType(castTy) && originalTy->isIntegerType()) {
     if (nonloc::LocAsInteger *LV = dyn_cast<nonloc::LocAsInteger>(&val)) {
-      // Just unpackage the lval and return it.
+      if (const MemRegion *R = LV->getLoc().getAsRegion()) {
+        StoreManager &storeMgr = ValMgr.getStateManager().getStoreManager();
+        R = storeMgr.CastRegion(R, castTy);
+        return R ? CastResult(state, loc::MemRegionVal(R))
+                 : CastResult(state, UnknownVal());
+      }
       return CastResult(state, LV->getLoc());
     }
-
     goto DispatchCast;
   }
 
@@ -136,15 +144,12 @@ SValuator::CastResult SValuator::EvalCast(SVal val, const GRState *state,
     // different type.  If the MemRegion* returned is NULL, this expression
     // evaluates to UnknownVal.
     R = storeMgr.CastRegion(R, castTy);
-
-    if (R)
-      return CastResult(state, loc::MemRegionVal(R));
-
-    return CastResult(state, UnknownVal());
+    return R ? CastResult(state, loc::MemRegionVal(R))
+             : CastResult(state, UnknownVal());
   }
 
-  // All other cases.
 DispatchCast:
+  // All other cases.
   return CastResult(state,
                     isa<Loc>(val) ? EvalCastL(cast<Loc>(val), castTy)
                                   : EvalCastNL(cast<NonLoc>(val), castTy));

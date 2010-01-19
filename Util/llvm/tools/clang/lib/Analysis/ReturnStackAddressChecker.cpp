@@ -17,12 +17,13 @@
 #include "clang/Analysis/PathSensitive/GRExprEngine.h"
 #include "clang/Analysis/PathSensitive/BugReporter.h"
 #include "clang/Analysis/PathSensitive/CheckerVisitor.h"
+#include "clang/Basic/SourceManager.h"
 #include "llvm/ADT/SmallString.h"
 
 using namespace clang;
 
 namespace {
-class VISIBILITY_HIDDEN ReturnStackAddressChecker : 
+class ReturnStackAddressChecker : 
     public CheckerVisitor<ReturnStackAddressChecker> {      
   BuiltinBug *BT;
 public:
@@ -53,7 +54,7 @@ void ReturnStackAddressChecker::PreVisitReturnStmt(CheckerContext &C,
   if (!R || !R->hasStackStorage())
     return;  
   
-  ExplodedNode *N = C.GenerateNode(RS, C.getState(), true);
+  ExplodedNode *N = C.GenerateSink();
 
   if (!N)
     return;
@@ -65,6 +66,9 @@ void ReturnStackAddressChecker::PreVisitReturnStmt(CheckerContext &C,
   llvm::SmallString<100> buf;
   llvm::raw_svector_ostream os(buf);
   SourceRange range;
+  
+  // Get the base region, stripping away fields and elements.
+  R = R->getBaseRegion();
   
   // Check if the region is a compound literal.
   if (const CompoundLiteralRegion* CR = dyn_cast<CompoundLiteralRegion>(R)) {    
@@ -83,13 +87,26 @@ void ReturnStackAddressChecker::PreVisitReturnStmt(CheckerContext &C,
        << C.getSourceManager().getInstantiationLineNumber(L)
        << " returned to caller";
   }
-  else {
+  else if (const BlockDataRegion *BR = dyn_cast<BlockDataRegion>(R)) {
+    const BlockDecl *BD = BR->getCodeRegion()->getDecl();
+    SourceLocation L = BD->getLocStart();
+    range = BD->getSourceRange();
+    os << "Address of stack-allocated block declared on line "
+       << C.getSourceManager().getInstantiationLineNumber(L)
+       << " returned to caller";
+  }
+  else if (const VarRegion *VR = dyn_cast<VarRegion>(R)) {
     os << "Address of stack memory associated with local variable '"
-        << R->getString() << "' returned.";
+       << VR->getString() << "' returned";
+    range = VR->getDecl()->getSourceRange();
+  }
+  else {
+    assert(false && "Invalid region in ReturnStackAddressChecker.");
+    return;
   }
 
   RangedBugReport *report = new RangedBugReport(*BT, os.str(), N);
-  report->addRange(RS->getSourceRange());
+  report->addRange(RetE->getSourceRange());
   if (range.isValid())
     report->addRange(range);
   

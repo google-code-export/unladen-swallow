@@ -170,6 +170,7 @@ void PCHStmtWriter::VisitLabelStmt(LabelStmt *S) {
 
 void PCHStmtWriter::VisitIfStmt(IfStmt *S) {
   VisitStmt(S);
+  Writer.AddDeclRef(S->getConditionVariable(), Record);
   Writer.WriteSubStmt(S->getCond());
   Writer.WriteSubStmt(S->getThen());
   Writer.WriteSubStmt(S->getElse());
@@ -180,6 +181,7 @@ void PCHStmtWriter::VisitIfStmt(IfStmt *S) {
 
 void PCHStmtWriter::VisitSwitchStmt(SwitchStmt *S) {
   VisitStmt(S);
+  Writer.AddDeclRef(S->getConditionVariable(), Record);
   Writer.WriteSubStmt(S->getCond());
   Writer.WriteSubStmt(S->getBody());
   Writer.AddSourceLocation(S->getSwitchLoc(), Record);
@@ -191,6 +193,7 @@ void PCHStmtWriter::VisitSwitchStmt(SwitchStmt *S) {
 
 void PCHStmtWriter::VisitWhileStmt(WhileStmt *S) {
   VisitStmt(S);
+  Writer.AddDeclRef(S->getConditionVariable(), Record);
   Writer.WriteSubStmt(S->getCond());
   Writer.WriteSubStmt(S->getBody());
   Writer.AddSourceLocation(S->getWhileLoc(), Record);
@@ -211,6 +214,7 @@ void PCHStmtWriter::VisitForStmt(ForStmt *S) {
   VisitStmt(S);
   Writer.WriteSubStmt(S->getInit());
   Writer.WriteSubStmt(S->getCond());
+  Writer.AddDeclRef(S->getConditionVariable(), Record);
   Writer.WriteSubStmt(S->getInc());
   Writer.WriteSubStmt(S->getBody());
   Writer.AddSourceLocation(S->getForLoc(), Record);
@@ -273,6 +277,7 @@ void PCHStmtWriter::VisitAsmStmt(AsmStmt *S) {
   Writer.AddSourceLocation(S->getRParenLoc(), Record);
   Record.push_back(S->isVolatile());
   Record.push_back(S->isSimple());
+  Record.push_back(S->isMSAsm());
   Writer.WriteSubStmt(S->getAsmString());
 
   // Outputs
@@ -384,7 +389,7 @@ void PCHStmtWriter::VisitSizeOfAlignOfExpr(SizeOfAlignOfExpr *E) {
   VisitExpr(E);
   Record.push_back(E->isSizeOf());
   if (E->isArgumentType())
-    Writer.AddDeclaratorInfo(E->getArgumentTypeInfo(), Record);
+    Writer.AddTypeSourceInfo(E->getArgumentTypeInfo(), Record);
   else {
     Record.push_back(0);
     Writer.WriteSubStmt(E->getArgumentExpr());
@@ -781,7 +786,9 @@ void PCHStmtWriter::VisitCXXOperatorCallExpr(CXXOperatorCallExpr *E) {
 void PCHStmtWriter::VisitCXXConstructExpr(CXXConstructExpr *E) {
   VisitExpr(E);
   Writer.AddDeclRef(E->getConstructor(), Record);
+  Writer.AddSourceLocation(E->getLocation(), Record);
   Record.push_back(E->isElidable());
+  Record.push_back(E->requiresZeroInitialization());
   Record.push_back(E->getNumArgs());
   for (unsigned I = 0, N = E->getNumArgs(); I != N; ++I)
     Writer.WriteSubStmt(E->getArg(I));

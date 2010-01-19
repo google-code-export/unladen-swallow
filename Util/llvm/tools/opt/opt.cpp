@@ -26,10 +26,12 @@
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Support/PassNameParser.h"
 #include "llvm/System/Signals.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/IRReader.h"
 #include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/PluginLoader.h"
+#include "llvm/Support/PrettyStackTrace.h"
 #include "llvm/Support/StandardPasses.h"
 #include "llvm/Support/SystemUtils.h"
 #include "llvm/Support/raw_ostream.h"
@@ -340,12 +342,17 @@ void AddStandardLinkPasses(PassManager &PM) {
 // main for opt
 //
 int main(int argc, char **argv) {
-  llvm_shutdown_obj X;  // Call llvm_shutdown() on exit.
+  sys::PrintStackTraceOnErrorSignal();
+  llvm::PrettyStackTraceProgram X(argc, argv);
+  
+  // Enable debug stream buffering.
+  EnableDebugBuffering = true;
+
+  llvm_shutdown_obj Y;  // Call llvm_shutdown() on exit.
   LLVMContext &Context = getGlobalContext();
   
   cl::ParseCommandLineOptions(argc, argv,
     "llvm .bc -> .bc modular optimizer and analysis printer\n");
-  sys::PrintStackTraceOnErrorSignal();
 
   // Allocate a full target machine description only if necessary.
   // FIXME: The choice of target should be controllable on the command line.

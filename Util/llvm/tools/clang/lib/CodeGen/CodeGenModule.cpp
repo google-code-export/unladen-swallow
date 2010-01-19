@@ -17,10 +17,12 @@
 #include "CGCall.h"
 #include "CGObjCRuntime.h"
 #include "Mangle.h"
+#include "TargetInfo.h"
 #include "clang/CodeGen/CodeGenOptions.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/DeclCXX.h"
+#include "clang/AST/RecordLayout.h"
 #include "clang/Basic/Builtins.h"
 #include "clang/Basic/Diagnostic.h"
 #include "clang/Basic/SourceManager.h"
@@ -29,6 +31,7 @@
 #include "llvm/CallingConv.h"
 #include "llvm/Module.h"
 #include "llvm/Intrinsics.h"
+#include "llvm/LLVMContext.h"
 #include "llvm/Target/TargetData.h"
 #include "llvm/Support/ErrorHandling.h"
 using namespace clang;
@@ -40,8 +43,9 @@ CodeGenModule::CodeGenModule(ASTContext &C, const CodeGenOptions &CGO,
                              Diagnostic &diags)
   : BlockModule(C, M, TD, Types, *this), Context(C),
     Features(C.getLangOptions()), CodeGenOpts(CGO), TheModule(M),
-    TheTargetData(TD), Diags(diags), Types(C, M, TD), MangleCtx(C), 
-    VtableInfo(*this), Runtime(0),
+    TheTargetData(TD), TheTargetCodeGenInfo(0), Diags(diags),
+    Types(C, M, TD, getTargetCodeGenInfo().getABIInfo()),
+    MangleCtx(C), VtableInfo(*this), Runtime(0),
     MemCpyFn(0), MemMoveFn(0), MemSetFn(0), CFConstantStringClassRef(0),
     VMContext(M.getContext()) {
 
@@ -55,7 +59,7 @@ CodeGenModule::CodeGenModule(ASTContext &C, const CodeGenOptions &CGO,
     Runtime = CreateMacObjCRuntime(*this);
 
   // If debug info generation is enabled, create the CGDebugInfo object.
-  DebugInfo = CodeGenOpts.DebugInfo ? new CGDebugInfo(this) : 0;
+  DebugInfo = CodeGenOpts.DebugInfo ? new CGDebugInfo(*this) : 0;
 }
 
 CodeGenModule::~CodeGenModule() {
@@ -64,10 +68,8 @@ CodeGenModule::~CodeGenModule() {
 }
 
 void CodeGenModule::Release() {
-  // We need to call this first because it can add deferred declarations.
-  EmitCXXGlobalInitFunc();
-
   EmitDeferred();
+  EmitCXXGlobalInitFunc();
   if (Runtime)
     if (llvm::Function *ObjCInitFunction = Runtime->ModuleInitFunction())
       AddGlobalCtor(ObjCInitFunction);
@@ -160,19 +162,13 @@ const char *CodeGenModule::getMangledName(const GlobalDecl &GD) {
 /// the unmangled name.
 ///
 const char *CodeGenModule::getMangledName(const NamedDecl *ND) {
-  // In C, functions with no attributes never need to be mangled. Fastpath them.
-  if (!getLangOptions().CPlusPlus && !ND->hasAttrs()) {
+  if (!getMangleContext().shouldMangleDeclName(ND)) {
     assert(ND->getIdentifier() && "Attempt to mangle unnamed decl.");
     return ND->getNameAsCString();
   }
 
   llvm::SmallString<256> Name;
-  llvm::raw_svector_ostream Out(Name);
-  if (!mangleName(getMangleContext(), ND, Out)) {
-    assert(ND->getIdentifier() && "Attempt to mangle unnamed decl.");
-    return ND->getNameAsCString();
-  }
-
+  getMangleContext().mangleName(ND, Name);
   Name += '\0';
   return UniqueMangledName(Name.begin(), Name.end());
 }
@@ -261,9 +257,18 @@ GetLinkageForFunction(ASTContext &Context, const FunctionDecl *FD,
   // The kind of external linkage this function will have, if it is not
   // inline or static.
   CodeGenModule::GVALinkage External = CodeGenModule::GVA_StrongExternal;
-  if (Context.getLangOptions().CPlusPlus &&
-      FD->getTemplateSpecializationKind() == TSK_ImplicitInstantiation)
-    External = CodeGenModule::GVA_TemplateInstantiation;
+  if (Context.getLangOptions().CPlusPlus) {
+    TemplateSpecializationKind TSK = FD->getTemplateSpecializationKind();
+    
+    if (TSK == TSK_ExplicitInstantiationDefinition) {
+      // If a function has been explicitly instantiated, then it should
+      // always have strong external linkage.
+      return CodeGenModule::GVA_StrongExternal;
+    } 
+    
+    if (TSK == TSK_ImplicitInstantiation)
+      External = CodeGenModule::GVA_TemplateInstantiation;
+  }
 
   if (!FD->isInlined())
     return External;
@@ -353,8 +358,12 @@ void CodeGenModule::SetLLVMFunctionAttributesForDefinition(const Decl *D,
   else if (Features.getStackProtectorMode() == LangOptions::SSPReq)
     F->addFnAttr(llvm::Attribute::StackProtectReq);
   
-  if (const AlignedAttr *AA = D->getAttr<AlignedAttr>())
-    F->setAlignment(AA->getAlignment()/8);
+  if (const AlignedAttr *AA = D->getAttr<AlignedAttr>()) {
+    unsigned width = Context.Target.getCharWidth();
+    F->setAlignment(AA->getAlignment() / width);
+    while ((AA = AA->getNext<AlignedAttr>()))
+      F->setAlignment(std::max(F->getAlignment(), AA->getAlignment() / width));
+  }
   // C++ ABI requires 2-byte alignment for member functions.
   if (F->getAlignment() < 2 && isa<CXXMethodDecl>(D))
     F->setAlignment(2);
@@ -369,6 +378,8 @@ void CodeGenModule::SetCommonAttributes(const Decl *D,
 
   if (const SectionAttr *SA = D->getAttr<SectionAttr>())
     GV->setSection(SA->getName());
+
+  getTargetCodeGenInfo().SetTargetAttributes(D, GV, *this);
 }
 
 void CodeGenModule::SetInternalFunctionAttributes(const Decl *D,
@@ -523,12 +534,23 @@ bool CodeGenModule::MayDeferGeneration(const ValueDecl *Global) {
         FD->hasAttr<DestructorAttr>())
       return false;
 
+    // The key function for a class must never be deferred.
+    if (const CXXMethodDecl *MD = dyn_cast<CXXMethodDecl>(Global)) {
+      const CXXRecordDecl *RD = MD->getParent();
+      if (MD->isOutOfLine() && RD->isDynamicClass()) {
+        const CXXMethodDecl *KeyFunction = getContext().getKeyFunction(RD);
+        if (KeyFunction && 
+            KeyFunction->getCanonicalDecl() == MD->getCanonicalDecl())
+          return false;
+      }
+    }
+
     GVALinkage Linkage = GetLinkageForFunction(getContext(), FD, Features);
 
     // static, static inline, always_inline, and extern inline functions can
     // always be deferred.  Normal inline functions can be deferred in C99/C++.
     if (Linkage == GVA_Internal || Linkage == GVA_C99Inline ||
-        Linkage == GVA_CXXInline)
+        Linkage == GVA_CXXInline || Linkage == GVA_TemplateInstantiation)
       return true;
     return false;
   }
@@ -551,7 +573,7 @@ bool CodeGenModule::MayDeferGeneration(const ValueDecl *Global) {
   // cannot be.
   if (VD->isInAnonymousNamespace())
     return true;
-  if (VD->getStorageClass() == VarDecl::Static) {
+  if (VD->getLinkage() == VarDecl::InternalLinkage) {
     // Initializer has side effects?
     if (VD->getInit() && VD->getInit()->HasSideEffects(Context))
       return false;
@@ -577,11 +599,17 @@ void CodeGenModule::EmitGlobal(GlobalDecl GD) {
     const VarDecl *VD = cast<VarDecl>(Global);
     assert(VD->isFileVarDecl() && "Cannot emit local var decl as global.");
 
-    // In C++, if this is marked "extern", defer code generation.
-    if (getLangOptions().CPlusPlus && !VD->getInit() &&
-        (VD->getStorageClass() == VarDecl::Extern ||
-         VD->isExternC()))
-      return;
+    if (getLangOptions().CPlusPlus && !VD->getInit()) {
+      // In C++, if this is marked "extern", defer code generation.
+      if (VD->getStorageClass() == VarDecl::Extern || VD->isExternC())
+        return;
+
+      // If this is a declaration of an explicit specialization of a static
+      // data member in a class template, don't emit it.
+      if (VD->isStaticDataMember() && 
+          VD->getTemplateSpecializationKind() == TSK_ExplicitSpecialization)
+        return;
+    }
 
     // In C, if this isn't a definition, defer code generation.
     if (!getLangOptions().CPlusPlus && !VD->getInit())
@@ -617,15 +645,19 @@ void CodeGenModule::EmitGlobalDefinition(GlobalDecl GD) {
                                  "Generating code for declaration");
   
   if (const CXXMethodDecl *MD = dyn_cast<CXXMethodDecl>(D)) {
-    const CXXRecordDecl *RD = MD->getParent();
-    // We have to convert it to have a record layout.
-    Types.ConvertTagDeclType(RD);
-    const CGRecordLayout &CGLayout = Types.getCGRecordLayout(RD);
-    // A definition of a KeyFunction, generates all the class data, such
-    // as vtable, rtti and the VTT.
-    if (CGLayout.getKeyFunction() == MD)
-      getVtableInfo().GenerateClassData(RD);
+    getVtableInfo().MaybeEmitVtable(GD);
+    if (MD->isVirtual() && MD->isOutOfLine() &&
+        (!isa<CXXDestructorDecl>(D) || GD.getDtorType() != Dtor_Base)) {
+      if (isa<CXXDestructorDecl>(D)) {
+        GlobalDecl CanonGD(cast<CXXDestructorDecl>(D->getCanonicalDecl()),
+                           GD.getDtorType());
+        BuildThunksForVirtual(CanonGD);
+      } else {
+        BuildThunksForVirtual(MD->getCanonicalDecl());
+      }
+    }
   }
+  
   if (const CXXConstructorDecl *CD = dyn_cast<CXXConstructorDecl>(D))
     EmitCXXConstructor(CD, GD.getCtorType());
   else if (const CXXDestructorDecl *DD = dyn_cast<CXXDestructorDecl>(D))
@@ -697,142 +729,19 @@ llvm::Constant *CodeGenModule::GetOrCreateLLVMFunction(const char *MangledName,
     // A called constructor which has no definition or declaration need be
     // synthesized.
     else if (const CXXConstructorDecl *CD = dyn_cast<CXXConstructorDecl>(FD)) {
-      const CXXRecordDecl *ClassDecl =
-        cast<CXXRecordDecl>(CD->getDeclContext());
-      if (CD->isCopyConstructor(getContext()))
-        DeferredCopyConstructorToEmit(D);
-      else if (!ClassDecl->hasUserDeclaredConstructor())
+      if (CD->isImplicit())
+        DeferredDeclsToEmit.push_back(D);
+    } else if (const CXXDestructorDecl *DD = dyn_cast<CXXDestructorDecl>(FD)) {
+      if (DD->isImplicit())
+        DeferredDeclsToEmit.push_back(D);
+    } else if (const CXXMethodDecl *MD = dyn_cast<CXXMethodDecl>(FD)) {
+      if (MD->isCopyAssignment() && MD->isImplicit())
         DeferredDeclsToEmit.push_back(D);
     }
-    else if (isa<CXXDestructorDecl>(FD))
-       DeferredDestructorToEmit(D);
-    else if (const CXXMethodDecl *MD = dyn_cast<CXXMethodDecl>(FD))
-           if (MD->isCopyAssignment())
-             DeferredCopyAssignmentToEmit(D);
   }
 
   return F;
 }
-
-/// Defer definition of copy constructor(s) which need be implicitly defined.
-void CodeGenModule::DeferredCopyConstructorToEmit(GlobalDecl CopyCtorDecl) {
-  const CXXConstructorDecl *CD =
-    cast<CXXConstructorDecl>(CopyCtorDecl.getDecl());
-  const CXXRecordDecl *ClassDecl = cast<CXXRecordDecl>(CD->getDeclContext());
-  if (ClassDecl->hasTrivialCopyConstructor() ||
-      ClassDecl->hasUserDeclaredCopyConstructor())
-    return;
-
-  // First make sure all direct base classes and virtual bases and non-static
-  // data mebers which need to have their copy constructors implicitly defined
-  // are defined. 12.8.p7
-  for (CXXRecordDecl::base_class_const_iterator Base = ClassDecl->bases_begin();
-       Base != ClassDecl->bases_end(); ++Base) {
-    CXXRecordDecl *BaseClassDecl
-      = cast<CXXRecordDecl>(Base->getType()->getAs<RecordType>()->getDecl());
-    if (CXXConstructorDecl *BaseCopyCtor =
-        BaseClassDecl->getCopyConstructor(Context, 0))
-      GetAddrOfCXXConstructor(BaseCopyCtor, Ctor_Complete);
-  }
-
-  for (CXXRecordDecl::field_iterator Field = ClassDecl->field_begin(),
-       FieldEnd = ClassDecl->field_end();
-       Field != FieldEnd; ++Field) {
-    QualType FieldType = Context.getCanonicalType((*Field)->getType());
-    if (const ArrayType *Array = Context.getAsArrayType(FieldType))
-      FieldType = Array->getElementType();
-    if (const RecordType *FieldClassType = FieldType->getAs<RecordType>()) {
-      if ((*Field)->isAnonymousStructOrUnion())
-        continue;
-      CXXRecordDecl *FieldClassDecl
-        = cast<CXXRecordDecl>(FieldClassType->getDecl());
-      if (CXXConstructorDecl *FieldCopyCtor =
-          FieldClassDecl->getCopyConstructor(Context, 0))
-        GetAddrOfCXXConstructor(FieldCopyCtor, Ctor_Complete);
-    }
-  }
-  DeferredDeclsToEmit.push_back(CopyCtorDecl);
-}
-
-/// Defer definition of copy assignments which need be implicitly defined.
-void CodeGenModule::DeferredCopyAssignmentToEmit(GlobalDecl CopyAssignDecl) {
-  const CXXMethodDecl *CD = cast<CXXMethodDecl>(CopyAssignDecl.getDecl());
-  const CXXRecordDecl *ClassDecl = cast<CXXRecordDecl>(CD->getDeclContext());
-
-  if (ClassDecl->hasTrivialCopyAssignment() ||
-      ClassDecl->hasUserDeclaredCopyAssignment())
-    return;
-
-  // First make sure all direct base classes and virtual bases and non-static
-  // data mebers which need to have their copy assignments implicitly defined
-  // are defined. 12.8.p12
-  for (CXXRecordDecl::base_class_const_iterator Base = ClassDecl->bases_begin();
-       Base != ClassDecl->bases_end(); ++Base) {
-    CXXRecordDecl *BaseClassDecl
-      = cast<CXXRecordDecl>(Base->getType()->getAs<RecordType>()->getDecl());
-    const CXXMethodDecl *MD = 0;
-    if (!BaseClassDecl->hasTrivialCopyAssignment() &&
-        !BaseClassDecl->hasUserDeclaredCopyAssignment() &&
-        BaseClassDecl->hasConstCopyAssignment(getContext(), MD))
-      GetAddrOfFunction(MD, 0);
-  }
-
-  for (CXXRecordDecl::field_iterator Field = ClassDecl->field_begin(),
-       FieldEnd = ClassDecl->field_end();
-       Field != FieldEnd; ++Field) {
-    QualType FieldType = Context.getCanonicalType((*Field)->getType());
-    if (const ArrayType *Array = Context.getAsArrayType(FieldType))
-      FieldType = Array->getElementType();
-    if (const RecordType *FieldClassType = FieldType->getAs<RecordType>()) {
-      if ((*Field)->isAnonymousStructOrUnion())
-        continue;
-      CXXRecordDecl *FieldClassDecl
-        = cast<CXXRecordDecl>(FieldClassType->getDecl());
-      const CXXMethodDecl *MD = 0;
-      if (!FieldClassDecl->hasTrivialCopyAssignment() &&
-          !FieldClassDecl->hasUserDeclaredCopyAssignment() &&
-          FieldClassDecl->hasConstCopyAssignment(getContext(), MD))
-          GetAddrOfFunction(MD, 0);
-    }
-  }
-  DeferredDeclsToEmit.push_back(CopyAssignDecl);
-}
-
-void CodeGenModule::DeferredDestructorToEmit(GlobalDecl DtorDecl) {
-  const CXXDestructorDecl *DD = cast<CXXDestructorDecl>(DtorDecl.getDecl());
-  const CXXRecordDecl *ClassDecl = cast<CXXRecordDecl>(DD->getDeclContext());
-  if (ClassDecl->hasTrivialDestructor() ||
-      ClassDecl->hasUserDeclaredDestructor())
-    return;
-
-  for (CXXRecordDecl::base_class_const_iterator Base = ClassDecl->bases_begin();
-       Base != ClassDecl->bases_end(); ++Base) {
-    CXXRecordDecl *BaseClassDecl
-      = cast<CXXRecordDecl>(Base->getType()->getAs<RecordType>()->getDecl());
-    if (const CXXDestructorDecl *BaseDtor =
-          BaseClassDecl->getDestructor(Context))
-      GetAddrOfCXXDestructor(BaseDtor, Dtor_Complete);
-  }
-
-  for (CXXRecordDecl::field_iterator Field = ClassDecl->field_begin(),
-       FieldEnd = ClassDecl->field_end();
-       Field != FieldEnd; ++Field) {
-    QualType FieldType = Context.getCanonicalType((*Field)->getType());
-    if (const ArrayType *Array = Context.getAsArrayType(FieldType))
-      FieldType = Array->getElementType();
-    if (const RecordType *FieldClassType = FieldType->getAs<RecordType>()) {
-      if ((*Field)->isAnonymousStructOrUnion())
-        continue;
-      CXXRecordDecl *FieldClassDecl
-        = cast<CXXRecordDecl>(FieldClassType->getDecl());
-      if (const CXXDestructorDecl *FieldDtor =
-            FieldClassDecl->getDestructor(Context))
-        GetAddrOfCXXDestructor(FieldDtor, Dtor_Complete);
-    }
-  }
-  DeferredDeclsToEmit.push_back(DtorDecl);
-}
-
 
 /// GetAddrOfFunction - Return the address of the given function.  If Ty is
 /// non-null, then this function will use the specified type if it has to
@@ -853,6 +762,17 @@ CodeGenModule::CreateRuntimeFunction(const llvm::FunctionType *FTy,
   // Convert Name to be a uniqued string from the IdentifierInfo table.
   Name = getContext().Idents.get(Name).getNameStart();
   return GetOrCreateLLVMFunction(Name, FTy, GlobalDecl());
+}
+
+static bool DeclIsConstantGlobal(ASTContext &Context, const VarDecl *D) {
+  if (!D->getType().isConstant(Context))
+    return false;
+  if (Context.getLangOptions().CPlusPlus &&
+      Context.getBaseElementType(D->getType())->getAs<RecordType>()) {
+    // FIXME: We should do something fancier here!
+    return false;
+  }
+  return true;
 }
 
 /// GetOrCreateLLVMGlobal - If the specified mangled name is not in the module,
@@ -898,7 +818,7 @@ llvm::Constant *CodeGenModule::GetOrCreateLLVMGlobal(const char *MangledName,
   if (D) {
     // FIXME: This code is overly simple and should be merged with other global
     // handling.
-    GV->setConstant(D->getType().isConstant(Context));
+    GV->setConstant(DeclIsConstantGlobal(Context, D));
 
     // FIXME: Merge with other attribute handling code.
     if (D->getStorageClass() == VarDecl::PrivateExtern)
@@ -959,6 +879,57 @@ void CodeGenModule::EmitTentativeDefinition(const VarDecl *D) {
   EmitGlobalVarDefinition(D);
 }
 
+llvm::GlobalVariable::LinkageTypes 
+CodeGenModule::getVtableLinkage(const CXXRecordDecl *RD) {
+  if (RD->isInAnonymousNamespace() || !RD->hasLinkage())
+    return llvm::GlobalVariable::InternalLinkage;
+
+  if (const CXXMethodDecl *KeyFunction
+                                    = RD->getASTContext().getKeyFunction(RD)) {
+    // If this class has a key function, use that to determine the linkage of
+    // the vtable.
+    const FunctionDecl *Def = 0;
+    if (KeyFunction->getBody(Def))
+      KeyFunction = cast<CXXMethodDecl>(Def);
+    
+    switch (KeyFunction->getTemplateSpecializationKind()) {
+      case TSK_Undeclared:
+      case TSK_ExplicitSpecialization:
+        if (KeyFunction->isInlined())
+          return llvm::GlobalVariable::WeakODRLinkage;
+        
+        return llvm::GlobalVariable::ExternalLinkage;
+        
+      case TSK_ImplicitInstantiation:
+      case TSK_ExplicitInstantiationDefinition:
+        return llvm::GlobalVariable::WeakODRLinkage;
+        
+      case TSK_ExplicitInstantiationDeclaration:
+        // FIXME: Use available_externally linkage. However, this currently
+        // breaks LLVM's build due to undefined symbols.
+        //      return llvm::GlobalVariable::AvailableExternallyLinkage;
+        return llvm::GlobalVariable::WeakODRLinkage;
+    }
+  }
+  
+  switch (RD->getTemplateSpecializationKind()) {
+  case TSK_Undeclared:
+  case TSK_ExplicitSpecialization:
+  case TSK_ImplicitInstantiation:
+  case TSK_ExplicitInstantiationDefinition:
+    return llvm::GlobalVariable::WeakODRLinkage;
+    
+  case TSK_ExplicitInstantiationDeclaration:
+    // FIXME: Use available_externally linkage. However, this currently
+    // breaks LLVM's build due to undefined symbols.
+    //   return llvm::GlobalVariable::AvailableExternallyLinkage;
+    return llvm::GlobalVariable::WeakODRLinkage;
+  }
+  
+  // Silence GCC warning.
+  return llvm::GlobalVariable::WeakODRLinkage;
+}
+
 static CodeGenModule::GVALinkage
 GetLinkageForVariable(ASTContext &Context, const VarDecl *VD) {
   // Everything located semantically within an anonymous namespace is
@@ -975,16 +946,15 @@ GetLinkageForVariable(ASTContext &Context, const VarDecl *VD) {
       return CodeGenModule::GVA_StrongExternal;
       
     case TSK_ExplicitInstantiationDeclaration:
-      llvm::llvm_unreachable("Variable should not be instantiated");
+      llvm_unreachable("Variable should not be instantiated");
       // Fall through to treat this like any other instantiation.
         
     case TSK_ImplicitInstantiation:
       return CodeGenModule::GVA_TemplateInstantiation;
     }
   }
-  
-  // Static variables get internal linkage.
-  if (VD->getStorageClass() == VarDecl::Static)
+
+  if (VD->getLinkage() == VarDecl::InternalLinkage)
     return CodeGenModule::GVA_Internal;
 
   return CodeGenModule::GVA_StrongExternal;
@@ -993,6 +963,7 @@ GetLinkageForVariable(ASTContext &Context, const VarDecl *VD) {
 void CodeGenModule::EmitGlobalVarDefinition(const VarDecl *D) {
   llvm::Constant *Init = 0;
   QualType ASTTy = D->getType();
+  bool NonConstInit = false;
 
   if (D->getInit() == 0) {
     // This is a tentative definition; tentative definitions are
@@ -1012,8 +983,9 @@ void CodeGenModule::EmitGlobalVarDefinition(const VarDecl *D) {
     if (!Init) {
       QualType T = D->getInit()->getType();
       if (getLangOptions().CPlusPlus) {
-        CXXGlobalInits.push_back(D);
+        EmitCXXGlobalVarDeclInitFunc(D);
         Init = EmitNullConstant(T);
+        NonConstInit = true;
       } else {
         ErrorUnsupported(D, "static initializer");
         Init = llvm::UndefValue::get(getTypes().ConvertType(T));
@@ -1074,11 +1046,8 @@ void CodeGenModule::EmitGlobalVarDefinition(const VarDecl *D) {
 
   // If it is safe to mark the global 'constant', do so now.
   GV->setConstant(false);
-  if (D->getType().isConstant(Context)) {
-    // FIXME: In C++, if the variable has a non-trivial ctor/dtor or any mutable
-    // members, it cannot be declared "LLVM const".
+  if (!NonConstInit && DeclIsConstantGlobal(Context, D))
     GV->setConstant(true);
-  }
 
   GV->setAlignment(getContext().getDeclAlignInBytes(D));
 
@@ -1097,7 +1066,7 @@ void CodeGenModule::EmitGlobalVarDefinition(const VarDecl *D) {
       GV->setLinkage(llvm::GlobalVariable::WeakAnyLinkage);
   } else if (Linkage == GVA_TemplateInstantiation)
     GV->setLinkage(llvm::GlobalVariable::WeakAnyLinkage);   
-  else if (!CodeGenOpts.NoCommon &&
+  else if (!getLangOptions().CPlusPlus && !CodeGenOpts.NoCommon &&
            !D->hasExternalStorage() && !D->getInit() &&
            !D->getAttr<SectionAttr>()) {
     GV->setLinkage(llvm::GlobalVariable::CommonLinkage);
@@ -1177,9 +1146,8 @@ static void ReplaceUsesOfNonProtoTypeWithRealFunction(llvm::GlobalValue *Old,
       CI->replaceAllUsesWith(NewCall);
 
     // Copy any custom metadata attached with CI.
-    llvm::MetadataContext &TheMetadata = CI->getContext().getMetadata();
-    TheMetadata.copyMD(CI, NewCall);
-
+    if (llvm::MDNode *DbgNode = CI->getMetadata("dbg"))
+      NewCall->setMetadata("dbg", DbgNode);
     CI->eraseFromParent();
   }
 }
@@ -1358,13 +1326,8 @@ llvm::Value *CodeGenModule::getBuiltinLibFunction(const FunctionDecl *FD,
   if (Context.BuiltinInfo.isLibFunction(BuiltinID))
     Name += 10;
 
-  // Get the type for the builtin.
-  ASTContext::GetBuiltinTypeError Error;
-  QualType Type = Context.GetBuiltinType(BuiltinID, Error);
-  assert(Error == ASTContext::GE_None && "Can't get builtin type");
-
   const llvm::FunctionType *Ty =
-    cast<llvm::FunctionType>(getTypes().ConvertType(Type));
+    cast<llvm::FunctionType>(getTypes().ConvertType(FD->getType()));
 
   // Unique the name through the identifier table.
   Name = getContext().Idents.get(Name).getNameStart();
@@ -1734,6 +1697,10 @@ void CodeGenModule::EmitTopLevelDecl(Decl *D) {
   case Decl::NamespaceAlias:
     break;
   case Decl::CXXConstructor:
+    // Skip function templates
+    if (cast<FunctionDecl>(D)->getDescribedFunctionTemplate())
+      return;
+      
     EmitCXXConstructors(cast<CXXConstructorDecl>(D));
     break;
   case Decl::CXXDestructor:
@@ -1786,14 +1753,13 @@ void CodeGenModule::EmitTopLevelDecl(Decl *D) {
 
   case Decl::FileScopeAsm: {
     FileScopeAsmDecl *AD = cast<FileScopeAsmDecl>(D);
-    std::string AsmString(AD->getAsmString()->getStrData(),
-                          AD->getAsmString()->getByteLength());
+    llvm::StringRef AsmString = AD->getAsmString()->getString();
 
     const std::string &S = getModule().getModuleInlineAsm();
     if (S.empty())
       getModule().setModuleInlineAsm(AsmString);
     else
-      getModule().setModuleInlineAsm(S + '\n' + AsmString);
+      getModule().setModuleInlineAsm(S + '\n' + AsmString.str());
     break;
   }
 

@@ -32,25 +32,6 @@ unsigned Thumb1InstrInfo::getUnindexedOpcode(unsigned Opc) const {
   return 0;
 }
 
-bool
-Thumb1InstrInfo::BlockHasNoFallThrough(const MachineBasicBlock &MBB) const {
-  if (MBB.empty()) return false;
-
-  switch (MBB.back().getOpcode()) {
-  case ARM::tBX_RET:
-  case ARM::tBX_RET_vararg:
-  case ARM::tPOP_RET:
-  case ARM::tB:
-  case ARM::tBRIND:
-  case ARM::tBR_JTr:
-    return true;
-  default:
-    break;
-  }
-
-  return false;
-}
-
 bool Thumb1InstrInfo::copyRegToReg(MachineBasicBlock &MBB,
                                    MachineBasicBlock::iterator I,
                                    unsigned DestReg, unsigned SrcReg,
@@ -199,7 +180,7 @@ restoreCalleeSavedRegisters(MachineBasicBlock &MBB,
   AddDefaultPred(MIB);
   MIB.addReg(0); // No write back.
 
-  bool NumRegs = 0;
+  bool NumRegs = false;
   for (unsigned i = CSI.size(); i != 0; --i) {
     unsigned Reg = CSI[i-1].getReg();
     if (Reg == ARM::LR) {
@@ -211,7 +192,7 @@ restoreCalleeSavedRegisters(MachineBasicBlock &MBB,
       MI = MBB.erase(MI);
     }
     MIB.addReg(Reg, getDefRegState(true));
-    ++NumRegs;
+    NumRegs = true;
   }
 
   // It's illegal to emit pop instruction without operands.

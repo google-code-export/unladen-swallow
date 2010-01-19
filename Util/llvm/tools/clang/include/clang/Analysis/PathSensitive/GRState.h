@@ -33,7 +33,6 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/Allocator.h"
-#include "llvm/Support/Compiler.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <functional>
@@ -41,9 +40,10 @@
 namespace clang {
 
 class GRStateManager;
-class GRTransferFuncs;
+class Checker;
 
-typedef ConstraintManager* (*ConstraintManagerCreator)(GRStateManager&);
+typedef ConstraintManager* (*ConstraintManagerCreator)(GRStateManager&,
+                                                       GRSubEngine&);
 typedef StoreManager* (*StoreManagerCreator)(GRStateManager&);
 
 //===----------------------------------------------------------------------===//
@@ -159,7 +159,6 @@ public:
 
   BasicValueFactory &getBasicVals() const;
   SymbolManager &getSymbolManager() const;
-  GRTransferFuncs &getTransferFuncs() const;
 
   //==---------------------------------------------------------------------==//
   // Constraints on values.
@@ -218,6 +217,7 @@ public:
   ///  for the compound literal and 'BegInit' and 'EndInit' represent an
   ///  array of initializer values.
   const GRState* bindCompoundLiteral(const CompoundLiteralExpr* CL,
+                                     const LocationContext *LC,
                                      SVal V) const;
 
   const GRState *BindExpr(const Stmt *S, SVal V, bool Invalidate = true) const;
@@ -238,7 +238,8 @@ public:
   /// Get the lvalue for a StringLiteral.
   SVal getLValue(const StringLiteral *literal) const;
 
-  SVal getLValue(const CompoundLiteralExpr *literal) const;
+  SVal getLValue(const CompoundLiteralExpr *literal,
+                 const LocationContext *LC) const;
 
   /// Get the lvalue for an ivar reference.
   SVal getLValue(const ObjCIvarDecl *decl, SVal base) const;
@@ -264,8 +265,21 @@ public:
   const llvm::APSInt *getSymVal(SymbolRef sym);
 
   bool scanReachableSymbols(SVal val, SymbolVisitor& visitor) const;
+  
+  bool scanReachableSymbols(const SVal *I, const SVal *E,
+                            SymbolVisitor &visitor) const;
+  
+  bool scanReachableSymbols(const MemRegion * const *I, 
+                            const MemRegion * const *E,
+                            SymbolVisitor &visitor) const;
 
   template <typename CB> CB scanReachableSymbols(SVal val) const;
+  template <typename CB> CB scanReachableSymbols(const SVal *beg,
+                                                 const SVal *end) const;
+  
+  template <typename CB> CB
+  scanReachableSymbols(const MemRegion * const *beg,
+                       const MemRegion * const *end) const;
 
   //==---------------------------------------------------------------------==//
   // Accessing the Generic Data Map (GDM).
@@ -373,9 +387,8 @@ public:
 //===----------------------------------------------------------------------===//
 
 class GRStateManager {
-  friend class GRExprEngine;
   friend class GRState;
-
+  friend class GRExprEngine; // FIXME: Remove.
 private:
   EnvironmentManager                   EnvMgr;
   llvm::OwningPtr<StoreManager>        StoreMgr;
@@ -398,24 +411,20 @@ private:
   ValueManager ValueMgr;
 
   /// Alloc - A BumpPtrAllocator to allocate states.
-  llvm::BumpPtrAllocator& Alloc;
-
-  /// TF - Object that represents a bundle of transfer functions
-  ///  for manipulating and creating SVals.
-  GRTransferFuncs* TF;
+  llvm::BumpPtrAllocator &Alloc;
 
 public:
-
   GRStateManager(ASTContext& Ctx,
                  StoreManagerCreator CreateStoreManager,
                  ConstraintManagerCreator CreateConstraintManager,
-                 llvm::BumpPtrAllocator& alloc)
+                 llvm::BumpPtrAllocator& alloc,
+                 GRSubEngine &subeng)
     : EnvMgr(alloc),
       GDMFactory(alloc),
       ValueMgr(alloc, Ctx, *this),
       Alloc(alloc) {
     StoreMgr.reset((*CreateStoreManager)(*this));
-    ConstraintMgr.reset((*CreateConstraintManager)(*this));
+    ConstraintMgr.reset((*CreateConstraintManager)(*this, subeng));
   }
 
   ~GRStateManager();
@@ -424,8 +433,6 @@ public:
 
   ASTContext &getContext() { return ValueMgr.getContext(); }
   const ASTContext &getContext() const { return ValueMgr.getContext(); }
-
-  GRTransferFuncs& getTransferFuncs() { return *TF; }
 
   BasicValueFactory &getBasicVals() {
     return ValueMgr.getBasicValueFactory();
@@ -597,9 +604,10 @@ inline const GRState *GRState::AssumeInBound(DefinedOrUnknownSVal Idx,
                            cast<DefinedSVal>(UpperBound), Assumption);
 }
 
-inline const GRState *GRState::bindCompoundLiteral(const CompoundLiteralExpr* CL,
-                                            SVal V) const {
-  return getStateManager().StoreMgr->BindCompoundLiteral(this, CL, V);
+inline const GRState *
+GRState::bindCompoundLiteral(const CompoundLiteralExpr* CL,
+                             const LocationContext *LC, SVal V) const {
+  return getStateManager().StoreMgr->BindCompoundLiteral(this, CL, LC, V);
 }
 
 inline const GRState *GRState::bindDecl(const VarRegion* VR, SVal IVal) const {
@@ -627,8 +635,9 @@ inline SVal GRState::getLValue(const StringLiteral *literal) const {
   return getStateManager().StoreMgr->getLValueString(literal);
 }
 
-inline SVal GRState::getLValue(const CompoundLiteralExpr *literal) const {
-  return getStateManager().StoreMgr->getLValueCompoundLiteral(literal);
+inline SVal GRState::getLValue(const CompoundLiteralExpr *literal,
+                               const LocationContext *LC) const {
+  return getStateManager().StoreMgr->getLValueCompoundLiteral(literal, LC);
 }
 
 inline SVal GRState::getLValue(const ObjCIvarDecl *D, SVal Base) const {
@@ -677,10 +686,6 @@ inline SymbolManager &GRState::getSymbolManager() const {
   return getStateManager().getSymbolManager();
 }
 
-inline GRTransferFuncs &GRState::getTransferFuncs() const {
-  return getStateManager().getTransferFuncs();
-}
-
 template<typename T>
 const GRState *GRState::add(typename GRStateTrait<T>::key_type K) const {
   return getStateManager().add<T>(this, K, get_context<T>());
@@ -726,7 +731,21 @@ CB GRState::scanReachableSymbols(SVal val) const {
   scanReachableSymbols(val, cb);
   return cb;
 }
+  
+template <typename CB>
+CB GRState::scanReachableSymbols(const SVal *beg, const SVal *end) const {
+  CB cb(this);
+  scanReachableSymbols(beg, end, cb);
+  return cb;
+}
 
+template <typename CB>
+CB GRState::scanReachableSymbols(const MemRegion * const *beg,
+                                 const MemRegion * const *end) const {
+  CB cb(this);
+  scanReachableSymbols(beg, end, cb);
+  return cb;
+}
 } // end clang namespace
 
 #endif
