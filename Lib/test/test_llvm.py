@@ -2523,13 +2523,13 @@ def foo():
         self.assertEqual(foo.__code__.co_hotness, 0)
         self.assertFalse(foo.__code__.__use_llvm__)
         foo()
-        _llvm.wait_for_jit()
 
         # +1 point each for 1e6 loop iterations.
         hotness = HOTNESS_CALL + HOTNESS_LOOP * 1000000
         self.assertEqual(foo.__code__.co_hotness, hotness)
 
         foo()  # Hot-or-not calculations are done on function-entry.
+        _llvm.wait_for_jit()
         self.assertTrue(foo.__code__.__use_llvm__)
 
     def test_nested_for_loop_hotness(self):
@@ -2607,10 +2607,10 @@ def foo():
 """, optimization_level=None)
         iterations = JIT_SPIN_COUNT
         l = [foo() for _ in xrange(iterations)]
-        _llvm.wait_for_jit()
         self.assertEqual(foo.__code__.co_hotness, iterations * HOTNESS_CALL)
 
         l = map(list, l)
+        _llvm.wait_for_jit()
         self.assertEqual(foo.__code__.co_hotness, iterations * HOTNESS_CALL)
         self.assertEqual(foo.__code__.__use_llvm__, True)
         self.assertEqual(foo.__code__.co_optimization, JIT_OPT_LEVEL)
