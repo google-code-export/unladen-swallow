@@ -4152,8 +4152,23 @@ static int
 mark_called_and_maybe_compile(PyCodeObject *co, PyFrameObject *f)
 {
 	co->co_hotness += 10;
+
+	// f->f_use_llvm is initialized to 0 in PyFrame_New, and we rely on it
+	// being that way so that we can return early to indicate that this
+	// frame should not use native code.
+	assert(f->f_use_llvm == 0 && "f_use_llvm was not false on entry!");
+
 	if (co->co_fatalbailcount >= PY_MAX_FATALBAILCOUNT) {
-		co->co_use_llvm = f->f_use_llvm = 0;
+		co->co_use_llvm = 0;
+		return 0;
+	}
+
+	if (co->co_flags & CO_FDO_GLOBALS &&
+	    (co->co_assumed_globals != f->f_globals ||
+	     co->co_assumed_builtins != f->f_builtins)) {
+		// If there's no way a code object's assumptions about its
+		// globals and/or builtins could be valid, don't even try the
+		// machine code.
 		return 0;
 	}
 
@@ -4170,14 +4185,15 @@ mark_called_and_maybe_compile(PyCodeObject *co, PyFrameObject *f)
 		return -1;
 	case PY_JIT_WHENHOT:
 		if (is_hot)
-			co->co_use_llvm = f->f_use_llvm = 1;
+			co->co_use_llvm = 1;
 		break;
 	case PY_JIT_ALWAYS:
-		co->co_use_llvm = f->f_use_llvm = 1;
+		co->co_use_llvm = 1;
 		break;
 	case PY_JIT_NEVER:
 		break;
 	}
+
 	if (co->co_use_llvm) {
 		if (co->co_llvm_function == NULL) {
 			int target_optimization =
@@ -4200,7 +4216,7 @@ mark_called_and_maybe_compile(PyCodeObject *co, PyFrameObject *f)
 				if (r < 0)  // Error
 					return -1;
 				if (r == 1) {  // Codegen refused
-					co->co_use_llvm = f->f_use_llvm = 0;
+					co->co_use_llvm = 0;
 					return 0;
 				}
 			}
@@ -4217,6 +4233,8 @@ mark_called_and_maybe_compile(PyCodeObject *co, PyFrameObject *f)
 		}
 		PY_LOG_TSC_EVENT(EVAL_COMPILE_END);
 	}
+
+	f->f_use_llvm = co->co_use_llvm;
 	return 0;
 }
 #endif  /* WITH_LLVM */
