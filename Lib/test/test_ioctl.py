@@ -2,6 +2,11 @@ import unittest
 from test.test_support import TestSkipped, run_unittest
 import os, struct
 try:
+    import _llvm
+except ImportError:
+    _llvm = None
+
+try:
     import fcntl, termios
 except ImportError:
     raise TestSkipped("No fcntl or termios module")
@@ -20,6 +25,18 @@ except ImportError:
     pty = None
 
 class IoctlTests(unittest.TestCase):
+
+    def setUp(self):
+        # TODO(rnk): This test doesn't pass with the background thread under -j
+        # always, so we disable the JIT for the duration of the tests.
+        if _llvm:
+            self.orig_jit_control = _llvm.get_jit_control()
+            _llvm.set_jit_control("never")
+
+    def tearDown(self):
+        if _llvm:
+            _llvm.set_jit_control(self.orig_jit_control)
+
     def test_ioctl(self):
         # If this process has been put into the background, TIOCGPGRP returns
         # the session ID instead of the process group id.

@@ -6,6 +6,10 @@ import socket
 import threading
 import sys
 import time
+try:
+    import _llvm
+except ImportError:
+    _llvm = None
 
 from test import test_support
 from test.test_support import TESTFN, run_unittest, unlink
@@ -314,9 +318,15 @@ class DispatcherWithSendTests(unittest.TestCase):
     usepoll = False
 
     def setUp(self):
-        pass
+        # This test is sensitive to random pauses, so we disable the JIT if it
+        # is present.
+        if _llvm:
+            self.orig_jit_control = _llvm.get_jit_control()
+            _llvm.set_jit_control("never")
 
     def tearDown(self):
+        if _llvm:
+            _llvm.set_jit_control(self.orig_jit_control)
         asyncore.close_all()
 
     def test_send(self):
