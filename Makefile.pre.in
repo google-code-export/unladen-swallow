@@ -75,7 +75,7 @@ PY_CFLAGS=	$(CFLAGS) $(CPPFLAGS) $(CFLAGSFORSHARED) -DPy_BUILD_CORE
 PY_CXXFLAGS=	$(CXXFLAGS) $(CPPFLAGS) $(CFLAGSFORSHARED) -DPy_BUILD_CORE -Wno-write-strings
 
 # LLVM integration options
-LLVM_INC_DIR=		@LLVM_INC_DIR@
+LLVM_INC_DIR=		@LLVM_PATH@/include
 LLVM_BIN_DIR=		@LLVM_PATH@/bin
 LLVM_CONFIG=		$(LLVM_BIN_DIR)/llvm-config
 LLVM_CONFIG_CMD=	$(LLVM_CONFIG) jit bitreader backend
@@ -433,13 +433,20 @@ coverage:
 	$(MAKE) clean
 	$(MAKE) all CFLAGS="$(CFLAGS) -O0 -pg -fprofile-arcs -ftest-coverage" LIBS="$(LIBS) -lgcov"
 
-# Only build LLVM if we need to.
-.PHONY: llvm
+# Only build LLVM if we need to.  When BUILD_LLVM is false, this target is a
+# no-op that touches the file "llvm" so that it will always be considered up to
+# date.  When it is true, we want this target to always do recursive make on
+# the in-tree copy of LLVM, so we don't touch the file.  If we reconfigure the
+# project and BUILD_LLVM switches from false to true, this target must be
+# considered out of date regardless of the mtime of the "llvm" file, so we add
+# a dependency on pyconfig.h, which is regenerated every time configure is run.
 ifeq (@BUILD_LLVM@, 1)
-llvm:
+llvm: pyconfig.h
+	-rm -f llvm
 	$(MAKE) -C Util/llvm tools-only ONLY_TOOLS="clang opt llvm-link llvm-dis llvm-config"
 else
-llvm: ;
+llvm: pyconfig.h
+	-touch llvm
 endif
 
 # Declare some of LLVM's build outputs to depend on LLVM.  We only
@@ -473,12 +480,8 @@ sharedmods: $(BUILDPYTHON)
 # Build static library
 # avoid long command lines, same as LIBRARY_OBJS.
 $(LIBRARY): $(LIBRARY_OBJS) $(LLVM_LIB_PATHS)
-	$(AR) cqS $@ Modules/getbuildinfo.o
-	$(AR) cqS $@ $(PARSER_OBJS)
-	$(AR) cqS $@ $(OBJECT_OBJS)
-	$(AR) cqS $@ $(PYTHON_OBJS)
-	$(AR) cqS $@ $(MODULE_OBJS) $(SIGNAL_OBJS)
-	$(AR) cqS $@ $(MODOBJS)
+	-rm -f $@
+	$(AR) cqS $@ $(LIBRARY_OBJS)
 	$(RANLIB) $@
 
 libpython$(VERSION).so: $(LIBRARY_OBJS) $(LLVM_CONFIG)
@@ -1273,7 +1276,7 @@ clean: pycremoval
 	find $(srcdir)/build -name 'fficonfig.h' -exec rm -f {} ';' || true
 	find $(srcdir)/build -name 'fficonfig.py' -exec rm -f {} ';' || true
 	rm -f Python/llvm_inline_functions.bc
-	rm -f sysconfig
+	rm -f sysconfig llvm  # Our empty targets.
 	rm -f $(BCLIBRARY)
 	-rm -f Lib/lib2to3/*Grammar*.pickle
 
