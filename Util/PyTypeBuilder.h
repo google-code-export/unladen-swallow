@@ -34,7 +34,7 @@ class PyTypeBuilder : public llvm::TypeBuilder<T, false> {};
 //       PyTypeBuilder<PySomethingType>::get(context),
 //       offsetof(PySomethingType, field));
 // It will only work if PySomethingType is a POD type.
-PyAPI_FUNC(unsigned int)
+unsigned int
 _PyTypeBuilder_GetFieldIndexFromOffset(
     const llvm::StructType *type, size_t offset);
 
