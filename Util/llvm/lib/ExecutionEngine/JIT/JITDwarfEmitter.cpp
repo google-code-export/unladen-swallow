@@ -175,7 +175,6 @@ struct KeyInfo {
   static inline unsigned getTombstoneKey() { return -2U; }
   static unsigned getHashValue(const unsigned &Key) { return Key; }
   static bool isEqual(unsigned LHS, unsigned RHS) { return LHS == RHS; }
-  static bool isPod() { return true; }
 };
 
 /// ActionEntry - Structure describing an entry in the actions table.
@@ -430,13 +429,12 @@ unsigned char* JITDwarfEmitter::EmitExceptionTable(MachineFunction* MF,
 
     // Asm->EOL("Region start");
 
-    if (!S.EndLabel) {
+    if (!S.EndLabel)
       EndLabelPtr = (intptr_t)EndFunction;
-      JCE->emitInt32((intptr_t)EndFunction - BeginLabelPtr);
-    } else {
+    else
       EndLabelPtr = JCE->getLabelAddress(S.EndLabel);
-      JCE->emitInt32(EndLabelPtr - BeginLabelPtr);
-    }
+
+    JCE->emitInt32(EndLabelPtr - BeginLabelPtr);
     //Asm->EOL("Region length");
 
     if (!S.PadLabel) {

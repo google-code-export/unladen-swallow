@@ -289,7 +289,9 @@ struct ObjCMethodList {
 /// ObjCProtocolDecl, and ObjCImplDecl.
 ///
 class ObjCContainerDecl : public NamedDecl, public DeclContext {
-  SourceLocation AtEndLoc; // marks the end of the method container.
+  // These two locations in the range mark the end of the method container.
+  // The first points to the '@' token, and the second to the 'end' token.
+  SourceRange AtEnd;
 public:
 
   ObjCContainerDecl(Kind DK, DeclContext *DC, SourceLocation L,
@@ -351,11 +353,15 @@ public:
                                             IdentifierInfo *PropertyId) const;
 
   // Marks the end of the container.
-  SourceLocation getAtEndLoc() const { return AtEndLoc; }
-  void setAtEndLoc(SourceLocation L) { AtEndLoc = L; }
+  SourceRange getAtEndRange() const {
+    return AtEnd;
+  }
+  void setAtEndRange(SourceRange atEnd) {
+    AtEnd = atEnd;
+  }
 
   virtual SourceRange getSourceRange() const {
-    return SourceRange(getLocation(), getAtEndLoc());
+    return SourceRange(getLocation(), getAtEndRange().getEnd());
   }
 
   // Implement isa/cast/dyncast/etc.
@@ -527,7 +533,7 @@ public:
   // Location information, modeled after the Stmt API.
   SourceLocation getLocStart() const { return getLocation(); } // '@'interface
   SourceLocation getLocEnd() const { return EndLoc; }
-  void setLocEnd(SourceLocation LE) { EndLoc = LE; };
+  void setLocEnd(SourceLocation LE) { EndLoc = LE; }
 
   void setClassLoc(SourceLocation Loc) { ClassLoc = Loc; }
   SourceLocation getClassLoc() const { return ClassLoc; }
@@ -578,14 +584,14 @@ public:
 
 private:
   ObjCIvarDecl(DeclContext *DC, SourceLocation L, IdentifierInfo *Id,
-               QualType T, DeclaratorInfo *DInfo, AccessControl ac, Expr *BW)
-    : FieldDecl(ObjCIvar, DC, L, Id, T, DInfo, BW, /*Mutable=*/false),
+               QualType T, TypeSourceInfo *TInfo, AccessControl ac, Expr *BW)
+    : FieldDecl(ObjCIvar, DC, L, Id, T, TInfo, BW, /*Mutable=*/false),
       DeclAccess(ac) {}
 
 public:
   static ObjCIvarDecl *Create(ASTContext &C, DeclContext *DC, SourceLocation L,
                               IdentifierInfo *Id, QualType T,
-                              DeclaratorInfo *DInfo,
+                              TypeSourceInfo *TInfo,
                               AccessControl ac, Expr *BW = NULL);
 
   void setAccessControl(AccessControl ac) { DeclAccess = ac; }
@@ -612,7 +618,7 @@ private:
   ObjCAtDefsFieldDecl(DeclContext *DC, SourceLocation L, IdentifierInfo *Id,
                       QualType T, Expr *BW)
     : FieldDecl(ObjCAtDefsField, DC, L, Id, T,
-                /*DInfo=*/0, // FIXME: Do ObjCAtDefs have declarators ?
+                /*TInfo=*/0, // FIXME: Do ObjCAtDefs have declarators ?
                 BW, /*Mutable=*/false) {}
 
 public:
@@ -707,7 +713,7 @@ public:
   // Location information, modeled after the Stmt API.
   SourceLocation getLocStart() const { return getLocation(); } // '@'protocol
   SourceLocation getLocEnd() const { return EndLoc; }
-  void setLocEnd(SourceLocation LE) { EndLoc = LE; };
+  void setLocEnd(SourceLocation LE) { EndLoc = LE; }
 
   static bool classof(const Decl *D) { return D->getKind() == ObjCProtocol; }
   static bool classof(const ObjCProtocolDecl *D) { return true; }
@@ -871,7 +877,7 @@ public:
   // Location information, modeled after the Stmt API.
   SourceLocation getLocStart() const { return getLocation(); } // '@'interface
   SourceLocation getLocEnd() const { return EndLoc; }
-  void setLocEnd(SourceLocation LE) { EndLoc = LE; };
+  void setLocEnd(SourceLocation LE) { EndLoc = LE; }
 
   static bool classof(const Decl *D) { return D->getKind() == ObjCCategory; }
   static bool classof(const ObjCCategoryDecl *D) { return true; }

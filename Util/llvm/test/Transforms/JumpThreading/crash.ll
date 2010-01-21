@@ -192,3 +192,45 @@ bb61:
   ret void
 }
 
+
+; PR5640
+define fastcc void @test6(i1 %tmp, i1 %tmp1) nounwind ssp {
+entry:
+  br i1 %tmp, label %bb12, label %bb14
+
+bb12:           
+  br label %bb14
+
+bb14:           
+  %A = phi i1 [ %A, %bb13 ],  [ true, %bb12 ], [%tmp1, %entry]
+  br label %bb13
+
+bb13:                                            
+  br i1 %A, label %bb14, label %bb61
+
+
+bb61:                                            
+  ret void
+}
+
+
+; PR5698
+define void @test7(i32 %x) {
+tailrecurse:
+  switch i32 %x, label %return [
+    i32 2, label %bb2
+    i32 3, label %bb
+  ]
+
+bb:         
+  switch i32 %x, label %return [
+    i32 2, label %bb2
+    i32 3, label %tailrecurse
+  ]
+
+bb2:        
+  ret void
+
+return:     
+  ret void
+}

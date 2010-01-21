@@ -27,6 +27,40 @@ namespace clang {
   class Declarator;
   struct TemplateIdAnnotation;
   
+/// CXXScopeSpec - Represents a C++ nested-name-specifier or a global scope
+/// specifier.
+class CXXScopeSpec {
+  SourceRange Range;
+  void *ScopeRep;
+
+public:
+  CXXScopeSpec() : Range(), ScopeRep() { }
+
+  const SourceRange &getRange() const { return Range; }
+  void setRange(const SourceRange &R) { Range = R; }
+  void setBeginLoc(SourceLocation Loc) { Range.setBegin(Loc); }
+  void setEndLoc(SourceLocation Loc) { Range.setEnd(Loc); }
+  SourceLocation getBeginLoc() const { return Range.getBegin(); }
+  SourceLocation getEndLoc() const { return Range.getEnd(); }
+
+  ActionBase::CXXScopeTy *getScopeRep() const { return ScopeRep; }
+  void setScopeRep(ActionBase::CXXScopeTy *S) { ScopeRep = S; }
+
+  bool isEmpty() const { return !Range.isValid(); }
+  bool isNotEmpty() const { return !isEmpty(); }
+
+  /// isInvalid - An error occured during parsing of the scope specifier.
+  bool isInvalid() const { return isNotEmpty() && ScopeRep == 0; }
+
+  /// isSet - A scope specifier was resolved to a valid C++ scope.
+  bool isSet() const { return ScopeRep != 0; }
+
+  void clear() {
+    Range = SourceRange();
+    ScopeRep = 0;
+  }
+};
+
 /// DeclSpec - This class captures information about "declaration specifiers",
 /// which encompasses storage-class-specifiers, type-specifiers,
 /// type-qualifiers, and function-specifiers.
@@ -143,6 +177,9 @@ private:
   // attributes.
   AttributeList *AttrList;
 
+  // Scope specifier for the type spec, if applicable.
+  CXXScopeSpec TypeScope;
+
   // List of protocol qualifiers for objective-c classes.  Used for
   // protocol-qualified interfaces "NString<foo>" and protocol-qualified id
   // "id<foo>".
@@ -157,6 +194,7 @@ private:
 
   SourceLocation StorageClassSpecLoc, SCS_threadLoc;
   SourceLocation TSWLoc, TSCLoc, TSSLoc, TSTLoc;
+  SourceRange TypeofParensRange;
   SourceLocation TQ_constLoc, TQ_restrictLoc, TQ_volatileLoc;
   SourceLocation FS_inlineLoc, FS_virtualLoc, FS_explicitLoc;
   SourceLocation FriendLoc, ConstexprLoc;
@@ -211,12 +249,17 @@ public:
   TST getTypeSpecType() const { return (TST)TypeSpecType; }
   bool isTypeSpecOwned() const { return TypeSpecOwned; }
   void *getTypeRep() const { return TypeRep; }
+  CXXScopeSpec &getTypeSpecScope() { return TypeScope; }
+  const CXXScopeSpec &getTypeSpecScope() const { return TypeScope; }
 
   const SourceRange &getSourceRange() const { return Range; }
   SourceLocation getTypeSpecWidthLoc() const { return TSWLoc; }
   SourceLocation getTypeSpecComplexLoc() const { return TSCLoc; }
   SourceLocation getTypeSpecSignLoc() const { return TSSLoc; }
   SourceLocation getTypeSpecTypeLoc() const { return TSTLoc; }
+
+  SourceRange getTypeofParensRange() const { return TypeofParensRange; }
+  void setTypeofParensRange(SourceRange range) { TypeofParensRange = range; }
 
   /// getSpecifierName - Turn a type-specifier-type into a string like "_Bool"
   /// or "union".
@@ -436,40 +479,6 @@ private:
   IdentifierInfo *SetterName;    // setter name of NULL if no setter
 };
 
-/// CXXScopeSpec - Represents a C++ nested-name-specifier or a global scope
-/// specifier.
-class CXXScopeSpec {
-  SourceRange Range;
-  void *ScopeRep;
-
-public:
-  CXXScopeSpec() : Range(), ScopeRep() { }
-
-  const SourceRange &getRange() const { return Range; }
-  void setRange(const SourceRange &R) { Range = R; }
-  void setBeginLoc(SourceLocation Loc) { Range.setBegin(Loc); }
-  void setEndLoc(SourceLocation Loc) { Range.setEnd(Loc); }
-  SourceLocation getBeginLoc() const { return Range.getBegin(); }
-  SourceLocation getEndLoc() const { return Range.getEnd(); }
-
-  ActionBase::CXXScopeTy *getScopeRep() const { return ScopeRep; }
-  void setScopeRep(ActionBase::CXXScopeTy *S) { ScopeRep = S; }
-
-  bool isEmpty() const { return !Range.isValid(); }
-  bool isNotEmpty() const { return !isEmpty(); }
-
-  /// isInvalid - An error occured during parsing of the scope specifier.
-  bool isInvalid() const { return isNotEmpty() && ScopeRep == 0; }
-
-  /// isSet - A scope specifier was resolved to a valid C++ scope.
-  bool isSet() const { return ScopeRep != 0; }
-
-  void clear() {
-    Range = SourceRange();
-    ScopeRep = 0;
-  }
-};
-
 /// \brief Represents a C++ unqualified-id that has been parsed. 
 class UnqualifiedId {
 private:
@@ -484,8 +493,12 @@ public:
     IK_OperatorFunctionId,
     /// \brief A conversion function name, e.g., operator int.
     IK_ConversionFunctionId,
+    /// \brief A user-defined literal name, e.g., operator "" _i.
+    IK_LiteralOperatorId,
     /// \brief A constructor name.
     IK_ConstructorName,
+    /// \brief A constructor named via a template-id.
+    IK_ConstructorTemplateId,
     /// \brief A destructor name.
     IK_DestructorName,
     /// \brief A template-id, e.g., f<int>.
@@ -495,7 +508,8 @@ public:
   /// \brief Anonymous union that holds extra data associated with the
   /// parsed unqualified-id.
   union {
-    /// \brief When Kind == IK_Identifier, the parsed identifier.
+    /// \brief When Kind == IK_Identifier, the parsed identifier, or when Kind
+    /// == IK_UserLiteralId, the identifier suffix.
     IdentifierInfo *Identifier;
     
     /// \brief When Kind == IK_OperatorFunctionId, the overloaded operator
@@ -526,8 +540,9 @@ public:
     /// class-name.
     ActionBase::TypeTy *DestructorName;
     
-    /// \brief When Kind == IK_TemplateId, the template-id annotation that
-    /// contains the template name and template arguments.
+    /// \brief When Kind == IK_TemplateId or IK_ConstructorTemplateId,
+    /// the template-id annotation that contains the template name and
+    /// template arguments.
     TemplateIdAnnotation *TemplateId;
   };
   
@@ -607,6 +622,22 @@ public:
     EndLocation = EndLoc;
     ConversionFunctionId = Ty;
   }
+
+  /// \brief Specific that this unqualified-id was parsed as a
+  /// literal-operator-id.
+  ///
+  /// \param Id the parsed identifier.
+  ///
+  /// \param OpLoc the location of the 'operator' keyword.
+  ///
+  /// \param IdLoc the location of the identifier.
+  void setLiteralOperatorId(const IdentifierInfo *Id, SourceLocation OpLoc,
+                              SourceLocation IdLoc) {
+    Kind = IK_LiteralOperatorId;
+    Identifier = const_cast<IdentifierInfo *>(Id);
+    StartLocation = OpLoc;
+    EndLocation = IdLoc;
+  }
   
   /// \brief Specify that this unqualified-id was parsed as a constructor name.
   ///
@@ -623,6 +654,14 @@ public:
     EndLocation = EndLoc;
     ConstructorName = ClassType;
   }
+
+  /// \brief Specify that this unqualified-id was parsed as a
+  /// template-id that names a constructor.
+  ///
+  /// \param TemplateId the template-id annotation that describes the parsed
+  /// template-id. This UnqualifiedId instance will take ownership of the
+  /// \p TemplateId and will free it on destruction.
+  void setConstructorTemplateId(TemplateIdAnnotation *TemplateId);
 
   /// \brief Specify that this unqualified-id was parsed as a destructor name.
   ///
@@ -971,7 +1010,7 @@ struct DeclaratorChunk {
 /// stack, not objects that are allocated in large quantities on the heap.
 class Declarator {
 public:
-   enum TheContext {
+  enum TheContext {
     FileContext,         // File scope declaration.
     PrototypeContext,    // Within a function prototype.
     KNRTypeListContext,  // K&R type definition list for formals.

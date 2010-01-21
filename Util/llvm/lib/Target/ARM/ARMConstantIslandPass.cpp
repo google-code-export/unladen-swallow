@@ -221,43 +221,8 @@ namespace {
     unsigned GetOffsetOf(MachineInstr *MI) const;
     void dumpBBs();
     void verify(MachineFunction &MF);
-    void verifySizes(MachineFunction &MF);
   };
   char ARMConstantIslands::ID = 0;
-}
-
-// verifySizes - Recalculate BB sizes from scratch and validate that the result
-// matches the values we've been using.
-void ARMConstantIslands::verifySizes(MachineFunction &MF) {
-  unsigned Offset = 0;
-  for (MachineFunction::iterator MBBI = MF.begin(), E = MF.end();
-       MBBI != E; ++MBBI) {
-    MachineBasicBlock &MBB = *MBBI;
-    unsigned MBBSize = 0;
-    for (MachineBasicBlock::iterator I = MBB.begin(), E = MBB.end();
-         I != E; ++I) {
-      // Add instruction size to MBBSize.
-      MBBSize += TII->GetInstSizeInBytes(I);
-    }
-    // In thumb mode, if this block is a constpool island, we may need padding
-    // so it's aligned on 4 byte boundary.
-    if (isThumb &&
-        !MBB.empty() &&
-        MBB.begin()->getOpcode() == ARM::CONSTPOOL_ENTRY &&
-        ((Offset%4) != 0 || HasInlineAsm))
-      MBBSize += 2;
-    Offset += MBBSize;
-
-    DEBUG(errs() << "block #" << MBB.getNumber() << ": "
-          << MBBSize << " bytes (expecting " << BBSizes[MBB.getNumber()]
-          << (MBB.begin()->getOpcode() == ARM::CONSTPOOL_ENTRY ?
-              " CONSTANTPOOL" : "") <<  ")\n");
-#ifndef NDEBUG
-    if (MBBSize != BBSizes[MBB.getNumber()])
-      MBB.dump();
-#endif
-    assert (MBBSize == BBSizes[MBB.getNumber()] && "block size mismatch!");
-  }
 }
 
 /// verify - check BBOffsets, BBSizes, alignment of islands
@@ -279,12 +244,15 @@ void ARMConstantIslands::verify(MachineFunction &MF) {
              (BBOffsets[MBBId]%4 != 0 && BBSizes[MBBId]%4 != 0));
     }
   }
-#endif
   for (unsigned i = 0, e = CPUsers.size(); i != e; ++i) {
     CPUser &U = CPUsers[i];
     unsigned UserOffset = GetOffsetOf(U.MI) + (isThumb ? 4 : 8);
-    assert (CPEIsInRange(U.MI, UserOffset, U.CPEMI, U.MaxDisp, U.NegOk, true));
+    unsigned CPEOffset  = GetOffsetOf(U.CPEMI);
+    unsigned Disp = UserOffset < CPEOffset ? CPEOffset - UserOffset :
+      UserOffset - CPEOffset;
+    assert(Disp <= U.MaxDisp || "Constant pool entry out of range!");
   }
+#endif
 }
 
 /// print block size and offset information - debugging
@@ -392,7 +360,6 @@ bool ARMConstantIslands::runOnMachineFunction(MachineFunction &MF) {
 
   // After a while, this might be made debug-only, but it is not expensive.
   verify(MF);
-  verifySizes(MF);
 
   // If LR has been forced spilled and no far jumps (i.e. BL) has been issued.
   // Undo the spill / restore of LR if possible.
@@ -451,10 +418,10 @@ void ARMConstantIslands::DoInitialPlacement(MachineFunction &MF,
 static bool BBHasFallthrough(MachineBasicBlock *MBB) {
   // Get the next machine basic block in the function.
   MachineFunction::iterator MBBI = MBB;
-  if (next(MBBI) == MBB->getParent()->end())  // Can't fall off end of function.
+  if (llvm::next(MBBI) == MBB->getParent()->end())  // Can't fall off end of function.
     return false;
 
-  MachineBasicBlock *NextBB = next(MBBI);
+  MachineBasicBlock *NextBB = llvm::next(MBBI);
   for (MachineBasicBlock::succ_iterator I = MBB->succ_begin(),
        E = MBB->succ_end(); I != E; ++I)
     if (*I == NextBB)
@@ -793,7 +760,7 @@ MachineBasicBlock *ARMConstantIslands::SplitBlockBeforeInstr(MachineInstr *MI) {
                      CompareMBBNumbers);
   MachineBasicBlock* WaterBB = *IP;
   if (WaterBB == OrigBB)
-    WaterList.insert(next(IP), NewBB);
+    WaterList.insert(llvm::next(IP), NewBB);
   else
     WaterList.insert(IP, OrigBB);
   NewWaterList.insert(OrigBB);
@@ -920,7 +887,7 @@ static bool BBIsJumpedOver(MachineBasicBlock *MBB) {
 
 void ARMConstantIslands::AdjustBBOffsetsAfter(MachineBasicBlock *BB,
                                               int delta) {
-  MachineFunction::iterator MBBI = BB; MBBI = next(MBBI);
+  MachineFunction::iterator MBBI = BB; MBBI = llvm::next(MBBI);
   for(unsigned i = BB->getNumber()+1, e = BB->getParent()->getNumBlockIDs();
       i < e; ++i) {
     BBOffsets[i] += delta;
@@ -962,7 +929,7 @@ void ARMConstantIslands::AdjustBBOffsetsAfter(MachineBasicBlock *BB,
       if (delta==0)
         return;
     }
-    MBBI = next(MBBI);
+    MBBI = llvm::next(MBBI);
   }
 }
 
@@ -1129,7 +1096,7 @@ void ARMConstantIslands::CreateNewWater(unsigned CPUserIndex,
     DEBUG(errs() << "Split at end of block\n");
     if (&UserMBB->back() == UserMI)
       assert(BBHasFallthrough(UserMBB) && "Expected a fallthrough BB!");
-    NewMBB = next(MachineFunction::iterator(UserMBB));
+    NewMBB = llvm::next(MachineFunction::iterator(UserMBB));
     // Add an unconditional branch from UserMBB to fallthrough block.
     // Record it for branch lengthening; this new branch will not get out of
     // range, but if the preceding conditional branch is out of range, the
@@ -1177,7 +1144,7 @@ void ARMConstantIslands::CreateNewWater(unsigned CPUserIndex,
     for (unsigned Offset = UserOffset+TII->GetInstSizeInBytes(UserMI);
          Offset < BaseInsertOffset;
          Offset += TII->GetInstSizeInBytes(MI),
-            MI = next(MI)) {
+            MI = llvm::next(MI)) {
       if (CPUIndex < CPUsers.size() && CPUsers[CPUIndex].MI == MI) {
         CPUser &U = CPUsers[CPUIndex];
         if (!OffsetIsInRange(Offset, EndInsertOffset,
@@ -1237,7 +1204,7 @@ bool ARMConstantIslands::HandleConstantPoolUser(MachineFunction &MF,
       NewWaterList.insert(NewIsland);
     }
     // The new CPE goes before the following block (NewMBB).
-    NewMBB = next(MachineFunction::iterator(WaterBB));
+    NewMBB = llvm::next(MachineFunction::iterator(WaterBB));
 
   } else {
     // No water found.
@@ -1439,7 +1406,7 @@ ARMConstantIslands::FixUpConditionalBr(MachineFunction &MF, ImmBranch &Br) {
 
   NumCBrFixed++;
   if (BMI != MI) {
-    if (next(MachineBasicBlock::iterator(MI)) == prior(MBB->end()) &&
+    if (llvm::next(MachineBasicBlock::iterator(MI)) == prior(MBB->end()) &&
         BMI->getOpcode() == Br.UncondBr) {
       // Last MI in the BB is an unconditional branch. Can we simply invert the
       // condition and swap destinations:
@@ -1466,12 +1433,12 @@ ARMConstantIslands::FixUpConditionalBr(MachineFunction &MF, ImmBranch &Br) {
     // branch to the destination.
     int delta = TII->GetInstSizeInBytes(&MBB->back());
     BBSizes[MBB->getNumber()] -= delta;
-    MachineBasicBlock* SplitBB = next(MachineFunction::iterator(MBB));
+    MachineBasicBlock* SplitBB = llvm::next(MachineFunction::iterator(MBB));
     AdjustBBOffsetsAfter(SplitBB, -delta);
     MBB->back().eraseFromParent();
     // BBOffsets[SplitBB] is wrong temporarily, fixed below
   }
-  MachineBasicBlock *NextBB = next(MachineFunction::iterator(MBB));
+  MachineBasicBlock *NextBB = llvm::next(MachineFunction::iterator(MBB));
 
   DEBUG(errs() << "  Insert B to BB#" << DestBB->getNumber()
                << " also invert condition and change dest. to BB#"

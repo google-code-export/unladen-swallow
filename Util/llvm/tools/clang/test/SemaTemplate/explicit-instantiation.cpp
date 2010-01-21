@@ -1,4 +1,4 @@
-// RUN: clang-cc -fsyntax-only -verify %s
+// RUN: %clang_cc1 -fsyntax-only -verify %s
 
 template void *; // expected-error{{expected unqualified-id}}
 
@@ -25,8 +25,8 @@ T X0<T>::value; // expected-error{{no matching constructor}}
 
 template int X0<int>::value;
 
-struct NotDefaultConstructible {
-  NotDefaultConstructible(int);
+struct NotDefaultConstructible { // expected-note{{candidate constructor (the implicit copy constructor)}}
+  NotDefaultConstructible(int); // expected-note{{candidate constructor}}
 };
 
 template NotDefaultConstructible X0<NotDefaultConstructible>::value; // expected-note{{instantiation}}

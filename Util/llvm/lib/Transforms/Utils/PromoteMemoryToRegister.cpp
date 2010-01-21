@@ -23,7 +23,6 @@
 #include "llvm/Function.h"
 #include "llvm/Instructions.h"
 #include "llvm/IntrinsicInst.h"
-#include "llvm/LLVMContext.h"
 #include "llvm/Analysis/Dominators.h"
 #include "llvm/Analysis/AliasSetTracker.h"
 #include "llvm/ADT/DenseMap.h"
@@ -56,7 +55,6 @@ struct DenseMapInfo<std::pair<BasicBlock*, unsigned> > {
   static bool isEqual(const EltTy &LHS, const EltTy &RHS) {
     return LHS == RHS;
   }
-  static bool isPod() { return true; }
 };
 }
 
@@ -103,7 +101,7 @@ namespace {
   public:
     typedef std::vector<Value *> ValVector;
     
-    RenamePassData() {}
+    RenamePassData() : BB(NULL), Pred(NULL), Values() {}
     RenamePassData(BasicBlock *B, BasicBlock *P,
                    const ValVector &V) : BB(B), Pred(P), Values(V) {}
     BasicBlock *BB;
@@ -180,8 +178,6 @@ namespace {
     ///
     AliasSetTracker *AST;
     
-    LLVMContext &Context;
-
     /// AllocaLookup - Reverse mapping of Allocas.
     ///
     std::map<AllocaInst*, unsigned>  AllocaLookup;
@@ -212,9 +208,8 @@ namespace {
     DenseMap<const BasicBlock*, unsigned> BBNumPreds;
   public:
     PromoteMem2Reg(const std::vector<AllocaInst*> &A, DominatorTree &dt,
-                   DominanceFrontier &df, AliasSetTracker *ast,
-                   LLVMContext &C)
-      : Allocas(A), DT(dt), DF(df), AST(ast), Context(C) {}
+                   DominanceFrontier &df, AliasSetTracker *ast)
+      : Allocas(A), DT(dt), DF(df), AST(ast) {}
 
     void run();
 
@@ -453,13 +448,13 @@ void PromoteMem2Reg::run() {
   //
   std::vector<RenamePassData> RenamePassWorkList;
   RenamePassWorkList.push_back(RenamePassData(F.begin(), 0, Values));
-  while (!RenamePassWorkList.empty()) {
+  do {
     RenamePassData RPD;
     RPD.swap(RenamePassWorkList.back());
     RenamePassWorkList.pop_back();
     // RenamePass may add new worklist entries.
     RenamePass(RPD.BB, RPD.Pred, RPD.Values, RenamePassWorkList);
-  }
+  } while (!RenamePassWorkList.empty());
   
   // The renamer uses the Visited set to avoid infinite loops.  Clear it now.
   Visited.clear();
@@ -1003,9 +998,9 @@ NextIteration:
 ///
 void llvm::PromoteMemToReg(const std::vector<AllocaInst*> &Allocas,
                            DominatorTree &DT, DominanceFrontier &DF,
-                           LLVMContext &Context, AliasSetTracker *AST) {
+                           AliasSetTracker *AST) {
   // If there is nothing to do, bail out...
   if (Allocas.empty()) return;
 
-  PromoteMem2Reg(Allocas, DT, DF, AST, Context).run();
+  PromoteMem2Reg(Allocas, DT, DF, AST).run();
 }

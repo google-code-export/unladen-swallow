@@ -12,13 +12,13 @@
 
 #include "Sema.h"
 #include "TreeTransform.h"
+#include "Lookup.h"
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/DeclTemplate.h"
 #include "clang/Parse/DeclSpec.h"
 #include "clang/Basic/LangOptions.h"
-#include "llvm/Support/Compiler.h"
 
 using namespace clang;
 
@@ -491,7 +491,7 @@ bool Sema::isSFINAEContext() const {
 // Template Instantiation for Types
 //===----------------------------------------------------------------------===/
 namespace {
-  class VISIBILITY_HIDDEN TemplateInstantiator
+  class TemplateInstantiator
     : public TreeTransform<TemplateInstantiator> {
     const MultiLevelTemplateArgumentList &TemplateArgs;
     SourceLocation Loc;
@@ -544,7 +544,7 @@ namespace {
     /// \brief Rebuild the exception declaration and register the declaration
     /// as an instantiated local.
     VarDecl *RebuildExceptionDecl(VarDecl *ExceptionDecl, QualType T,
-                                  DeclaratorInfo *Declarator,
+                                  TypeSourceInfo *Declarator,
                                   IdentifierInfo *Name,
                                   SourceLocation Loc, SourceRange TypeRange);
 
@@ -552,13 +552,9 @@ namespace {
     /// elaborated type.
     QualType RebuildElaboratedType(QualType T, ElaboratedType::TagKind Tag);
 
-    Sema::OwningExprResult TransformPredefinedExpr(PredefinedExpr *E,
-                                                   bool isAddressOfOperand);
-    Sema::OwningExprResult TransformDeclRefExpr(DeclRefExpr *E,
-                                                bool isAddressOfOperand);
-
-    Sema::OwningExprResult TransformCXXDefaultArgExpr(CXXDefaultArgExpr *E,
-                                                      bool isAddressOfOperand);
+    Sema::OwningExprResult TransformPredefinedExpr(PredefinedExpr *E);
+    Sema::OwningExprResult TransformDeclRefExpr(DeclRefExpr *E);
+    Sema::OwningExprResult TransformCXXDefaultArgExpr(CXXDefaultArgExpr *E);
 
     /// \brief Transforms a template type parameter type by performing
     /// substitution of the corresponding template type argument.
@@ -632,7 +628,7 @@ TemplateInstantiator::TransformFirstQualifierInScope(NamedDecl *D,
 VarDecl *
 TemplateInstantiator::RebuildExceptionDecl(VarDecl *ExceptionDecl,
                                            QualType T,
-                                           DeclaratorInfo *Declarator,
+                                           TypeSourceInfo *Declarator,
                                            IdentifierInfo *Name,
                                            SourceLocation Loc,
                                            SourceRange TypeRange) {
@@ -670,8 +666,7 @@ TemplateInstantiator::RebuildElaboratedType(QualType T,
 }
 
 Sema::OwningExprResult 
-TemplateInstantiator::TransformPredefinedExpr(PredefinedExpr *E,
-                                              bool isAddressOfOperand) {
+TemplateInstantiator::TransformPredefinedExpr(PredefinedExpr *E) {
   if (!E->isTypeDependent())
     return SemaRef.Owned(E->Retain());
 
@@ -694,8 +689,7 @@ TemplateInstantiator::TransformPredefinedExpr(PredefinedExpr *E,
 }
 
 Sema::OwningExprResult
-TemplateInstantiator::TransformDeclRefExpr(DeclRefExpr *E,
-                                           bool isAddressOfOperand) {
+TemplateInstantiator::TransformDeclRefExpr(DeclRefExpr *E) {
   // FIXME: Clean this up a bit
   NamedDecl *D = E->getDecl();
   if (NonTypeTemplateParmDecl *NTTP = dyn_cast<NonTypeTemplateParmDecl>(D)) {
@@ -743,7 +737,6 @@ TemplateInstantiator::TransformDeclRefExpr(DeclRefExpr *E,
               = SemaRef.BuildDeclRefExpr(VD, 
                                          VD->getType().getNonReferenceType(), 
                                          E->getLocation(), 
-                                         /*FIXME:*/false, /*FIXME:*/false,
                                          &SS);
             if (RefExpr.isInvalid())
               return SemaRef.ExprError();
@@ -755,8 +748,7 @@ TemplateInstantiator::TransformDeclRefExpr(DeclRefExpr *E,
         }
 
         return SemaRef.BuildDeclRefExpr(VD, VD->getType().getNonReferenceType(),
-                                        E->getLocation(),
-                                        /*FIXME:*/false, /*FIXME:*/false);
+                                        E->getLocation());
       }
 
       assert(Arg.getKind() == TemplateArgument::Integral);
@@ -784,75 +776,17 @@ TemplateInstantiator::TransformDeclRefExpr(DeclRefExpr *E,
     // FindInstantiatedDecl will find it in the local instantiation scope.
   }
 
-  NamedDecl *InstD = SemaRef.FindInstantiatedDecl(D, TemplateArgs);
-  if (!InstD)
-    return SemaRef.ExprError();
-
-  // Flatten using declarations into their shadow declarations.
-  if (isa<UsingDecl>(InstD)) {
-    UsingDecl *UD = cast<UsingDecl>(InstD);
-
-    bool HasNonFunction = false;
-
-    llvm::SmallVector<NamedDecl*, 8> Decls;
-    for (UsingDecl::shadow_iterator I = UD->shadow_begin(),
-                                    E = UD->shadow_end(); I != E; ++I) {
-      NamedDecl *TD = (*I)->getTargetDecl();
-      if (!TD->isFunctionOrFunctionTemplate())
-        HasNonFunction = true;
-
-      Decls.push_back(TD);
-    }
-
-    if (Decls.empty())
-      return SemaRef.ExprError();
-
-    if (Decls.size() == 1)
-      InstD = Decls[0];
-    else if (!HasNonFunction) {
-      OverloadedFunctionDecl *OFD
-        = OverloadedFunctionDecl::Create(SemaRef.Context,
-                                         UD->getDeclContext(),
-                                         UD->getDeclName());
-      for (llvm::SmallVectorImpl<NamedDecl*>::iterator I = Decls.begin(),
-                                                E = Decls.end(); I != E; ++I)
-        if (isa<FunctionDecl>(*I))
-          OFD->addOverload(cast<FunctionDecl>(*I));
-        else
-          OFD->addOverload(cast<FunctionTemplateDecl>(*I));
-
-      InstD = OFD;
-    } else {
-      // FIXME
-      assert(false && "using declaration resolved to mixed set");
-      return SemaRef.ExprError();
-    }
-  }
-
-  CXXScopeSpec SS;
-  NestedNameSpecifier *Qualifier = 0;
-  if (E->getQualifier()) {
-    Qualifier = TransformNestedNameSpecifier(E->getQualifier(),
-                                             E->getQualifierRange());
-    if (!Qualifier)
-      return SemaRef.ExprError();
-    
-    SS.setScopeRep(Qualifier);
-    SS.setRange(E->getQualifierRange());
-  }
-  
-  return SemaRef.BuildDeclarationNameExpr(E->getLocation(), InstD,
-                                          /*FIXME:*/false,
-                                          &SS,
-                                          isAddressOfOperand);
+  return TreeTransform<TemplateInstantiator>::TransformDeclRefExpr(E);
 }
 
 Sema::OwningExprResult TemplateInstantiator::TransformCXXDefaultArgExpr(
-    CXXDefaultArgExpr *E, bool isAddressOfOperand) {
+    CXXDefaultArgExpr *E) {
   assert(!cast<FunctionDecl>(E->getParam()->getDeclContext())->
              getDescribedFunctionTemplate() &&
          "Default arg expressions are never formed in dependent cases.");
-  return SemaRef.Owned(E->Retain());
+  return SemaRef.BuildCXXDefaultArgExpr(E->getUsedLocation(),
+                           cast<FunctionDecl>(E->getParam()->getDeclContext()), 
+                                        E->getParam());
 }
 
 
@@ -933,7 +867,7 @@ TemplateInstantiator::TransformTemplateTypeParmType(TypeLocBuilder &TLB,
 ///
 /// \returns If the instantiation succeeds, the instantiated
 /// type. Otherwise, produces diagnostics and returns a NULL type.
-DeclaratorInfo *Sema::SubstType(DeclaratorInfo *T,
+TypeSourceInfo *Sema::SubstType(TypeSourceInfo *T,
                                 const MultiLevelTemplateArgumentList &Args,
                                 SourceLocation Loc,
                                 DeclarationName Entity) {
@@ -980,6 +914,13 @@ Sema::SubstBaseSpecifiers(CXXRecordDecl *Instantiation,
          Base = Pattern->bases_begin(), BaseEnd = Pattern->bases_end();
        Base != BaseEnd; ++Base) {
     if (!Base->getType()->isDependentType()) {
+      const CXXRecordDecl *BaseDecl =
+        cast<CXXRecordDecl>(Base->getType()->getAs<RecordType>()->getDecl());
+      
+      // Make sure to set the attributes from the base.
+      SetClassDeclAttributesFromBase(Instantiation, BaseDecl, 
+                                     Base->isVirtual());
+      
       InstantiatedBases.push_back(new (Context) CXXBaseSpecifier(*Base));
       continue;
     }
@@ -1097,12 +1038,10 @@ Sema::InstantiateClass(SourceLocation PointOfInstantiation,
        Member != MemberEnd; ++Member) {
     Decl *NewMember = SubstDecl(*Member, Instantiation, TemplateArgs);
     if (NewMember) {
-      if (NewMember->isInvalidDecl()) {
-        Invalid = true;
-      } else if (FieldDecl *Field = dyn_cast<FieldDecl>(NewMember))
+      if (FieldDecl *Field = dyn_cast<FieldDecl>(NewMember))
         Fields.push_back(DeclPtrTy::make(Field));
-      else if (UsingDecl *UD = dyn_cast<UsingDecl>(NewMember))
-        Instantiation->addDecl(UD);
+      else if (NewMember->isInvalidDecl())
+        Invalid = true;
     } else {
       // FIXME: Eventually, a NULL return will mean that one of the
       // instantiations was a semantic disaster, and we'll want to set Invalid =
@@ -1114,15 +1053,19 @@ Sema::InstantiateClass(SourceLocation PointOfInstantiation,
   ActOnFields(0, Instantiation->getLocation(), DeclPtrTy::make(Instantiation),
               Fields.data(), Fields.size(), SourceLocation(), SourceLocation(),
               0);
+  CheckCompletedCXXClass(Instantiation);
   if (Instantiation->isInvalidDecl())
     Invalid = true;
   
-  // Add any implicitly-declared members that we might need.
-  if (!Invalid)
-    AddImplicitlyDeclaredMembersToClass(Instantiation);
-
   // Exit the scope of this instantiation.
   CurContext = PreviousContext;
+
+  // If this is a polymorphic C++ class without a key function, we'll
+  // have to mark all of the virtual members to allow emission of a vtable
+  // in this translation unit.
+  if (Instantiation->isDynamicClass() && !Context.getKeyFunction(Instantiation))
+      ClassesWithUnmarkedVirtualMembers.push_back(std::make_pair(Instantiation,
+                                                       PointOfInstantiation));
 
   if (!Invalid)
     Consumer.HandleTagDeclDefinition(Instantiation);

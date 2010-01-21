@@ -414,12 +414,13 @@ namespace ISD {
     /// X = FP_EXTEND(Y) - Extend a smaller FP type into a larger FP type.
     FP_EXTEND,
 
-    // BIT_CONVERT - Theis operator converts between integer and FP values, as
-    // if one was stored to memory as integer and the other was loaded from the
-    // same address (or equivalently for vector format conversions, etc).  The
-    // source and result are required to have the same bit size (e.g.
-    // f32 <-> i32).  This can also be used for int-to-int or fp-to-fp
-    // conversions, but that is a noop, deleted by getNode().
+    // BIT_CONVERT - This operator converts between integer, vector and FP
+    // values, as if the value was stored to memory with one type and loaded
+    // from the same address with the other type (or equivalently for vector
+    // format conversions, etc).  The source and result are required to have
+    // the same bit size (e.g.  f32 <-> i32).  This can also be used for
+    // int-to-int or fp-to-fp conversions, but that is a noop, deleted by
+    // getNode().
     BIT_CONVERT,
 
     // CONVERT_RNDSAT - This operator is used to support various conversions
@@ -494,10 +495,9 @@ namespace ISD {
     //   Operand #last: Optional, an incoming flag.
     INLINEASM,
 
-    // DBG_LABEL, EH_LABEL - Represents a label in mid basic block used to track
+    // EH_LABEL - Represents a label in mid basic block used to track
     // locations needed for debug and exception handling tables.  These nodes
     // take a chain as input and return a chain.
-    DBG_LABEL,
     EH_LABEL,
 
     // STACKSAVE - STACKSAVE has one operand, an input chain.  It produces a
@@ -545,18 +545,6 @@ namespace ISD {
 
     // HANDLENODE node - Used as a handle for various purposes.
     HANDLENODE,
-
-    // DBG_STOPPOINT - This node is used to represent a source location for
-    // debug info.  It takes token chain as input, and carries a line number,
-    // column number, and a pointer to a CompileUnit object identifying
-    // the containing compilation unit.  It produces a token chain as output.
-    DBG_STOPPOINT,
-
-    // DEBUG_LOC - This node is used to represent source line information
-    // embedded in the code.  It takes a token chain as input, then a line
-    // number, then a column then a file id (provided by MachineModuleInfo.) It
-    // produces a token chain as output.
-    DEBUG_LOC,
 
     // TRAMPOLINE - This corresponds to the init_trampoline intrinsic.
     // It takes as input a token chain, the pointer to the trampoline,
@@ -635,10 +623,6 @@ namespace ISD {
   /// ISD::SCALAR_TO_VECTOR node or a BUILD_VECTOR node where only the low
   /// element is not an undef.
   bool isScalarToVector(const SDNode *N);
-
-  /// isDebugLabel - Return true if the specified node represents a debug
-  /// label (i.e. ISD::DBG_LABEL or TargetInstrInfo::DBG_LABEL node).
-  bool isDebugLabel(const SDNode *N);
 
   //===--------------------------------------------------------------------===//
   /// MemIndexedMode enum - This enum defines the load / store indexed
@@ -908,8 +892,9 @@ template<> struct DenseMapInfo<SDValue> {
   static bool isEqual(const SDValue &LHS, const SDValue &RHS) {
     return LHS == RHS;
   }
-  static bool isPod() { return true; }
 };
+template <> struct isPodLike<SDValue> { static const bool value = true; };
+
 
 /// simplify_type specializations - Allow casting operators to work directly on
 /// SDValues as if they were SDNode*'s.
@@ -1112,7 +1097,7 @@ public:
   /// hasOneUse - Return true if there is exactly one use of this node.
   ///
   bool hasOneUse() const {
-    return !use_empty() && next(use_begin()) == use_end();
+    return !use_empty() && llvm::next(use_begin()) == use_end();
   }
 
   /// use_size - Return the number of uses of this node. This method takes
@@ -1243,7 +1228,7 @@ public:
   SDVTList getVTList() const {
     SDVTList X = { ValueList, NumValues };
     return X;
-  };
+  }
 
   /// getFlaggedNode - If this node has a flag operand, return the node
   /// to which the flag operand points. Otherwise return NULL.
@@ -2004,37 +1989,18 @@ public:
   }
 };
 
-class DbgStopPointSDNode : public SDNode {
-  SDUse Chain;
-  unsigned Line;
-  unsigned Column;
-  MDNode *CU;
-  friend class SelectionDAG;
-  DbgStopPointSDNode(SDValue ch, unsigned l, unsigned c,
-                     MDNode *cu)
-    : SDNode(ISD::DBG_STOPPOINT, DebugLoc::getUnknownLoc(),
-      getSDVTList(MVT::Other)), Line(l), Column(c), CU(cu) {
-    InitOperands(&Chain, ch);
-  }
-public:
-  unsigned getLine() const { return Line; }
-  unsigned getColumn() const { return Column; }
-  MDNode *getCompileUnit() const { return CU; }
-
-  static bool classof(const DbgStopPointSDNode *) { return true; }
-  static bool classof(const SDNode *N) {
-    return N->getOpcode() == ISD::DBG_STOPPOINT;
-  }
-};
-
 class BlockAddressSDNode : public SDNode {
   BlockAddress *BA;
+  unsigned char TargetFlags;
   friend class SelectionDAG;
-  BlockAddressSDNode(unsigned NodeTy, DebugLoc dl, EVT VT, BlockAddress *ba)
-    : SDNode(NodeTy, dl, getSDVTList(VT)), BA(ba) {
+  BlockAddressSDNode(unsigned NodeTy, EVT VT, BlockAddress *ba,
+                     unsigned char Flags)
+    : SDNode(NodeTy, DebugLoc::getUnknownLoc(), getSDVTList(VT)),
+             BA(ba), TargetFlags(Flags) {
   }
 public:
   BlockAddress *getBlockAddress() const { return BA; }
+  unsigned char getTargetFlags() const { return TargetFlags; }
 
   static bool classof(const BlockAddressSDNode *) { return true; }
   static bool classof(const SDNode *N) {
@@ -2056,8 +2022,7 @@ public:
 
   static bool classof(const LabelSDNode *) { return true; }
   static bool classof(const SDNode *N) {
-    return N->getOpcode() == ISD::DBG_LABEL ||
-           N->getOpcode() == ISD::EH_LABEL;
+    return N->getOpcode() == ISD::EH_LABEL;
   }
 };
 
@@ -2433,6 +2398,11 @@ public:
   }
   SDNodeIterator operator++(int) { // Postincrement
     SDNodeIterator tmp = *this; ++*this; return tmp;
+  }
+  size_t operator-(SDNodeIterator Other) const {
+    assert(Node == Other.Node &&
+           "Cannot compare iterators of two different nodes!");
+    return Operand - Other.Operand;
   }
 
   static SDNodeIterator begin(SDNode *N) { return SDNodeIterator(N, 0); }

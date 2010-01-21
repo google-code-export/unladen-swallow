@@ -110,7 +110,7 @@ void Constant::destroyConstantImpl() {
     Value *V = use_back();
 #ifndef NDEBUG      // Only in -g mode...
     if (!isa<Constant>(V)) {
-      errs() << "While deleting: " << *this
+      dbgs() << "While deleting: " << *this
              << "\n\nUse still stuck around after Def is destroyed: "
              << *V << "\n\n";
     }
@@ -196,6 +196,24 @@ Constant::PossibleRelocationsTy Constant::getRelocationInfo() const {
   
   if (const BlockAddress *BA = dyn_cast<BlockAddress>(this))
     return BA->getFunction()->getRelocationInfo();
+  
+  // While raw uses of blockaddress need to be relocated, differences between
+  // two of them don't when they are for labels in the same function.  This is a
+  // common idiom when creating a table for the indirect goto extension, so we
+  // handle it efficiently here.
+  if (const ConstantExpr *CE = dyn_cast<ConstantExpr>(this))
+    if (CE->getOpcode() == Instruction::Sub) {
+      ConstantExpr *LHS = dyn_cast<ConstantExpr>(CE->getOperand(0));
+      ConstantExpr *RHS = dyn_cast<ConstantExpr>(CE->getOperand(1));
+      if (LHS && RHS &&
+          LHS->getOpcode() == Instruction::PtrToInt &&
+          RHS->getOpcode() == Instruction::PtrToInt &&
+          isa<BlockAddress>(LHS->getOperand(0)) &&
+          isa<BlockAddress>(RHS->getOperand(0)) &&
+          cast<BlockAddress>(LHS->getOperand(0))->getFunction() ==
+            cast<BlockAddress>(RHS->getOperand(0))->getFunction())
+        return NoRelocation;
+    }
   
   PossibleRelocationsTy Result = NoRelocation;
   for (unsigned i = 0, e = getNumOperands(); i != e; ++i)
@@ -481,15 +499,12 @@ Constant *ConstantArray::get(const ArrayType *Ty,
   // If this is an all-zero array, return a ConstantAggregateZero object
   if (!V.empty()) {
     Constant *C = V[0];
-    if (!C->isNullValue()) {
-      // Implicitly locked.
+    if (!C->isNullValue())
       return pImpl->ArrayConstants.getOrCreate(Ty, V);
-    }
+    
     for (unsigned i = 1, e = V.size(); i != e; ++i)
-      if (V[i] != C) {
-        // Implicitly locked.
+      if (V[i] != C)
         return pImpl->ArrayConstants.getOrCreate(Ty, V);
-      }
   }
   
   return ConstantAggregateZero::get(Ty);
@@ -550,7 +565,6 @@ Constant* ConstantStruct::get(const StructType* T,
   // Create a ConstantAggregateZero value if all elements are zeros...
   for (unsigned i = 0, e = V.size(); i != e; ++i)
     if (!V[i]->isNullValue())
-      // Implicitly locked.
       return pImpl->StructConstants.getOrCreate(T, V);
 
   return ConstantAggregateZero::get(T);
@@ -613,7 +627,6 @@ Constant* ConstantVector::get(const VectorType* T,
   if (isUndef)
     return UndefValue::get(T);
     
-  // Implicitly locked.
   return pImpl->VectorConstants.getOrCreate(T, V);
 }
 
@@ -627,6 +640,12 @@ Constant* ConstantVector::get(Constant* const* Vals, unsigned NumVals) {
   return get(std::vector<Constant*>(Vals, Vals+NumVals));
 }
 
+Constant* ConstantExpr::getNSWNeg(Constant* C) {
+  assert(C->getType()->isIntOrIntVector() &&
+         "Cannot NEG a nonintegral value!");
+  return getNSWSub(ConstantFP::getZeroValueForNegation(C->getType()), C);
+}
+
 Constant* ConstantExpr::getNSWAdd(Constant* C1, Constant* C2) {
   return getTy(C1->getType(), Instruction::Add, C1, C2,
                OverflowingBinaryOperator::NoSignedWrap);
@@ -634,6 +653,11 @@ Constant* ConstantExpr::getNSWAdd(Constant* C1, Constant* C2) {
 
 Constant* ConstantExpr::getNSWSub(Constant* C1, Constant* C2) {
   return getTy(C1->getType(), Instruction::Sub, C1, C2,
+               OverflowingBinaryOperator::NoSignedWrap);
+}
+
+Constant* ConstantExpr::getNSWMul(Constant* C1, Constant* C2) {
+  return getTy(C1->getType(), Instruction::Mul, C1, C2,
                OverflowingBinaryOperator::NoSignedWrap);
 }
 
@@ -752,14 +776,14 @@ ConstantExpr::getWithOperandReplaced(unsigned OpNo, Constant *Op) const {
         ConstantExpr::getGetElementPtr(Op, &Ops[0], Ops.size());
     Ops[OpNo-1] = Op;
     return cast<GEPOperator>(this)->isInBounds() ?
-      ConstantExpr::getInBoundsGetElementPtr(getOperand(0), &Ops[0], Ops.size()) :
+      ConstantExpr::getInBoundsGetElementPtr(getOperand(0), &Ops[0],Ops.size()):
       ConstantExpr::getGetElementPtr(getOperand(0), &Ops[0], Ops.size());
   }
   default:
     assert(getNumOperands() == 2 && "Must be binary operator?");
     Op0 = (OpNo == 0) ? Op : getOperand(0);
     Op1 = (OpNo == 1) ? Op : getOperand(1);
-    return ConstantExpr::get(getOpcode(), Op0, Op1, SubclassData);
+    return ConstantExpr::get(getOpcode(), Op0, Op1, SubclassOptionalData);
   }
 }
 
@@ -809,7 +833,7 @@ getWithOperands(Constant* const *Ops, unsigned NumOps) const {
     return ConstantExpr::getCompare(getPredicate(), Ops[0], Ops[1]);
   default:
     assert(getNumOperands() == 2 && "Must be binary operator?");
-    return ConstantExpr::get(getOpcode(), Ops[0], Ops[1], SubclassData);
+    return ConstantExpr::get(getOpcode(), Ops[0], Ops[1], SubclassOptionalData);
   }
 }
 
@@ -883,14 +907,12 @@ ConstantAggregateZero* ConstantAggregateZero::get(const Type* Ty) {
          "Cannot create an aggregate zero of non-aggregate type!");
   
   LLVMContextImpl *pImpl = Ty->getContext().pImpl;
-  // Implicitly locked.
   return pImpl->AggZeroConstants.getOrCreate(Ty, 0);
 }
 
 /// destroyConstant - Remove the constant from the constant table...
 ///
 void ConstantAggregateZero::destroyConstant() {
-  // Implicitly locked.
   getType()->getContext().pImpl->AggZeroConstants.remove(this);
   destroyConstantImpl();
 }
@@ -898,7 +920,6 @@ void ConstantAggregateZero::destroyConstant() {
 /// destroyConstant - Remove the constant from the constant table...
 ///
 void ConstantArray::destroyConstant() {
-  // Implicitly locked.
   getType()->getContext().pImpl->ArrayConstants.remove(this);
   destroyConstantImpl();
 }
@@ -907,7 +928,7 @@ void ConstantArray::destroyConstant() {
 /// if the elements of the array are all ConstantInt's.
 bool ConstantArray::isString() const {
   // Check the element type for i8...
-  if (getType()->getElementType() != Type::getInt8Ty(getContext()))
+  if (!getType()->getElementType()->isInteger(8))
     return false;
   // Check the elements to make sure they are all integers, not constant
   // expressions.
@@ -922,7 +943,7 @@ bool ConstantArray::isString() const {
 /// null bytes except its terminator.
 bool ConstantArray::isCString() const {
   // Check the element type for i8...
-  if (getType()->getElementType() != Type::getInt8Ty(getContext()))
+  if (!getType()->getElementType()->isInteger(8))
     return false;
 
   // Last element must be a null.
@@ -963,7 +984,6 @@ namespace llvm {
 // destroyConstant - Remove the constant from the constant table...
 //
 void ConstantStruct::destroyConstant() {
-  // Implicitly locked.
   getType()->getContext().pImpl->StructConstants.remove(this);
   destroyConstantImpl();
 }
@@ -971,7 +991,6 @@ void ConstantStruct::destroyConstant() {
 // destroyConstant - Remove the constant from the constant table...
 //
 void ConstantVector::destroyConstant() {
-  // Implicitly locked.
   getType()->getContext().pImpl->VectorConstants.remove(this);
   destroyConstantImpl();
 }
@@ -1007,14 +1026,12 @@ Constant *ConstantVector::getSplatValue() {
 //
 
 ConstantPointerNull *ConstantPointerNull::get(const PointerType *Ty) {
-  // Implicitly locked.
   return Ty->getContext().pImpl->NullPtrConstants.getOrCreate(Ty, 0);
 }
 
 // destroyConstant - Remove the constant from the constant table...
 //
 void ConstantPointerNull::destroyConstant() {
-  // Implicitly locked.
   getType()->getContext().pImpl->NullPtrConstants.remove(this);
   destroyConstantImpl();
 }
@@ -1126,7 +1143,6 @@ static inline Constant *getFoldedCast(
   std::vector<Constant*> argVec(1, C);
   ExprMapKeyType Key(opc, argVec);
   
-  // Implicitly locked.
   return pImpl->ExprConstants.getOrCreate(Ty, Key);
 }
  
@@ -1372,8 +1388,6 @@ Constant *ConstantExpr::getTy(const Type *ReqTy, unsigned Opcode,
   ExprMapKeyType Key(Opcode, argVec, 0, Flags);
   
   LLVMContextImpl *pImpl = ReqTy->getContext().pImpl;
-  
-  // Implicitly locked.
   return pImpl->ExprConstants.getOrCreate(ReqTy, Key);
 }
 
@@ -1524,8 +1538,6 @@ Constant *ConstantExpr::getSelectTy(const Type *ReqTy, Constant *C,
   ExprMapKeyType Key(Instruction::Select, argVec);
   
   LLVMContextImpl *pImpl = ReqTy->getContext().pImpl;
-  
-  // Implicitly locked.
   return pImpl->ExprConstants.getOrCreate(ReqTy, Key);
 }
 
@@ -1553,14 +1565,12 @@ Constant *ConstantExpr::getGetElementPtrTy(const Type *ReqTy, Constant *C,
   const ExprMapKeyType Key(Instruction::GetElementPtr, ArgVec);
 
   LLVMContextImpl *pImpl = ReqTy->getContext().pImpl;
-
-  // Implicitly locked.
   return pImpl->ExprConstants.getOrCreate(ReqTy, Key);
 }
 
 Constant *ConstantExpr::getInBoundsGetElementPtrTy(const Type *ReqTy,
                                                    Constant *C,
-                                                   Value* const *Idxs,
+                                                   Value *const *Idxs,
                                                    unsigned NumIdx) {
   assert(GetElementPtrInst::getIndexedType(C->getType(), Idxs,
                                            Idxs+NumIdx) ==
@@ -1584,8 +1594,6 @@ Constant *ConstantExpr::getInBoundsGetElementPtrTy(const Type *ReqTy,
                            GEPOperator::IsInBounds);
 
   LLVMContextImpl *pImpl = ReqTy->getContext().pImpl;
-
-  // Implicitly locked.
   return pImpl->ExprConstants.getOrCreate(ReqTy, Key);
 }
 
@@ -1639,8 +1647,6 @@ ConstantExpr::getICmp(unsigned short pred, Constant* LHS, Constant* RHS) {
   const ExprMapKeyType Key(Instruction::ICmp, ArgVec, pred);
 
   LLVMContextImpl *pImpl = LHS->getType()->getContext().pImpl;
-
-  // Implicitly locked.
   return
       pImpl->ExprConstants.getOrCreate(Type::getInt1Ty(LHS->getContext()), Key);
 }
@@ -1662,8 +1668,6 @@ ConstantExpr::getFCmp(unsigned short pred, Constant* LHS, Constant* RHS) {
   const ExprMapKeyType Key(Instruction::FCmp, ArgVec, pred);
   
   LLVMContextImpl *pImpl = LHS->getType()->getContext().pImpl;
-  
-  // Implicitly locked.
   return
       pImpl->ExprConstants.getOrCreate(Type::getInt1Ty(LHS->getContext()), Key);
 }
@@ -1672,22 +1676,20 @@ Constant *ConstantExpr::getExtractElementTy(const Type *ReqTy, Constant *Val,
                                             Constant *Idx) {
   if (Constant *FC = ConstantFoldExtractElementInstruction(
                                                 ReqTy->getContext(), Val, Idx))
-    return FC;          // Fold a few common cases...
+    return FC;          // Fold a few common cases.
   // Look up the constant in the table first to ensure uniqueness
   std::vector<Constant*> ArgVec(1, Val);
   ArgVec.push_back(Idx);
   const ExprMapKeyType Key(Instruction::ExtractElement,ArgVec);
   
   LLVMContextImpl *pImpl = ReqTy->getContext().pImpl;
-  
-  // Implicitly locked.
   return pImpl->ExprConstants.getOrCreate(ReqTy, Key);
 }
 
 Constant *ConstantExpr::getExtractElement(Constant *Val, Constant *Idx) {
   assert(isa<VectorType>(Val->getType()) &&
          "Tried to create extractelement operation on non-vector type!");
-  assert(Idx->getType() == Type::getInt32Ty(Val->getContext()) &&
+  assert(Idx->getType()->isInteger(32) &&
          "Extractelement index must be i32 type!");
   return getExtractElementTy(cast<VectorType>(Val->getType())->getElementType(),
                              Val, Idx);
@@ -1697,7 +1699,7 @@ Constant *ConstantExpr::getInsertElementTy(const Type *ReqTy, Constant *Val,
                                            Constant *Elt, Constant *Idx) {
   if (Constant *FC = ConstantFoldInsertElementInstruction(
                                             ReqTy->getContext(), Val, Elt, Idx))
-    return FC;          // Fold a few common cases...
+    return FC;          // Fold a few common cases.
   // Look up the constant in the table first to ensure uniqueness
   std::vector<Constant*> ArgVec(1, Val);
   ArgVec.push_back(Elt);
@@ -1705,8 +1707,6 @@ Constant *ConstantExpr::getInsertElementTy(const Type *ReqTy, Constant *Val,
   const ExprMapKeyType Key(Instruction::InsertElement,ArgVec);
   
   LLVMContextImpl *pImpl = ReqTy->getContext().pImpl;
-  
-  // Implicitly locked.
   return pImpl->ExprConstants.getOrCreate(ReqTy, Key);
 }
 
@@ -1716,7 +1716,7 @@ Constant *ConstantExpr::getInsertElement(Constant *Val, Constant *Elt,
          "Tried to create insertelement operation on non-vector type!");
   assert(Elt->getType() == cast<VectorType>(Val->getType())->getElementType()
          && "Insertelement types must match!");
-  assert(Idx->getType() == Type::getInt32Ty(Val->getContext()) &&
+  assert(Idx->getType()->isInteger(32) &&
          "Insertelement index must be i32 type!");
   return getInsertElementTy(Val->getType(), Val, Elt, Idx);
 }
@@ -1733,8 +1733,6 @@ Constant *ConstantExpr::getShuffleVectorTy(const Type *ReqTy, Constant *V1,
   const ExprMapKeyType Key(Instruction::ShuffleVector,ArgVec);
   
   LLVMContextImpl *pImpl = ReqTy->getContext().pImpl;
-  
-  // Implicitly locked.
   return pImpl->ExprConstants.getOrCreate(ReqTy, Key);
 }
 
@@ -1903,9 +1901,7 @@ Constant* ConstantExpr::getAShr(Constant* C1, Constant* C2) {
 // destroyConstant - Remove the constant from the constant table...
 //
 void ConstantExpr::destroyConstant() {
-  // Implicitly locked.
-  LLVMContextImpl *pImpl = getType()->getContext().pImpl;
-  pImpl->ExprConstants.remove(this);
+  getType()->getContext().pImpl->ExprConstants.remove(this);
   destroyConstantImpl();
 }
 
@@ -2185,7 +2181,7 @@ void ConstantExpr::replaceUsesOfWithOnConstant(Value *From, Value *ToV,
     Constant *C2 = getOperand(1);
     if (C1 == From) C1 = To;
     if (C2 == From) C2 = To;
-    Replacement = ConstantExpr::get(getOpcode(), C1, C2, SubclassData);
+    Replacement = ConstantExpr::get(getOpcode(), C1, C2, SubclassOptionalData);
   } else {
     llvm_unreachable("Unknown ConstantExpr type!");
     return;

@@ -1,4 +1,4 @@
-// RUN: clang-cc -fsyntax-only -verify %s
+// RUN: %clang_cc1 -fsyntax-only -verify %s
 
 // C++-specific tests for integral constant expressions.
 
@@ -12,5 +12,12 @@ struct X0 {
 void f() {
   if (const int value = 17) {
     int array[value];
+  }
+}
+
+int a() {
+  const int t=t; // expected-note {{subexpression not valid}}
+  switch(1) {
+    case t:; // expected-error {{not an integer constant expression}}
   }
 }

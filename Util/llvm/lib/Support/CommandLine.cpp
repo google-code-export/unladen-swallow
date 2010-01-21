@@ -39,6 +39,7 @@ using namespace cl;
 //===----------------------------------------------------------------------===//
 // Template instantiations and anchors.
 //
+namespace llvm { namespace cl {
 TEMPLATE_INSTANTIATION(class basic_parser<bool>);
 TEMPLATE_INSTANTIATION(class basic_parser<boolOrDefault>);
 TEMPLATE_INSTANTIATION(class basic_parser<int>);
@@ -53,6 +54,7 @@ TEMPLATE_INSTANTIATION(class opt<int>);
 TEMPLATE_INSTANTIATION(class opt<std::string>);
 TEMPLATE_INSTANTIATION(class opt<char>);
 TEMPLATE_INSTANTIATION(class opt<bool>);
+} } // end namespace llvm::cl
 
 void Option::anchor() {}
 void basic_parser_impl::anchor() {}
@@ -177,7 +179,37 @@ static Option *LookupOption(StringRef &Arg, StringRef &Value,
   return I->second;
 }
 
+/// CommaSeparateAndAddOccurence - A wrapper around Handler->addOccurence() that
+/// does special handling of cl::CommaSeparated options.
+static bool CommaSeparateAndAddOccurence(Option *Handler, unsigned pos,
+                                         StringRef ArgName,
+                                         StringRef Value, bool MultiArg = false)
+{
+  // Check to see if this option accepts a comma separated list of values.  If
+  // it does, we have to split up the value into multiple values.
+  if (Handler->getMiscFlags() & CommaSeparated) {
+    StringRef Val(Value);
+    StringRef::size_type Pos = Val.find(',');
 
+    while (Pos != StringRef::npos) {
+      // Process the portion before the comma.
+      if (Handler->addOccurrence(pos, ArgName, Val.substr(0, Pos), MultiArg))
+        return true;
+      // Erase the portion before the comma, AND the comma.
+      Val = Val.substr(Pos+1);
+      Value.substr(Pos+1);  // Increment the original value pointer as well.
+      // Check for another comma.
+      Pos = Val.find(',');
+    }
+
+    Value = Val;
+  }
+
+  if (Handler->addOccurrence(pos, ArgName, Value, MultiArg))
+    return true;
+
+  return false;
+}
 
 /// ProvideOption - For Value, this differentiates between an empty value ("")
 /// and a null value (StringRef()).  The later is accepted for arguments that
@@ -219,13 +251,13 @@ static inline bool ProvideOption(Option *Handler, StringRef ArgName,
 
   // If this isn't a multi-arg option, just run the handler.
   if (NumAdditionalVals == 0)
-    return Handler->addOccurrence(i, ArgName, Value);
+    return CommaSeparateAndAddOccurence(Handler, i, ArgName, Value);
 
   // If it is, run the handle several times.
   bool MultiArg = false;
 
   if (Value.data()) {
-    if (Handler->addOccurrence(i, ArgName, Value, MultiArg))
+    if (CommaSeparateAndAddOccurence(Handler, i, ArgName, Value, MultiArg))
       return true;
     --NumAdditionalVals;
     MultiArg = true;
@@ -236,7 +268,7 @@ static inline bool ProvideOption(Option *Handler, StringRef ArgName,
       return Handler->error("not enough values!");
     Value = argv[++i];
 
-    if (Handler->addOccurrence(i, ArgName, Value, MultiArg))
+    if (CommaSeparateAndAddOccurence(Handler, i, ArgName, Value, MultiArg))
       return true;
     MultiArg = true;
     --NumAdditionalVals;
@@ -322,7 +354,7 @@ static Option *HandlePrefixedOrGroupedOption(StringRef &Arg, StringRef &Value,
     // we don't need to pass argc/argv in.
     assert(PGOpt->getValueExpectedFlag() != cl::ValueRequired &&
            "Option can not be cl::Grouping AND cl::ValueRequired!");
-    int Dummy;
+    int Dummy = 0;
     ErrorParsing |= ProvideOption(PGOpt, OneArgName,
                                   StringRef(), 0, 0, Dummy);
 
@@ -627,26 +659,6 @@ void cl::ParseCommandLineOptions(int argc, char **argv,
       continue;
     }
 
-    // Check to see if this option accepts a comma separated list of values.  If
-    // it does, we have to split up the value into multiple values.
-    if (Handler->getMiscFlags() & CommaSeparated) {
-      StringRef Val(Value);
-      StringRef::size_type Pos = Val.find(',');
-
-      while (Pos != StringRef::npos) {
-        // Process the portion before the comma.
-        ErrorParsing |= ProvideOption(Handler, ArgName, Val.substr(0, Pos),
-                                      argc, argv, i);
-        // Erase the portion before the comma, AND the comma.
-        Val = Val.substr(Pos+1);
-        Value.substr(Pos+1);  // Increment the original value pointer as well.
-
-        // Check for another comma.
-        Pos = Val.find(',');
-      }
-      Value = Val;
-    }
-
     // If this is a named positional argument, just remember that it is the
     // active one...
     if (Handler->getFormattingFlag() == cl::Positional)
@@ -766,9 +778,10 @@ void cl::ParseCommandLineOptions(int argc, char **argv,
       free(*i);
   }
 
-  DEBUG(errs() << "\nArgs: ";
+  DEBUG(dbgs() << "Args: ";
         for (int i = 0; i < argc; ++i)
-          errs() << argv[i] << ' ';
+          dbgs() << argv[i] << ' ';
+        dbgs() << '\n';
        );
 
   // If we had an error processing our arguments, don't let the program execute

@@ -182,10 +182,6 @@ PPCTargetLowering::PPCTargetLowering(PPCTargetMachine &TM)
   // We cannot sextinreg(i1).  Expand to shifts.
   setOperationAction(ISD::SIGN_EXTEND_INREG, MVT::i1, Expand);
 
-  // Support label based line numbers.
-  setOperationAction(ISD::DBG_STOPPOINT, MVT::Other, Expand);
-  setOperationAction(ISD::DEBUG_LOC, MVT::Other, Expand);
-
   setOperationAction(ISD::EXCEPTIONADDR, MVT::i64, Expand);
   setOperationAction(ISD::EHSELECTION,   MVT::i64, Expand);
   setOperationAction(ISD::EXCEPTIONADDR, MVT::i32, Expand);
@@ -423,6 +419,9 @@ const char *PPCTargetLowering::getTargetNodeName(unsigned Opcode) const {
   case PPCISD::Hi:              return "PPCISD::Hi";
   case PPCISD::Lo:              return "PPCISD::Lo";
   case PPCISD::TOC_ENTRY:       return "PPCISD::TOC_ENTRY";
+  case PPCISD::TOC_RESTORE:     return "PPCISD::TOC_RESTORE";
+  case PPCISD::LOAD:            return "PPCISD::LOAD";
+  case PPCISD::LOAD_TOC:        return "PPCISD::LOAD_TOC";
   case PPCISD::DYNALLOC:        return "PPCISD::DYNALLOC";
   case PPCISD::GlobalBaseReg:   return "PPCISD::GlobalBaseReg";
   case PPCISD::SRL:             return "PPCISD::SRL";
@@ -1174,7 +1173,7 @@ SDValue PPCTargetLowering::LowerBlockAddress(SDValue Op, SelectionDAG &DAG) {
   DebugLoc DL = Op.getDebugLoc();
 
   BlockAddress *BA = cast<BlockAddressSDNode>(Op)->getBlockAddress();
-  SDValue TgtBA = DAG.getBlockAddress(BA, DL, /*isTarget=*/true);
+  SDValue TgtBA = DAG.getBlockAddress(BA, PtrVT, /*isTarget=*/true);
   SDValue Zero = DAG.getConstant(0, PtrVT);
   SDValue Hi = DAG.getNode(PPCISD::Hi, DL, PtrVT, TgtBA, Zero);
   SDValue Lo = DAG.getNode(PPCISD::Lo, DL, PtrVT, TgtBA, Zero);
@@ -1334,7 +1333,7 @@ SDValue PPCTargetLowering::LowerTRAMPOLINE(SDValue Op, SelectionDAG &DAG) {
                 false, false, false, false, 0, CallingConv::C, false,
                 /*isReturnValueUsed=*/true,
                 DAG.getExternalSymbol("__trampoline_setup", PtrVT),
-                Args, DAG, dl);
+                Args, DAG, dl, DAG.GetOrdering(Chain.getNode()));
 
   SDValue Ops[] =
     { CallResult.first, CallResult.second };
@@ -2177,10 +2176,10 @@ CalculateParameterAndLinkageAreaSize(SelectionDAG &DAG,
 
 /// CalculateTailCallSPDiff - Get the amount the stack pointer has to be
 /// adjusted to accomodate the arguments for the tailcall.
-static int CalculateTailCallSPDiff(SelectionDAG& DAG, bool IsTailCall,
+static int CalculateTailCallSPDiff(SelectionDAG& DAG, bool isTailCall,
                                    unsigned ParamSize) {
 
-  if (!IsTailCall) return 0;
+  if (!isTailCall) return 0;
 
   PPCFunctionInfo *FI = DAG.getMachineFunction().getInfo<PPCFunctionInfo>();
   unsigned CallerMinReservedArea = FI->getMinReservedArea();
@@ -2432,7 +2431,7 @@ unsigned PrepareCall(SelectionDAG &DAG, SDValue &Callee, SDValue &InFlag,
                      SDValue &Chain, DebugLoc dl, int SPDiff, bool isTailCall,
                      SmallVector<std::pair<unsigned, SDValue>, 8> &RegsToPass,
                      SmallVector<SDValue, 8> &Ops, std::vector<EVT> &NodeTys,
-                     bool isSVR4ABI) {
+                     bool isPPC64, bool isSVR4ABI) {
   EVT PtrVT = DAG.getTargetLoweringInfo().getPointerTy();
   NodeTys.push_back(MVT::Other);   // Returns a chain
   NodeTys.push_back(MVT::Flag);    // Returns a flag for retval copy to use.
@@ -2453,6 +2452,74 @@ unsigned PrepareCall(SelectionDAG &DAG, SDValue &Callee, SDValue &InFlag,
     // Otherwise, this is an indirect call.  We have to use a MTCTR/BCTRL pair
     // to do the call, we can't use PPCISD::CALL.
     SDValue MTCTROps[] = {Chain, Callee, InFlag};
+
+    if (isSVR4ABI && isPPC64) {
+      // Function pointers in the 64-bit SVR4 ABI do not point to the function
+      // entry point, but to the function descriptor (the function entry point
+      // address is part of the function descriptor though).
+      // The function descriptor is a three doubleword structure with the
+      // following fields: function entry point, TOC base address and
+      // environment pointer.
+      // Thus for a call through a function pointer, the following actions need
+      // to be performed:
+      //   1. Save the TOC of the caller in the TOC save area of its stack
+      //      frame (this is done in LowerCall_Darwin()).
+      //   2. Load the address of the function entry point from the function
+      //      descriptor.
+      //   3. Load the TOC of the callee from the function descriptor into r2.
+      //   4. Load the environment pointer from the function descriptor into
+      //      r11.
+      //   5. Branch to the function entry point address.
+      //   6. On return of the callee, the TOC of the caller needs to be
+      //      restored (this is done in FinishCall()).
+      //
+      // All those operations are flagged together to ensure that no other
+      // operations can be scheduled in between. E.g. without flagging the
+      // operations together, a TOC access in the caller could be scheduled
+      // between the load of the callee TOC and the branch to the callee, which
+      // results in the TOC access going through the TOC of the callee instead
+      // of going through the TOC of the caller, which leads to incorrect code.
+
+      // Load the address of the function entry point from the function
+      // descriptor.
+      SDVTList VTs = DAG.getVTList(MVT::i64, MVT::Other, MVT::Flag);
+      SDValue LoadFuncPtr = DAG.getNode(PPCISD::LOAD, dl, VTs, MTCTROps,
+                                        InFlag.getNode() ? 3 : 2);
+      Chain = LoadFuncPtr.getValue(1);
+      InFlag = LoadFuncPtr.getValue(2);
+
+      // Load environment pointer into r11.
+      // Offset of the environment pointer within the function descriptor.
+      SDValue PtrOff = DAG.getIntPtrConstant(16);
+
+      SDValue AddPtr = DAG.getNode(ISD::ADD, dl, MVT::i64, Callee, PtrOff);
+      SDValue LoadEnvPtr = DAG.getNode(PPCISD::LOAD, dl, VTs, Chain, AddPtr,
+                                       InFlag);
+      Chain = LoadEnvPtr.getValue(1);
+      InFlag = LoadEnvPtr.getValue(2);
+
+      SDValue EnvVal = DAG.getCopyToReg(Chain, dl, PPC::X11, LoadEnvPtr,
+                                        InFlag);
+      Chain = EnvVal.getValue(0);
+      InFlag = EnvVal.getValue(1);
+
+      // Load TOC of the callee into r2. We are using a target-specific load
+      // with r2 hard coded, because the result of a target-independent load
+      // would never go directly into r2, since r2 is a reserved register (which
+      // prevents the register allocator from allocating it), resulting in an
+      // additional register being allocated and an unnecessary move instruction
+      // being generated.
+      VTs = DAG.getVTList(MVT::Other, MVT::Flag);
+      SDValue LoadTOCPtr = DAG.getNode(PPCISD::LOAD_TOC, dl, VTs, Chain,
+                                       Callee, InFlag);
+      Chain = LoadTOCPtr.getValue(0);
+      InFlag = LoadTOCPtr.getValue(1);
+
+      MTCTROps[0] = Chain;
+      MTCTROps[1] = LoadFuncPtr;
+      MTCTROps[2] = InFlag;
+    }
+
     Chain = DAG.getNode(PPCISD::MTCTR, dl, NodeTys, MTCTROps,
                         2 + (InFlag.getNode() != 0));
     InFlag = Chain.getValue(1);
@@ -2527,6 +2594,7 @@ PPCTargetLowering::FinishCall(CallingConv::ID CallConv, DebugLoc dl,
   SmallVector<SDValue, 8> Ops;
   unsigned CallOpc = PrepareCall(DAG, Callee, InFlag, Chain, dl, SPDiff,
                                  isTailCall, RegsToPass, Ops, NodeTys,
+                                 PPCSubTarget.isPPC64(),
                                  PPCSubTarget.isSVR4ABI());
 
   // When performing tail call optimization the callee pops its arguments off
@@ -2573,8 +2641,23 @@ PPCTargetLowering::FinishCall(CallingConv::ID CallConv, DebugLoc dl,
   // stack frame. If caller and callee belong to the same module (and have the
   // same TOC), the NOP will remain unchanged.
   if (!isTailCall && PPCSubTarget.isSVR4ABI()&& PPCSubTarget.isPPC64()) {
-    // Insert NOP.
-    InFlag = DAG.getNode(PPCISD::NOP, dl, MVT::Flag, InFlag);
+    SDVTList VTs = DAG.getVTList(MVT::Other, MVT::Flag);
+    if (CallOpc == PPCISD::BCTRL_SVR4) {
+      // This is a call through a function pointer.
+      // Restore the caller TOC from the save area into R2.
+      // See PrepareCall() for more information about calls through function
+      // pointers in the 64-bit SVR4 ABI.
+      // We are using a target-specific load with r2 hard coded, because the
+      // result of a target-independent load would never go directly into r2,
+      // since r2 is a reserved register (which prevents the register allocator
+      // from allocating it), resulting in an additional register being
+      // allocated and an unnecessary move instruction being generated.
+      Chain = DAG.getNode(PPCISD::TOC_RESTORE, dl, VTs, Chain, InFlag);
+      InFlag = Chain.getValue(1);
+    } else {
+      // Otherwise insert NOP.
+      InFlag = DAG.getNode(PPCISD::NOP, dl, MVT::Flag, InFlag);
+    }
   }
 
   Chain = DAG.getCALLSEQ_END(Chain, DAG.getIntPtrConstant(NumBytes, true),
@@ -3127,6 +3210,21 @@ PPCTargetLowering::LowerCall_Darwin(SDValue Chain, SDValue Callee,
     Chain = DAG.getNode(ISD::TokenFactor, dl, MVT::Other,
                         &MemOpChains[0], MemOpChains.size());
 
+  // Check if this is an indirect call (MTCTR/BCTRL).
+  // See PrepareCall() for more information about calls through function
+  // pointers in the 64-bit SVR4 ABI.
+  if (!isTailCall && isPPC64 && PPCSubTarget.isSVR4ABI() &&
+      !dyn_cast<GlobalAddressSDNode>(Callee) &&
+      !dyn_cast<ExternalSymbolSDNode>(Callee) &&
+      !isBLACompatibleAddress(Callee, DAG)) {
+    // Load r2 into a virtual register and store it to the TOC save area.
+    SDValue Val = DAG.getCopyFromReg(Chain, dl, PPC::X2, MVT::i64);
+    // TOC save area offset.
+    SDValue PtrOff = DAG.getIntPtrConstant(40);
+    SDValue AddPtr = DAG.getNode(ISD::ADD, dl, PtrVT, StackPtr, PtrOff);
+    Chain = DAG.getStore(Val.getValue(1), dl, Val, AddPtr, NULL, 0);
+  }
+
   // Build a sequence of copy-to-reg nodes chained together with token chain
   // and flag operands which copy the outgoing args into the appropriate regs.
   SDValue InFlag;
@@ -3190,8 +3288,8 @@ SDValue PPCTargetLowering::LowerSTACKRESTORE(SDValue Op, SelectionDAG &DAG,
   EVT PtrVT = DAG.getTargetLoweringInfo().getPointerTy();
 
   // Construct the stack pointer operand.
-  bool IsPPC64 = Subtarget.isPPC64();
-  unsigned SP = IsPPC64 ? PPC::X1 : PPC::R1;
+  bool isPPC64 = Subtarget.isPPC64();
+  unsigned SP = isPPC64 ? PPC::X1 : PPC::R1;
   SDValue StackPtr = DAG.getRegister(SP, PtrVT);
 
   // Get the operands for the STACKRESTORE.
@@ -3213,7 +3311,7 @@ SDValue PPCTargetLowering::LowerSTACKRESTORE(SDValue Op, SelectionDAG &DAG,
 SDValue
 PPCTargetLowering::getReturnAddrFrameIndex(SelectionDAG & DAG) const {
   MachineFunction &MF = DAG.getMachineFunction();
-  bool IsPPC64 = PPCSubTarget.isPPC64();
+  bool isPPC64 = PPCSubTarget.isPPC64();
   bool isDarwinABI = PPCSubTarget.isDarwinABI();
   EVT PtrVT = DAG.getTargetLoweringInfo().getPointerTy();
 
@@ -3225,9 +3323,9 @@ PPCTargetLowering::getReturnAddrFrameIndex(SelectionDAG & DAG) const {
   // If the frame pointer save index hasn't been defined yet.
   if (!RASI) {
     // Find out what the fix offset of the frame pointer save area.
-    int LROffset = PPCFrameInfo::getReturnSaveOffset(IsPPC64, isDarwinABI);
+    int LROffset = PPCFrameInfo::getReturnSaveOffset(isPPC64, isDarwinABI);
     // Allocate the frame index for frame pointer save area.
-    RASI = MF.getFrameInfo()->CreateFixedObject(IsPPC64? 8 : 4, LROffset,
+    RASI = MF.getFrameInfo()->CreateFixedObject(isPPC64? 8 : 4, LROffset,
                                                 true, false);
     // Save the result.
     FI->setReturnAddrSaveIndex(RASI);
@@ -3238,7 +3336,7 @@ PPCTargetLowering::getReturnAddrFrameIndex(SelectionDAG & DAG) const {
 SDValue
 PPCTargetLowering::getFramePointerFrameIndex(SelectionDAG & DAG) const {
   MachineFunction &MF = DAG.getMachineFunction();
-  bool IsPPC64 = PPCSubTarget.isPPC64();
+  bool isPPC64 = PPCSubTarget.isPPC64();
   bool isDarwinABI = PPCSubTarget.isDarwinABI();
   EVT PtrVT = DAG.getTargetLoweringInfo().getPointerTy();
 
@@ -3250,11 +3348,11 @@ PPCTargetLowering::getFramePointerFrameIndex(SelectionDAG & DAG) const {
   // If the frame pointer save index hasn't been defined yet.
   if (!FPSI) {
     // Find out what the fix offset of the frame pointer save area.
-    int FPOffset = PPCFrameInfo::getFramePointerSaveOffset(IsPPC64,
+    int FPOffset = PPCFrameInfo::getFramePointerSaveOffset(isPPC64,
                                                            isDarwinABI);
 
     // Allocate the frame index for frame pointer save area.
-    FPSI = MF.getFrameInfo()->CreateFixedObject(IsPPC64? 8 : 4, FPOffset,
+    FPSI = MF.getFrameInfo()->CreateFixedObject(isPPC64? 8 : 4, FPOffset,
                                                 true, false);
     // Save the result.
     FI->setFramePointerSaveIndex(FPSI);

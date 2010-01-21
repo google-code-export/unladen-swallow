@@ -91,6 +91,42 @@ const CGFunctionInfo &CodeGenTypes::getFunctionInfo(const CXXMethodDecl *MD) {
                          getCallingConventionForDecl(MD));
 }
 
+const CGFunctionInfo &CodeGenTypes::getFunctionInfo(const CXXConstructorDecl *D, 
+                                                    CXXCtorType Type) {
+  llvm::SmallVector<QualType, 16> ArgTys;
+
+  // Add the 'this' pointer.
+  ArgTys.push_back(D->getThisType(Context));
+
+  // Check if we need to add a VTT parameter (which has type void **).
+  if (Type == Ctor_Base && D->getParent()->getNumVBases() != 0)
+    ArgTys.push_back(Context.getPointerType(Context.VoidPtrTy));
+  
+  const FunctionProtoType *FTP = D->getType()->getAs<FunctionProtoType>();
+  for (unsigned i = 0, e = FTP->getNumArgs(); i != e; ++i)
+    ArgTys.push_back(FTP->getArgType(i));
+  return getFunctionInfo(FTP->getResultType(), ArgTys,
+                         getCallingConventionForDecl(D));
+}
+
+const CGFunctionInfo &CodeGenTypes::getFunctionInfo(const CXXDestructorDecl *D,
+                                                    CXXDtorType Type) {
+  llvm::SmallVector<QualType, 16> ArgTys;
+  
+  // Add the 'this' pointer.
+  ArgTys.push_back(D->getThisType(Context));
+  
+  // Check if we need to add a VTT parameter (which has type void **).
+  if (Type == Dtor_Base && D->getParent()->getNumVBases() != 0)
+    ArgTys.push_back(Context.getPointerType(Context.VoidPtrTy));
+  
+  const FunctionProtoType *FTP = D->getType()->getAs<FunctionProtoType>();
+  for (unsigned i = 0, e = FTP->getNumArgs(); i != e; ++i)
+    ArgTys.push_back(FTP->getArgType(i));
+  return getFunctionInfo(FTP->getResultType(), ArgTys,
+                         getCallingConventionForDecl(D));
+}
+
 const CGFunctionInfo &CodeGenTypes::getFunctionInfo(const FunctionDecl *FD) {
   if (const CXXMethodDecl *MD = dyn_cast<CXXMethodDecl>(FD))
     if (MD->isInstance())
@@ -310,6 +346,7 @@ static llvm::Value *CreateCoercedLoad(llvm::Value *SrcPtr,
 /// destination type; the upper bits of the src will be lost.
 static void CreateCoercedStore(llvm::Value *Src,
                                llvm::Value *DstPtr,
+                               bool DstIsVolatile,
                                CodeGenFunction &CGF) {
   const llvm::Type *SrcTy = Src->getType();
   const llvm::Type *DstTy =
@@ -323,7 +360,7 @@ static void CreateCoercedStore(llvm::Value *Src,
     llvm::Value *Casted =
       CGF.Builder.CreateBitCast(DstPtr, llvm::PointerType::getUnqual(SrcTy));
     // FIXME: Use better alignment / avoid requiring aligned store.
-    CGF.Builder.CreateStore(Src, Casted)->setAlignment(1);
+    CGF.Builder.CreateStore(Src, Casted, DstIsVolatile)->setAlignment(1);
   } else {
     // Otherwise do coercion through memory. This is stupid, but
     // simple.
@@ -341,7 +378,7 @@ static void CreateCoercedStore(llvm::Value *Src,
     llvm::LoadInst *Load = CGF.Builder.CreateLoad(Casted);
     // FIXME: Use better alignment / avoid requiring aligned load.
     Load->setAlignment(1);
-    CGF.Builder.CreateStore(Load, DstPtr);
+    CGF.Builder.CreateStore(Load, DstPtr, DstIsVolatile);
   }
 }
 
@@ -416,6 +453,32 @@ CodeGenTypes::GetFunctionType(const CGFunctionInfo &FI, bool IsVariadic) {
   }
 
   return llvm::FunctionType::get(ResultType, ArgTys, IsVariadic);
+}
+
+static bool HasIncompleteReturnTypeOrArgumentTypes(const FunctionProtoType *T) {
+  if (const TagType *TT = T->getResultType()->getAs<TagType>()) {
+    if (!TT->getDecl()->isDefinition())
+      return true;
+  }
+
+  for (unsigned i = 0, e = T->getNumArgs(); i != e; ++i) {
+    if (const TagType *TT = T->getArgType(i)->getAs<TagType>()) {
+      if (!TT->getDecl()->isDefinition())
+        return true;
+    }
+  }
+
+  return false;
+}
+
+const llvm::Type *
+CodeGenTypes::GetFunctionTypeForVtable(const CXXMethodDecl *MD) {
+  const FunctionProtoType *FPT = MD->getType()->getAs<FunctionProtoType>();
+  
+  if (!HasIncompleteReturnTypeOrArgumentTypes(FPT))
+    return GetFunctionType(getFunctionInfo(MD), FPT->isVariadic());
+
+  return llvm::OpaqueType::get(getLLVMContext());
 }
 
 void CodeGenModule::ConstructAttributeList(const CGFunctionInfo &FI,
@@ -498,6 +561,9 @@ void CodeGenModule::ConstructAttributeList(const CGFunctionInfo &FI,
     QualType ParamType = it->type;
     const ABIArgInfo &AI = it->info;
     unsigned Attributes = 0;
+
+    if (ParamType.isRestrictQualified())
+      Attributes |= llvm::Attribute::NoAlias;
 
     switch (AI.getKind()) {
     case ABIArgInfo::Coerce:
@@ -667,7 +733,7 @@ void CodeGenFunction::EmitFunctionProlog(const CGFunctionInfo &FI,
       // result in a new alloca anyway, so we could just store into that
       // directly if we broke the abstraction down more.
       llvm::Value *V = CreateTempAlloca(ConvertTypeForMem(Ty), "coerce");
-      CreateCoercedStore(AI, V, *this);
+      CreateCoercedStore(AI, V, /*DestIsVolatile=*/false, *this);
       // Match to what EmitParmDecl is expecting for this type.
       if (!CodeGenFunction::hasAggregateLLVMType(Ty)) {
         V = EmitLoadOfScalar(V, false, Ty);
@@ -702,7 +768,7 @@ void CodeGenFunction::EmitFunctionEpilog(const CGFunctionInfo &FI,
         ComplexPairTy RT = LoadComplexFromAddr(ReturnValue, false);
         StoreComplexToAddr(RT, CurFn->arg_begin(), false);
       } else if (CodeGenFunction::hasAggregateLLVMType(RetTy)) {
-        EmitAggregateCopy(CurFn->arg_begin(), ReturnValue, RetTy);
+        // Do nothing; aggregrates get evaluated directly into the destination.
       } else {
         EmitStoreOfScalar(Builder.CreateLoad(ReturnValue), CurFn->arg_begin(),
                           false, RetTy);
@@ -744,6 +810,7 @@ RValue CodeGenFunction::EmitCallArg(const Expr *E, QualType ArgType) {
 
 RValue CodeGenFunction::EmitCall(const CGFunctionInfo &CallInfo,
                                  llvm::Value *Callee,
+                                 ReturnValueSlot ReturnValue,
                                  const CallArgList &CallArgs,
                                  const Decl *TargetDecl) {
   // FIXME: We no longer need the types from CallArgs; lift up and simplify.
@@ -756,9 +823,13 @@ RValue CodeGenFunction::EmitCall(const CGFunctionInfo &CallInfo,
 
 
   // If the call returns a temporary with struct return, create a temporary
-  // alloca to hold the result.
-  if (CGM.ReturnTypeUsesSret(CallInfo))
-    Args.push_back(CreateTempAlloca(ConvertTypeForMem(RetTy)));
+  // alloca to hold the result, unless one is given to us.
+  if (CGM.ReturnTypeUsesSret(CallInfo)) {
+    llvm::Value *Value = ReturnValue.getValue();
+    if (!Value)
+      Value = CreateTempAlloca(ConvertTypeForMem(RetTy));
+    Args.push_back(Value);
+  }
 
   assert(CallInfo.arg_size() == CallArgs.size() &&
          "Mismatch between function signature & arguments.");
@@ -907,9 +978,15 @@ RValue CodeGenFunction::EmitCall(const CGFunctionInfo &CallInfo,
       return RValue::getComplex(std::make_pair(Real, Imag));
     }
     if (CodeGenFunction::hasAggregateLLVMType(RetTy)) {
-      llvm::Value *V = CreateTempAlloca(ConvertTypeForMem(RetTy), "agg.tmp");
-      Builder.CreateStore(CI, V);
-      return RValue::getAggregate(V);
+      llvm::Value *DestPtr = ReturnValue.getValue();
+      bool DestIsVolatile = ReturnValue.isVolatile();
+
+      if (!DestPtr) {
+        DestPtr = CreateTempAlloca(ConvertTypeForMem(RetTy), "agg.tmp");
+        DestIsVolatile = false;
+      }
+      Builder.CreateStore(CI, DestPtr, DestIsVolatile);
+      return RValue::getAggregate(DestPtr);
     }
     return RValue::get(CI);
 
@@ -919,14 +996,20 @@ RValue CodeGenFunction::EmitCall(const CGFunctionInfo &CallInfo,
     return GetUndefRValue(RetTy);
 
   case ABIArgInfo::Coerce: {
-    // FIXME: Avoid the conversion through memory if possible.
-    llvm::Value *V = CreateTempAlloca(ConvertTypeForMem(RetTy), "coerce");
-    CreateCoercedStore(CI, V, *this);
+    llvm::Value *DestPtr = ReturnValue.getValue();
+    bool DestIsVolatile = ReturnValue.isVolatile();
+    
+    if (!DestPtr) {
+      DestPtr = CreateTempAlloca(ConvertTypeForMem(RetTy), "coerce");
+      DestIsVolatile = false;
+    }
+    
+    CreateCoercedStore(CI, DestPtr, DestIsVolatile, *this);
     if (RetTy->isAnyComplexType())
-      return RValue::getComplex(LoadComplexFromAddr(V, false));
+      return RValue::getComplex(LoadComplexFromAddr(DestPtr, false));
     if (CodeGenFunction::hasAggregateLLVMType(RetTy))
-      return RValue::getAggregate(V);
-    return RValue::get(EmitLoadOfScalar(V, false, RetTy));
+      return RValue::getAggregate(DestPtr);
+    return RValue::get(EmitLoadOfScalar(DestPtr, false, RetTy));
   }
 
   case ABIArgInfo::Expand:

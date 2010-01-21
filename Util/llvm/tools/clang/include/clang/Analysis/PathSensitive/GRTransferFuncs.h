@@ -47,7 +47,8 @@ public:
                                    GRExprEngine& Engine,
                                    GRStmtNodeBuilder& Builder,
                                    ObjCMessageExpr* ME,
-                                   ExplodedNode* Pred) {}
+                                   ExplodedNode* Pred,
+                                   const GRState *state) {}
 
   // Stores.
 
@@ -79,9 +80,6 @@ public:
     return state;
   }  
 };
-
-GRTransferFuncs *CreateCallInliner(ASTContext &ctx);
-
 } // end clang namespace
 
 #endif

@@ -16,10 +16,8 @@
 #include "clang/Basic/SourceManager.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Lex/Preprocessor.h"
-#include "llvm/Support/Compiler.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/Casting.h"
-#include "llvm/System/Path.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 using namespace clang;
@@ -32,7 +30,41 @@ namespace clang {
 }
 
 namespace {
-  class VISIBILITY_HIDDEN PlistDiagnostics : public PathDiagnosticClient {
+struct CompareDiagnostics {
+  // Compare if 'X' is "<" than 'Y'.
+  bool operator()(const PathDiagnostic *X, const PathDiagnostic *Y) const {
+    // First compare by location
+    const FullSourceLoc &XLoc = X->getLocation().asLocation();
+    const FullSourceLoc &YLoc = Y->getLocation().asLocation();
+    if (XLoc < YLoc)
+      return true;
+    if (XLoc != YLoc)
+      return false;
+    
+    // Next, compare by bug type.
+    llvm::StringRef XBugType = X->getBugType();
+    llvm::StringRef YBugType = Y->getBugType();
+    if (XBugType < YBugType)
+      return true;
+    if (XBugType != YBugType)
+      return false;
+    
+    // Next, compare by bug description.
+    llvm::StringRef XDesc = X->getDescription();
+    llvm::StringRef YDesc = Y->getDescription();
+    if (XDesc < YDesc)
+      return true;
+    if (XDesc != YDesc)
+      return false;
+    
+    // FIXME: Further refine by comparing PathDiagnosticPieces?
+    return false;    
+  }  
+};  
+}
+
+namespace {
+  class PlistDiagnostics : public PathDiagnosticClient {
     std::vector<const PathDiagnostic*> BatchedDiags;
     const std::string OutputFile;
     const LangOptions &LangOpts;
@@ -316,6 +348,11 @@ void PlistDiagnostics::FlushDiagnostics(llvm::SmallVectorImpl<std::string>
     return;
   
   flushed = true;
+  
+  // Sort the diagnostics so that they are always emitted in a deterministic
+  // order.
+  if (!BatchedDiags.empty())
+    std::sort(BatchedDiags.begin(), BatchedDiags.end(), CompareDiagnostics()); 
 
   // Build up a set of FIDs that we use by scanning the locations and
   // ranges of the diagnostics.

@@ -15,7 +15,6 @@
 #include "clang/Analysis/PathSensitive/GRCoreEngine.h"
 #include "clang/Analysis/PathSensitive/GRExprEngine.h"
 #include "clang/AST/Expr.h"
-#include "llvm/Support/Compiler.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/ADT/DenseMap.h"
 #include <vector>
@@ -30,7 +29,7 @@ using namespace clang;
 //===----------------------------------------------------------------------===//
 
 namespace {
-class VISIBILITY_HIDDEN DFS : public GRWorkList {
+class DFS : public GRWorkList {
   llvm::SmallVector<GRWorkListUnit,20> Stack;
 public:
   virtual bool hasWork() const {
@@ -49,7 +48,7 @@ public:
   }
 };
 
-class VISIBILITY_HIDDEN BFS : public GRWorkList {
+class BFS : public GRWorkList {
   std::queue<GRWorkListUnit> Queue;
 public:
   virtual bool hasWork() const {
@@ -79,7 +78,7 @@ GRWorkList *GRWorkList::MakeDFS() { return new DFS(); }
 GRWorkList *GRWorkList::MakeBFS() { return new BFS(); }
 
 namespace {
-  class VISIBILITY_HIDDEN BFSBlockDFSContents : public GRWorkList {
+  class BFSBlockDFSContents : public GRWorkList {
     std::queue<GRWorkListUnit> Queue;
     llvm::SmallVector<GRWorkListUnit,20> Stack;
   public:
@@ -123,8 +122,8 @@ void GRCoreEngine::ProcessEndPath(GREndPathNodeBuilder& Builder) {
   SubEngine.ProcessEndPath(Builder);
 }
 
-void GRCoreEngine::ProcessStmt(Stmt* S, GRStmtNodeBuilder& Builder) {
-  SubEngine.ProcessStmt(S, Builder);
+void GRCoreEngine::ProcessStmt(CFGElement E, GRStmtNodeBuilder& Builder) {
+  SubEngine.ProcessStmt(E, Builder);
 }
 
 bool GRCoreEngine::ProcessBlockEntrance(CFGBlock* Blk, const GRState* State,
@@ -214,9 +213,9 @@ void GRCoreEngine::HandleBlockEdge(const BlockEdge& L, ExplodedNode* Pred) {
   CFGBlock* Blk = L.getDst();
 
   // Check if we are entering the EXIT block.
-  if (Blk == &(Pred->getLocationContext()->getCFG()->getExit())) {
+  if (Blk == &(L.getLocationContext()->getCFG()->getExit())) {
 
-    assert (Pred->getLocationContext()->getCFG()->getExit().size() == 0
+    assert (L.getLocationContext()->getCFG()->getExit().size() == 0
             && "EXIT block cannot contain Stmts.");
 
     // Process the final state transition.
@@ -242,10 +241,10 @@ void GRCoreEngine::HandleBlockEntrance(const BlockEntrance& L,
   WList->setBlockCounter(Counter);
 
   // Process the entrance of the block.
-  if (Stmt* S = L.getFirstStmt()) {
+  if (CFGElement E = L.getFirstElement()) {
     GRStmtNodeBuilder Builder(L.getBlock(), 0, Pred, this,
                               SubEngine.getStateManager());
-    ProcessStmt(S, Builder);
+    ProcessStmt(E, Builder);
   }
   else
     HandleBlockExit(L.getBlock(), Pred);
@@ -448,7 +447,7 @@ GRStmtNodeBuilder::generateNodeInternal(const Stmt* S, const GRState* state,
                                         ProgramPoint::Kind K,
                                         const void *tag) {
   
-  const ProgramPoint &L = GetProgramPoint(S, K, Pred->getLocationContext(),tag);  
+  const ProgramPoint &L = GetProgramPoint(S, K, Pred->getLocationContext(),tag);
   return generateNodeInternal(L, state, Pred);
 }
 

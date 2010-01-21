@@ -107,7 +107,7 @@ void PCHDeclReader::VisitTypedefDecl(TypedefDecl *TD) {
   // the type associated with the TypedefDecl.
   VisitNamedDecl(TD);
   uint64_t TypeData = Record[Idx++];
-  TD->setTypeDeclaratorInfo(Reader.GetDeclaratorInfo(Record, Idx));
+  TD->setTypeSourceInfo(Reader.GetTypeSourceInfo(Record, Idx));
   TD->setTypeForDecl(Reader.GetType(TypeData).getTypePtr());
 }
 
@@ -126,6 +126,7 @@ void PCHDeclReader::VisitTagDecl(TagDecl *TD) {
 void PCHDeclReader::VisitEnumDecl(EnumDecl *ED) {
   VisitTagDecl(ED);
   ED->setIntegerType(Reader.GetType(Record[Idx++]));
+  ED->setPromotionType(Reader.GetType(Record[Idx++]));
   // FIXME: C++ InstantiatedFrom
 }
 
@@ -150,9 +151,9 @@ void PCHDeclReader::VisitEnumConstantDecl(EnumConstantDecl *ECD) {
 
 void PCHDeclReader::VisitDeclaratorDecl(DeclaratorDecl *DD) {
   VisitValueDecl(DD);
-  DeclaratorInfo *DInfo = Reader.GetDeclaratorInfo(Record, Idx);
-  if (DInfo)
-    DD->setDeclaratorInfo(DInfo);
+  TypeSourceInfo *TInfo = Reader.GetTypeSourceInfo(Record, Idx);
+  if (TInfo)
+    DD->setTypeSourceInfo(TInfo);
 }
 
 void PCHDeclReader::VisitFunctionDecl(FunctionDecl *FD) {
@@ -207,7 +208,9 @@ void PCHDeclReader::VisitObjCMethodDecl(ObjCMethodDecl *MD) {
 
 void PCHDeclReader::VisitObjCContainerDecl(ObjCContainerDecl *CD) {
   VisitNamedDecl(CD);
-  CD->setAtEndLoc(SourceLocation::getFromRawEncoding(Record[Idx++]));
+  SourceLocation A = SourceLocation::getFromRawEncoding(Record[Idx++]);
+  SourceLocation B = SourceLocation::getFromRawEncoding(Record[Idx++]);
+  CD->setAtEndRange(SourceRange(A, B));
 }
 
 void PCHDeclReader::VisitObjCInterfaceDecl(ObjCInterfaceDecl *ID) {
@@ -435,12 +438,16 @@ Attr *PCHReader::ReadAttributes() {
     bool IsInherited = Record[Idx++];
 
     switch (Kind) {
+    default:
+      assert(0 && "Unknown attribute!");
+      break;
     STRING_ATTR(Alias);
     UNSIGNED_ATTR(Aligned);
     SIMPLE_ATTR(AlwaysInline);
     SIMPLE_ATTR(AnalyzerNoReturn);
     STRING_ATTR(Annotate);
     STRING_ATTR(AsmLabel);
+    SIMPLE_ATTR(BaseCheck);
 
     case Attr::Blocks:
       New = ::new (*Context) BlocksAttr(
@@ -461,6 +468,7 @@ Attr *PCHReader::ReadAttributes() {
     SIMPLE_ATTR(Deprecated);
     UNSIGNED_ATTR(Destructor);
     SIMPLE_ATTR(FastCall);
+    SIMPLE_ATTR(Final);
 
     case Attr::Format: {
       std::string Type = ReadString(Record, Idx);
@@ -484,6 +492,7 @@ Attr *PCHReader::ReadAttributes() {
     }
 
     SIMPLE_ATTR(GNUInline);
+    SIMPLE_ATTR(Hiding);
 
     case Attr::IBOutletKind:
       New = ::new (*Context) IBOutletAttr();
@@ -517,6 +526,7 @@ Attr *PCHReader::ReadAttributes() {
     SIMPLE_ATTR(CFReturnsRetained);
     SIMPLE_ATTR(NSReturnsRetained);
     SIMPLE_ATTR(Overloadable);
+    SIMPLE_ATTR(Override);
     SIMPLE_ATTR(Packed);
     UNSIGNED_ATTR(PragmaPack);
     SIMPLE_ATTR(Pure);

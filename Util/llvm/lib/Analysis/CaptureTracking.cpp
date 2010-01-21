@@ -19,10 +19,21 @@
 #include "llvm/Analysis/CaptureTracking.h"
 #include "llvm/Instructions.h"
 #include "llvm/Value.h"
+#include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/CallSite.h"
 using namespace llvm;
+
+/// As its comment mentions, PointerMayBeCaptured can be expensive.
+/// However, it's not easy for BasicAA to cache the result, because
+/// it's an ImmutablePass. To work around this, bound queries at a
+/// fixed number of uses.
+///
+/// TODO: Write a new FunctionPass AliasAnalysis so that it can keep
+/// a cache. Then we can move the code from BasicAliasAnalysis into
+/// that path, and remove this threshold.
+static int const Threshold = 20;
 
 /// PointerMayBeCaptured - Return true if this pointer value may be captured
 /// by the enclosing function (which is required to exist).  This routine can
@@ -34,11 +45,17 @@ using namespace llvm;
 bool llvm::PointerMayBeCaptured(const Value *V,
                                 bool ReturnCaptures, bool StoreCaptures) {
   assert(isa<PointerType>(V->getType()) && "Capture is for pointers only!");
-  SmallVector<Use*, 16> Worklist;
-  SmallSet<Use*, 16> Visited;
+  SmallVector<Use*, Threshold> Worklist;
+  SmallSet<Use*, Threshold> Visited;
+  int Count = 0;
 
   for (Value::use_const_iterator UI = V->use_begin(), UE = V->use_end();
        UI != UE; ++UI) {
+    // If there are lots of uses, conservatively say that the value
+    // is captured to avoid taking too much compile time.
+    if (Count++ >= Threshold)
+      return true;
+
     Use *U = &UI.getUse();
     Visited.insert(U);
     Worklist.push_back(U);
@@ -56,8 +73,7 @@ bool llvm::PointerMayBeCaptured(const Value *V,
       // Not captured if the callee is readonly, doesn't return a copy through
       // its return value and doesn't unwind (a readonly function can leak bits
       // by throwing an exception or not depending on the input value).
-      if (CS.onlyReadsMemory() && CS.doesNotThrow() &&
-          I->getType() == Type::getVoidTy(V->getContext()))
+      if (CS.onlyReadsMemory() && CS.doesNotThrow() && I->getType()->isVoidTy())
         break;
 
       // Not captured if only passed via 'nocapture' arguments.  Note that
@@ -106,9 +122,16 @@ bool llvm::PointerMayBeCaptured(const Value *V,
       }
       break;
     case Instruction::ICmp:
-      // Comparing the pointer against null does not count as a capture.
-      if (isa<ConstantPointerNull>(I->getOperand(1)))
-        break;
+      // Don't count comparisons of a no-alias return value against null as
+      // captures. This allows us to ignore comparisons of malloc results
+      // with null, for example.
+      if (isNoAliasCall(V->stripPointerCasts()))
+        if (ConstantPointerNull *CPN =
+              dyn_cast<ConstantPointerNull>(I->getOperand(1)))
+          if (CPN->getType()->getAddressSpace() == 0)
+            break;
+      // Otherwise, be conservative. There are crazy ways to capture pointers
+      // using comparisons.
       return true;
     default:
       // Something else - be conservative and say it is captured.

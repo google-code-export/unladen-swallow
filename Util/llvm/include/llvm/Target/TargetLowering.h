@@ -139,6 +139,12 @@ public:
   virtual
   MVT::SimpleValueType getSetCCResultType(EVT VT) const;
 
+  /// getCmpLibcallReturnType - Return the ValueType for comparison 
+  /// libcalls. Comparions libcalls include floating point comparion calls,
+  /// and Ordered/Unordered check calls on floating point numbers.
+  virtual 
+  MVT::SimpleValueType getCmpLibcallReturnType() const;
+
   /// getBooleanContents - For targets without i1 registers, this gives the
   /// nature of the high-bits of boolean values held in types wider than i1.
   /// "Boolean values" are special true/false values produced by nodes like
@@ -768,10 +774,12 @@ public:
   /// that want to combine 
   struct TargetLoweringOpt {
     SelectionDAG &DAG;
+    bool ShrinkOps;
     SDValue Old;
     SDValue New;
 
-    explicit TargetLoweringOpt(SelectionDAG &InDAG) : DAG(InDAG) {}
+    explicit TargetLoweringOpt(SelectionDAG &InDAG, bool Shrink = false) :
+      DAG(InDAG), ShrinkOps(Shrink) {}
     
     bool CombineTo(SDValue O, SDValue N) { 
       Old = O; 
@@ -856,12 +864,6 @@ public:
   /// node is a GlobalAddress + offset.
   virtual bool
   isGAPlusOffset(SDNode *N, GlobalValue* &GA, int64_t &Offset) const;
-
-  /// isConsecutiveLoad - Return true if LD is loading 'Bytes' bytes from a 
-  /// location that is 'Dist' units away from the location that the 'Base' load 
-  /// is loading from.
-  bool isConsecutiveLoad(LoadSDNode *LD, LoadSDNode *Base, unsigned Bytes,
-                         int Dist, const MachineFrameInfo *MFI) const;
 
   /// PerformDAGCombine - This method will be invoked for all target nodes and
   /// for any target-independent nodes that the target has registered with
@@ -978,7 +980,7 @@ protected:
   /// not work with the with specified type and indicate what to do about it.
   void setLoadExtAction(unsigned ExtType, MVT VT,
                       LegalizeAction Action) {
-    assert((unsigned)VT.SimpleTy < MVT::LAST_VALUETYPE &&
+    assert((unsigned)VT.SimpleTy*2 < 63 &&
            ExtType < array_lengthof(LoadExtActions) &&
            "Table isn't big enough!");
     LoadExtActions[ExtType] &= ~(uint64_t(3UL) << VT.SimpleTy*2);
@@ -990,7 +992,7 @@ protected:
   void setTruncStoreAction(MVT ValVT, MVT MemVT,
                            LegalizeAction Action) {
     assert((unsigned)ValVT.SimpleTy < array_lengthof(TruncStoreActions) &&
-           (unsigned)MemVT.SimpleTy < MVT::LAST_VALUETYPE &&
+           (unsigned)MemVT.SimpleTy*2 < 63 &&
            "Table isn't big enough!");
     TruncStoreActions[ValVT.SimpleTy] &= ~(uint64_t(3UL)  << MemVT.SimpleTy*2);
     TruncStoreActions[ValVT.SimpleTy] |= (uint64_t)Action << MemVT.SimpleTy*2;
@@ -1142,7 +1144,7 @@ public:
               bool isVarArg, bool isInreg, unsigned NumFixedArgs,
               CallingConv::ID CallConv, bool isTailCall,
               bool isReturnValueUsed, SDValue Callee, ArgListTy &Args,
-              SelectionDAG &DAG, DebugLoc dl);
+              SelectionDAG &DAG, DebugLoc dl, unsigned Order);
 
   /// LowerCall - This hook must be implemented to lower calls into the
   /// the specified DAG. The outgoing arguments to the call are described
@@ -1295,20 +1297,6 @@ public:
                                     SelectionDAG& DAG) const {
     // Conservative default: no calls are eligible.
     return false;
-  }
-
-  /// GetPossiblePreceedingTailCall - Get preceeding TailCallNodeOpCode node if
-  /// it exists. Skip a possible ISD::TokenFactor.
-  static SDValue GetPossiblePreceedingTailCall(SDValue Chain,
-                                                 unsigned TailCallNodeOpCode) {
-    if (Chain.getOpcode() == TailCallNodeOpCode) {
-      return Chain;
-    } else if (Chain.getOpcode() == ISD::TokenFactor) {
-      if (Chain.getNumOperands() &&
-          Chain.getOperand(0).getOpcode() == TailCallNodeOpCode)
-        return Chain.getOperand(0);
-    }
-    return Chain;
   }
 
   /// getTargetNodeName() - This method returns the name of a target specific
@@ -1492,7 +1480,7 @@ public:
   }
 
   /// isZExtFree - Return true if any actual instruction that defines a
-  /// value of type Ty1 implicit zero-extends the value to Ty2 in the result
+  /// value of type Ty1 implicitly zero-extends the value to Ty2 in the result
   /// register. This does not necessarily include registers defined in
   /// unknown ways, such as incoming arguments, or copies from unknown
   /// virtual registers. Also, if isTruncateFree(Ty2, Ty1) is true, this

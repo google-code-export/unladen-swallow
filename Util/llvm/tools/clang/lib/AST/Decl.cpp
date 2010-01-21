@@ -19,6 +19,7 @@
 #include "clang/AST/TypeLoc.h"
 #include "clang/AST/Stmt.h"
 #include "clang/AST/Expr.h"
+#include "clang/AST/ExprCXX.h"
 #include "clang/AST/PrettyPrinter.h"
 #include "clang/Basic/Builtins.h"
 #include "clang/Basic/IdentifierTable.h"
@@ -38,7 +39,7 @@ void Attr::Destroy(ASTContext &C) {
 }
 
 /// \brief Return the TypeLoc wrapper for the type source info.
-TypeLoc DeclaratorInfo::getTypeLoc() const {
+TypeLoc TypeSourceInfo::getTypeLoc() const {
   return TypeLoc(Ty, (void*)(this + 1));
 }
 
@@ -86,17 +87,45 @@ const char *VarDecl::getStorageClassSpecifierString(StorageClass SC) {
 
 ParmVarDecl *ParmVarDecl::Create(ASTContext &C, DeclContext *DC,
                                  SourceLocation L, IdentifierInfo *Id,
-                                 QualType T, DeclaratorInfo *DInfo,
+                                 QualType T, TypeSourceInfo *TInfo,
                                  StorageClass S, Expr *DefArg) {
-  return new (C) ParmVarDecl(ParmVar, DC, L, Id, T, DInfo, S, DefArg);
+  return new (C) ParmVarDecl(ParmVar, DC, L, Id, T, TInfo, S, DefArg);
+}
+
+Expr *ParmVarDecl::getDefaultArg() {
+  assert(!hasUnparsedDefaultArg() && "Default argument is not yet parsed!");
+  assert(!hasUninstantiatedDefaultArg() &&
+         "Default argument is not yet instantiated!");
+  
+  Expr *Arg = getInit();
+  if (CXXExprWithTemporaries *E = dyn_cast_or_null<CXXExprWithTemporaries>(Arg))
+    return E->getSubExpr();
+  
+  return Arg;
+}
+
+unsigned ParmVarDecl::getNumDefaultArgTemporaries() const {
+  if (const CXXExprWithTemporaries *E = 
+        dyn_cast<CXXExprWithTemporaries>(getInit()))
+    return E->getNumTemporaries();
+
+  return 0;
+}
+
+CXXTemporary *ParmVarDecl::getDefaultArgTemporary(unsigned i) {
+  assert(getNumDefaultArgTemporaries() && 
+         "Default arguments does not have any temporaries!");
+
+  CXXExprWithTemporaries *E = cast<CXXExprWithTemporaries>(getInit());
+  return E->getTemporary(i);
 }
 
 SourceRange ParmVarDecl::getDefaultArgRange() const {
   if (const Expr *E = getInit())
     return E->getSourceRange();
   
-  if (const Expr *E = getUninstantiatedDefaultArg())
-    return E->getSourceRange();
+  if (hasUninstantiatedDefaultArg())
+    return getUninstantiatedDefaultArg()->getSourceRange();
     
   return SourceRange();
 }
@@ -136,11 +165,11 @@ bool VarDecl::isExternC() const {
 FunctionDecl *FunctionDecl::Create(ASTContext &C, DeclContext *DC,
                                    SourceLocation L,
                                    DeclarationName N, QualType T,
-                                   DeclaratorInfo *DInfo,
+                                   TypeSourceInfo *TInfo,
                                    StorageClass S, bool isInline,
                                    bool hasWrittenPrototype) {
   FunctionDecl *New
-    = new (C) FunctionDecl(Function, DC, L, N, T, DInfo, S, isInline);
+    = new (C) FunctionDecl(Function, DC, L, N, T, TInfo, S, isInline);
   New->HasWrittenPrototype = hasWrittenPrototype;
   return New;
 }
@@ -151,8 +180,8 @@ BlockDecl *BlockDecl::Create(ASTContext &C, DeclContext *DC, SourceLocation L) {
 
 FieldDecl *FieldDecl::Create(ASTContext &C, DeclContext *DC, SourceLocation L,
                              IdentifierInfo *Id, QualType T,
-                             DeclaratorInfo *DInfo, Expr *BW, bool Mutable) {
-  return new (C) FieldDecl(Decl::Field, DC, L, Id, T, DInfo, BW, Mutable);
+                             TypeSourceInfo *TInfo, Expr *BW, bool Mutable) {
+  return new (C) FieldDecl(Decl::Field, DC, L, Id, T, TInfo, BW, Mutable);
 }
 
 bool FieldDecl::isAnonymousStructOrUnion() const {
@@ -179,9 +208,12 @@ void EnumConstantDecl::Destroy(ASTContext& C) {
 
 TypedefDecl *TypedefDecl::Create(ASTContext &C, DeclContext *DC,
                                  SourceLocation L, IdentifierInfo *Id,
-                                 DeclaratorInfo *DInfo) {
-  return new (C) TypedefDecl(DC, L, Id, DInfo);
+                                 TypeSourceInfo *TInfo) {
+  return new (C) TypedefDecl(DC, L, Id, TInfo);
 }
+
+// Anchor TypedefDecl's vtable here.
+TypedefDecl::~TypedefDecl() {}
 
 EnumDecl *EnumDecl::Create(ASTContext &C, DeclContext *DC, SourceLocation L,
                            IdentifierInfo *Id, SourceLocation TKL,
@@ -195,9 +227,12 @@ void EnumDecl::Destroy(ASTContext& C) {
   Decl::Destroy(C);
 }
 
-void EnumDecl::completeDefinition(ASTContext &C, QualType NewType) {
+void EnumDecl::completeDefinition(ASTContext &C,
+                                  QualType NewType,
+                                  QualType NewPromotionType) {
   assert(!isDefinition() && "Cannot redefine enums!");
   IntegerType = NewType;
+  PromotionType = NewPromotionType;
   TagDecl::completeDefinition();
 }
 
@@ -210,6 +245,203 @@ FileScopeAsmDecl *FileScopeAsmDecl::Create(ASTContext &C, DeclContext *DC,
 //===----------------------------------------------------------------------===//
 // NamedDecl Implementation
 //===----------------------------------------------------------------------===//
+
+static NamedDecl::Linkage getLinkageForNamespaceScopeDecl(const NamedDecl *D) {
+  assert(D->getDeclContext()->getLookupContext()->isFileContext() &&
+         "Not a name having namespace scope");
+  ASTContext &Context = D->getASTContext();
+
+  // C++ [basic.link]p3:
+  //   A name having namespace scope (3.3.6) has internal linkage if it
+  //   is the name of
+  //     - an object, reference, function or function template that is
+  //       explicitly declared static; or,
+  // (This bullet corresponds to C99 6.2.2p3.)
+  if (const VarDecl *Var = dyn_cast<VarDecl>(D)) {
+    // Explicitly declared static.
+    if (Var->getStorageClass() == VarDecl::Static)
+      return NamedDecl::InternalLinkage;
+
+    // - an object or reference that is explicitly declared const
+    //   and neither explicitly declared extern nor previously
+    //   declared to have external linkage; or
+    // (there is no equivalent in C99)
+    if (Context.getLangOptions().CPlusPlus &&
+        Var->getType().isConstant(Context) && 
+        Var->getStorageClass() != VarDecl::Extern &&
+        Var->getStorageClass() != VarDecl::PrivateExtern) {
+      bool FoundExtern = false;
+      for (const VarDecl *PrevVar = Var->getPreviousDeclaration();
+           PrevVar && !FoundExtern; 
+           PrevVar = PrevVar->getPreviousDeclaration())
+        if (PrevVar->getLinkage() == NamedDecl::ExternalLinkage)
+          FoundExtern = true;
+      
+      if (!FoundExtern)
+        return NamedDecl::InternalLinkage;
+    }
+  } else if (isa<FunctionDecl>(D) || isa<FunctionTemplateDecl>(D)) {
+    const FunctionDecl *Function = 0;
+    if (const FunctionTemplateDecl *FunTmpl
+                                        = dyn_cast<FunctionTemplateDecl>(D))
+      Function = FunTmpl->getTemplatedDecl();
+    else
+      Function = cast<FunctionDecl>(D);
+
+    // Explicitly declared static.
+    if (Function->getStorageClass() == FunctionDecl::Static)
+      return NamedDecl::InternalLinkage;
+  } else if (const FieldDecl *Field = dyn_cast<FieldDecl>(D)) {
+    //   - a data member of an anonymous union.
+    if (cast<RecordDecl>(Field->getDeclContext())->isAnonymousStructOrUnion())
+      return NamedDecl::InternalLinkage;
+  }
+
+  // C++ [basic.link]p4:
+  
+  //   A name having namespace scope has external linkage if it is the
+  //   name of
+  //
+  //     - an object or reference, unless it has internal linkage; or
+  if (const VarDecl *Var = dyn_cast<VarDecl>(D)) {
+    if (!Context.getLangOptions().CPlusPlus &&
+        (Var->getStorageClass() == VarDecl::Extern ||
+         Var->getStorageClass() == VarDecl::PrivateExtern)) {
+      // C99 6.2.2p4:
+      //   For an identifier declared with the storage-class specifier
+      //   extern in a scope in which a prior declaration of that
+      //   identifier is visible, if the prior declaration specifies
+      //   internal or external linkage, the linkage of the identifier
+      //   at the later declaration is the same as the linkage
+      //   specified at the prior declaration. If no prior declaration
+      //   is visible, or if the prior declaration specifies no
+      //   linkage, then the identifier has external linkage.
+      if (const VarDecl *PrevVar = Var->getPreviousDeclaration()) {
+        if (NamedDecl::Linkage L = PrevVar->getLinkage())
+          return L;
+      }
+    }
+
+    // C99 6.2.2p5:
+    //   If the declaration of an identifier for an object has file
+    //   scope and no storage-class specifier, its linkage is
+    //   external.
+    return NamedDecl::ExternalLinkage;
+  }
+
+  //     - a function, unless it has internal linkage; or
+  if (const FunctionDecl *Function = dyn_cast<FunctionDecl>(D)) {
+    // C99 6.2.2p5:
+    //   If the declaration of an identifier for a function has no
+    //   storage-class specifier, its linkage is determined exactly
+    //   as if it were declared with the storage-class specifier
+    //   extern.
+    if (!Context.getLangOptions().CPlusPlus &&
+        (Function->getStorageClass() == FunctionDecl::Extern ||
+         Function->getStorageClass() == FunctionDecl::PrivateExtern ||
+         Function->getStorageClass() == FunctionDecl::None)) {
+      // C99 6.2.2p4:
+      //   For an identifier declared with the storage-class specifier
+      //   extern in a scope in which a prior declaration of that
+      //   identifier is visible, if the prior declaration specifies
+      //   internal or external linkage, the linkage of the identifier
+      //   at the later declaration is the same as the linkage
+      //   specified at the prior declaration. If no prior declaration
+      //   is visible, or if the prior declaration specifies no
+      //   linkage, then the identifier has external linkage.
+      if (const FunctionDecl *PrevFunc = Function->getPreviousDeclaration()) {
+        if (NamedDecl::Linkage L = PrevFunc->getLinkage())
+          return L;
+      }
+    }
+
+    return NamedDecl::ExternalLinkage;
+  }
+
+  //     - a named class (Clause 9), or an unnamed class defined in a
+  //       typedef declaration in which the class has the typedef name
+  //       for linkage purposes (7.1.3); or
+  //     - a named enumeration (7.2), or an unnamed enumeration
+  //       defined in a typedef declaration in which the enumeration
+  //       has the typedef name for linkage purposes (7.1.3); or
+  if (const TagDecl *Tag = dyn_cast<TagDecl>(D))
+    if (Tag->getDeclName() || Tag->getTypedefForAnonDecl())
+      return NamedDecl::ExternalLinkage;
+
+  //     - an enumerator belonging to an enumeration with external linkage;
+  if (isa<EnumConstantDecl>(D))
+    if (cast<NamedDecl>(D->getDeclContext())->getLinkage() 
+                                                 == NamedDecl::ExternalLinkage)
+      return NamedDecl::ExternalLinkage;
+
+  //     - a template, unless it is a function template that has
+  //       internal linkage (Clause 14);
+  if (isa<TemplateDecl>(D))
+    return NamedDecl::ExternalLinkage;
+
+  //     - a namespace (7.3), unless it is declared within an unnamed
+  //       namespace.
+  if (isa<NamespaceDecl>(D) && !D->isInAnonymousNamespace())
+    return NamedDecl::ExternalLinkage;
+
+  return NamedDecl::NoLinkage;
+}
+
+NamedDecl::Linkage NamedDecl::getLinkage() const {
+  // Handle linkage for namespace-scope names.
+  if (getDeclContext()->getLookupContext()->isFileContext())
+    if (Linkage L = getLinkageForNamespaceScopeDecl(this))
+      return L;
+  
+  // C++ [basic.link]p5:
+  //   In addition, a member function, static data member, a named
+  //   class or enumeration of class scope, or an unnamed class or
+  //   enumeration defined in a class-scope typedef declaration such
+  //   that the class or enumeration has the typedef name for linkage
+  //   purposes (7.1.3), has external linkage if the name of the class
+  //   has external linkage.
+  if (getDeclContext()->isRecord() &&
+      (isa<CXXMethodDecl>(this) || isa<VarDecl>(this) ||
+       (isa<TagDecl>(this) &&
+        (getDeclName() || cast<TagDecl>(this)->getTypedefForAnonDecl()))) &&
+      cast<RecordDecl>(getDeclContext())->getLinkage() == ExternalLinkage)
+    return ExternalLinkage;
+
+  // C++ [basic.link]p6:
+  //   The name of a function declared in block scope and the name of
+  //   an object declared by a block scope extern declaration have
+  //   linkage. If there is a visible declaration of an entity with
+  //   linkage having the same name and type, ignoring entities
+  //   declared outside the innermost enclosing namespace scope, the
+  //   block scope declaration declares that same entity and receives
+  //   the linkage of the previous declaration. If there is more than
+  //   one such matching entity, the program is ill-formed. Otherwise,
+  //   if no matching entity is found, the block scope entity receives
+  //   external linkage.
+  if (getLexicalDeclContext()->isFunctionOrMethod()) {
+    if (const FunctionDecl *Function = dyn_cast<FunctionDecl>(this)) {
+      if (Function->getPreviousDeclaration())
+        if (Linkage L = Function->getPreviousDeclaration()->getLinkage())
+          return L;
+
+      return ExternalLinkage;
+    }
+
+    if (const VarDecl *Var = dyn_cast<VarDecl>(this))
+      if (Var->getStorageClass() == VarDecl::Extern ||
+          Var->getStorageClass() == VarDecl::PrivateExtern) {
+        if (Var->getPreviousDeclaration())
+          if (Linkage L = Var->getPreviousDeclaration()->getLinkage())
+            return L;
+
+        return ExternalLinkage;
+      }
+  }
+
+  // C++ [basic.link]p6:
+  //   Names not covered by these rules have no linkage.
+  return NoLinkage;
+}
 
 std::string NamedDecl::getQualifiedNameAsString() const {
   return getQualifiedNameAsString(getASTContext().getLangOptions());
@@ -226,11 +458,6 @@ std::string NamedDecl::getQualifiedNameAsString(const PrintingPolicy &P) const {
     return getNameAsString();
 
   while (Ctx) {
-    if (Ctx->isFunctionOrMethod())
-      // FIXME: That probably will happen, when D was member of local
-      // scope class/struct/union. How do we handle this case?
-      break;
-
     if (const ClassTemplateSpecializationDecl *Spec
           = dyn_cast<ClassTemplateSpecializationDecl>(Ctx)) {
       const TemplateArgumentList &TemplateArgs = Spec->getTemplateArgs();
@@ -240,6 +467,48 @@ std::string NamedDecl::getQualifiedNameAsString(const PrintingPolicy &P) const {
                                            TemplateArgs.flat_size(),
                                            P);
       Names.push_back(Spec->getIdentifier()->getNameStart() + TemplateArgsStr);
+    } else if (const NamespaceDecl *ND = dyn_cast<NamespaceDecl>(Ctx)) {
+      if (ND->isAnonymousNamespace())
+        Names.push_back("<anonymous namespace>");
+      else
+        Names.push_back(ND->getNameAsString());
+    } else if (const RecordDecl *RD = dyn_cast<RecordDecl>(Ctx)) {
+      if (!RD->getIdentifier()) {
+        std::string RecordString = "<anonymous ";
+        RecordString += RD->getKindName();
+        RecordString += ">";
+        Names.push_back(RecordString);
+      } else {
+        Names.push_back(RD->getNameAsString());
+      }
+    } else if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(Ctx)) {
+      std::string Proto = FD->getNameAsString();
+
+      const FunctionProtoType *FT = 0;
+      if (FD->hasWrittenPrototype())
+        FT = dyn_cast<FunctionProtoType>(FD->getType()->getAs<FunctionType>());
+
+      Proto += "(";
+      if (FT) {
+        llvm::raw_string_ostream POut(Proto);
+        unsigned NumParams = FD->getNumParams();
+        for (unsigned i = 0; i < NumParams; ++i) {
+          if (i)
+            POut << ", ";
+          std::string Param;
+          FD->getParamDecl(i)->getType().getAsStringInternal(Param, P);
+          POut << Param;
+        }
+
+        if (FT->isVariadic()) {
+          if (NumParams > 0)
+            POut << ", ";
+          POut << "...";
+        }
+      }
+      Proto += ")";
+
+      Names.push_back(Proto);
     } else if (const NamedDecl *ND = dyn_cast<NamedDecl>(Ctx))
       Names.push_back(ND->getNameAsString());
     else
@@ -300,13 +569,7 @@ bool NamedDecl::declarationReplaces(NamedDecl *OldD) const {
 }
 
 bool NamedDecl::hasLinkage() const {
-  if (const VarDecl *VD = dyn_cast<VarDecl>(this))
-    return VD->hasExternalStorage() || VD->isFileVarDecl();
-
-  if (isa<FunctionDecl>(this) && !isa<CXXMethodDecl>(this))
-    return true;
-
-  return false;
+  return getLinkage() != NoLinkage;
 }
 
 NamedDecl *NamedDecl::getUnderlyingDecl() {
@@ -344,9 +607,9 @@ SourceLocation DeclaratorDecl::getTypeSpecStartLoc() const {
 //===----------------------------------------------------------------------===//
 
 VarDecl *VarDecl::Create(ASTContext &C, DeclContext *DC, SourceLocation L,
-                         IdentifierInfo *Id, QualType T, DeclaratorInfo *DInfo,
+                         IdentifierInfo *Id, QualType T, TypeSourceInfo *TInfo,
                          StorageClass S) {
-  return new (C) VarDecl(Var, DC, L, Id, T, DInfo, S);
+  return new (C) VarDecl(Var, DC, L, Id, T, TInfo, S);
 }
 
 void VarDecl::Destroy(ASTContext& C) {
@@ -647,8 +910,20 @@ unsigned FunctionDecl::getMinRequiredArguments() const {
 }
 
 bool FunctionDecl::isInlined() const {
-  if (isInlineSpecified() || (isa<CXXMethodDecl>(this) && !isOutOfLine()))
+  // FIXME: This is not enough. Consider:
+  //
+  // inline void f();
+  // void f() { }
+  //
+  // f is inlined, but does not have inline specified.
+  // To fix this we should add an 'inline' flag to FunctionDecl.
+  if (isInlineSpecified())
     return true;
+  
+  if (isa<CXXMethodDecl>(this)) {
+    if (!isOutOfLine() || getCanonicalDecl()->isInlineSpecified())
+      return true;
+  }
 
   switch (getTemplateSpecializationKind()) {
   case TSK_Undeclared:
@@ -682,7 +957,7 @@ bool FunctionDecl::isInlined() const {
 /// "externally" visible to other translation units in the program.
 ///
 /// In C99, inline definitions are not externally visible by default. However,
-/// if even one of the globa-scope declarations is marked "extern inline", the
+/// if even one of the global-scope declarations is marked "extern inline", the
 /// inline definition becomes externally visible (C99 6.7.4p6).
 ///
 /// In GNU89 mode, or if the gnu_inline attribute is attached to the function
@@ -762,6 +1037,15 @@ OverloadedOperatorKind FunctionDecl::getOverloadedOperator() const {
     return getDeclName().getCXXOverloadedOperator();
   else
     return OO_None;
+}
+
+/// getLiteralIdentifier - The literal suffix identifier this function
+/// represents, if any.
+const IdentifierInfo *FunctionDecl::getLiteralIdentifier() const {
+  if (getDeclName().getNameKind() == DeclarationName::CXXLiteralOperatorName)
+    return getDeclName().getCXXLiteralIdentifier();
+  else
+    return 0;
 }
 
 FunctionDecl *FunctionDecl::getInstantiatedFromMemberFunction() const {
@@ -1008,7 +1292,7 @@ TagDecl* TagDecl::getDefinition(ASTContext& C) const {
 
 TagDecl::TagKind TagDecl::getTagKindForTypeSpec(unsigned TypeSpec) {
   switch (TypeSpec) {
-  default: llvm::llvm_unreachable("unexpected type specifier");
+  default: llvm_unreachable("unexpected type specifier");
   case DeclSpec::TST_struct: return TK_struct;
   case DeclSpec::TST_class: return TK_class;
   case DeclSpec::TST_union: return TK_union;

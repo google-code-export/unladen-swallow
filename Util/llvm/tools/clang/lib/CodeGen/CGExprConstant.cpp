@@ -22,14 +22,12 @@
 #include "llvm/Constants.h"
 #include "llvm/Function.h"
 #include "llvm/GlobalVariable.h"
-#include "llvm/Support/Compiler.h"
 #include "llvm/Target/TargetData.h"
 using namespace clang;
 using namespace CodeGen;
 
 namespace  {
-
-class VISIBILITY_HIDDEN ConstStructBuilder {
+class ConstStructBuilder {
   CodeGenModule &CGM;
   CodeGenFunction *CGF;
 
@@ -169,7 +167,11 @@ class VISIBILITY_HIDDEN ConstStructBuilder {
       }
 
       // Or in the bits that go into the previous byte.
-      Tmp |= cast<llvm::ConstantInt>(Elements.back())->getValue();
+      if (llvm::ConstantInt *Val = dyn_cast<llvm::ConstantInt>(Elements.back()))
+        Tmp |= Val->getValue();
+      else
+        assert(isa<llvm::UndefValue>(Elements.back()));
+
       Elements.back() = llvm::ConstantInt::get(CGM.getLLVMContext(), Tmp);
 
       if (FitsCompletelyInPreviousByte)
@@ -377,7 +379,7 @@ public:
   }
 };
 
-class VISIBILITY_HIDDEN ConstExprEmitter :
+class ConstExprEmitter :
   public StmtVisitor<ConstExprEmitter, llvm::Constant*> {
   CodeGenModule &CGM;
   CodeGenFunction *CGF;
@@ -406,6 +408,8 @@ public:
   llvm::Constant *EmitMemberFunctionPointer(CXXMethodDecl *MD) {
     assert(MD->isInstance() && "Member function must not be static!");
     
+    MD = MD->getCanonicalDecl();
+
     const llvm::Type *PtrDiffTy = 
       CGM.getTypes().ConvertType(CGM.getContext().getPointerDiffType());
     
@@ -413,9 +417,10 @@ public:
     
     // Get the function pointer (or index if this is a virtual function).
     if (MD->isVirtual()) {
-      int64_t Index = CGM.getVtableInfo().getMethodVtableIndex(MD);
+      uint64_t Index = CGM.getVtableInfo().getMethodVtableIndex(MD);
       
-      Values[0] = llvm::ConstantInt::get(PtrDiffTy, Index + 1);
+      // The pointer is 1 + the virtual table offset in bytes.
+      Values[0] = llvm::ConstantInt::get(PtrDiffTy, (Index * 8) + 1);
     } else {
       llvm::Constant *FuncPtr = CGM.GetAddrOfFunction(MD);
 
@@ -630,32 +635,6 @@ public:
     return ConstStructBuilder::BuildStruct(CGM, CGF, ILE);
   }
 
-  llvm::Constant *EmitVectorInitialization(InitListExpr *ILE) {
-    const llvm::VectorType *VType =
-        cast<llvm::VectorType>(ConvertType(ILE->getType()));
-    const llvm::Type *ElemTy = VType->getElementType();
-    std::vector<llvm::Constant*> Elts;
-    unsigned NumElements = VType->getNumElements();
-    unsigned NumInitElements = ILE->getNumInits();
-
-    unsigned NumInitableElts = std::min(NumInitElements, NumElements);
-
-    // Copy initializer elements.
-    unsigned i = 0;
-    for (; i < NumInitableElts; ++i) {
-      Expr *Init = ILE->getInit(i);
-      llvm::Constant *C = CGM.EmitConstantExpr(Init, Init->getType(), CGF);
-      if (!C)
-        return 0;
-      Elts.push_back(C);
-    }
-
-    for (; i < NumElements; ++i)
-      Elts.push_back(llvm::Constant::getNullValue(ElemTy));
-
-    return llvm::ConstantVector::get(VType, Elts);
-  }
-
   llvm::Constant *VisitImplicitValueInitExpr(ImplicitValueInitExpr* E) {
     return CGM.EmitNullConstant(E->getType());
   }
@@ -673,14 +652,15 @@ public:
     if (ILE->getType()->isArrayType())
       return EmitArrayInitialization(ILE);
 
-    if (ILE->getType()->isStructureType())
+    if (ILE->getType()->isRecordType())
       return EmitStructInitialization(ILE);
 
     if (ILE->getType()->isUnionType())
       return EmitUnionInitialization(ILE);
 
+    // If ILE was a constant vector, we would have handled it already.
     if (ILE->getType()->isVectorType())
-      return EmitVectorInitialization(ILE);
+      return 0;
 
     assert(0 && "Unable to handle InitListExpr");
     // Get rid of control reaches end of void function warning.

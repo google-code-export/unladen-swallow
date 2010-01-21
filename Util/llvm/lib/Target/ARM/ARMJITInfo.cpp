@@ -139,17 +139,11 @@ ARMJITInfo::getLazyResolverFunction(JITCompilerFn F) {
 
 void *ARMJITInfo::emitGlobalValueIndirectSym(const GlobalValue *GV, void *Ptr,
                                              JITCodeEmitter &JCE) {
-  MachineCodeEmitter::BufferState BS;
-  JCE.startGVStub(BS, GV, 4, 4);
-  intptr_t Addr = (intptr_t)JCE.getCurrentPCValue();
-  if (!sys::Memory::setRangeWritable((void*)Addr, 4)) {
-    llvm_unreachable("ERROR: Unable to mark indirect symbol writable");
-  }
-  JCE.emitWordLE((intptr_t)Ptr);
-  if (!sys::Memory::setRangeExecutable((void*)Addr, 4)) {
-    llvm_unreachable("ERROR: Unable to mark indirect symbol executable");
-  }
-  void *PtrAddr = JCE.finishGVStub(BS);
+  uint8_t Buffer[4];
+  uint8_t *Cur = Buffer;
+  MachineCodeEmitter::emitWordLEInto(Cur, (intptr_t)Ptr);
+  void *PtrAddr = JCE.allocIndirectGV(
+      GV, Buffer, sizeof(Buffer), /*Alignment=*/4);
   addIndirectSymAddr(Ptr, (intptr_t)PtrAddr);
   return PtrAddr;
 }
@@ -186,7 +180,7 @@ void *ARMJITInfo::emitFunctionStub(const Function* F, void *Fn,
       if (!sys::Memory::setRangeWritable(Addr, 16)) {
         llvm_unreachable("ERROR: Unable to mark stub writable");
       }
-      JCE.emitWordLE(0xe59fc004);            // ldr pc, [pc, #+4]
+      JCE.emitWordLE(0xe59fc004);            // ldr ip, [pc, #+4]
       JCE.emitWordLE(0xe08fc00c);            // L_func$scv: add ip, pc, ip
       JCE.emitWordLE(0xe59cf000);            // ldr pc, [ip]
       JCE.emitWordLE(LazyPtr - (intptr_t(Addr)+4+8));  // func - (L_func$scv+8)

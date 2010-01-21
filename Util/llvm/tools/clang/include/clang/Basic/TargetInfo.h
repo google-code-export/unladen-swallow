@@ -30,6 +30,7 @@ class StringRef;
 namespace clang {
 class Diagnostic;
 class LangOptions;
+class MacroBuilder;
 class SourceLocation;
 class SourceManager;
 class TargetOptions;
@@ -61,8 +62,11 @@ protected:
 
 public:
   /// CreateTargetInfo - Construct a target for the given options.
-  static TargetInfo* CreateTargetInfo(Diagnostic &Diags,
-                                      const TargetOptions &Opts);
+  ///
+  /// \param Opts - The options to use to initialize the target. The target may
+  /// modify the options to canonicalize the target feature information to match
+  /// what the backend expects.
+  static TargetInfo* CreateTargetInfo(Diagnostic &Diags, TargetOptions &Opts);
 
   virtual ~TargetInfo();
 
@@ -80,7 +84,7 @@ public:
   };
 protected:
   IntType SizeType, IntMaxType, UIntMaxType, PtrDiffType, IntPtrType, WCharType,
-          WIntType, Char16Type, Char32Type, Int64Type;
+          WIntType, Char16Type, Char32Type, Int64Type, SigAtomicType;
 public:
   IntType getSizeType() const { return SizeType; }
   IntType getIntMaxType() const { return IntMaxType; }
@@ -94,6 +98,7 @@ public:
   IntType getChar16Type() const { return Char16Type; }
   IntType getChar32Type() const { return Char32Type; }
   IntType getInt64Type() const { return Int64Type; }
+  IntType getSigAtomicType() const { return SigAtomicType; }
 
 
   /// getTypeWidth - Return the width (in bits) of the specified integer type 
@@ -205,7 +210,7 @@ public:
   /// getTargetDefines - Appends the target-specific #define values for this
   /// target set to the specified buffer.
   virtual void getTargetDefines(const LangOptions &Opts,
-                                std::vector<char> &DefineBuffer) const = 0;
+                                MacroBuilder &Builder) const = 0;
 
 
   /// getTargetBuiltins - Return information about target-specific builtins for
@@ -359,6 +364,15 @@ public:
     return "";
   }
 
+  /// setCPU - Target the specific CPU.
+  ///
+  /// \return - False on error (invalid CPU name).
+  //
+  // FIXME: Remove this.
+  virtual bool setCPU(const std::string &Name) {
+    return true;
+  }
+
   /// setABI - Use the specific ABI.
   ///
   /// \return - False on error (invalid ABI name).
@@ -379,7 +393,10 @@ public:
   /// HandleTargetOptions - Perform initialization based on the user configured
   /// set of features (e.g., +sse4). The list is guaranteed to have at most one
   /// entry per feature.
-  virtual void HandleTargetFeatures(const std::vector<std::string> &Features) {
+  ///
+  /// The target may modify the features list, to change which options are
+  /// passed onwards to the backend.
+  virtual void HandleTargetFeatures(std::vector<std::string> &Features) {
   }
 
   // getRegParmMax - Returns maximal number of args passed in registers.

@@ -2646,6 +2646,36 @@ def foo(x, callback):
                 self.assertEqual(foo.__code__.__use_llvm__, False)
             run_test()
 
+    def test_global_dict_mismatch(self):
+        # Test that calling a function with a globals dict other than the one
+        # we assumed during compilation works successfully.
+        globals_1 = globals().copy()
+        globals_2 = globals().copy()
+        globals_1['x'] = 1
+        globals_2['x'] = 2
+        load_x_1 = compile_for_llvm("load_x_1", """
+def load_x_1():
+    return x
+""", optimization_level=None, globals_dict=globals_1)
+
+        # Make a new function with the other globals dict and assign it
+        # load_x_1's code object.
+        load_x_2 = compile_for_llvm("load_x_2", """
+def load_x_2():
+    pass
+""", optimization_level=None, globals_dict=globals_2)
+        load_x_2.__code__ = load_x_1.__code__
+
+        # We have to compile the code objects by setting jit control to
+        # "always" and not passing optimization_level to compile_for_llvm,
+        # or we won't assume a globals dictionary during compilation on the
+        # first call.
+        with set_jit_control("always"):
+            x1 = load_x_1()
+            x2 = load_x_2()
+        self.assertEqual(x1, 1)
+        self.assertEqual(x2, 2)
+
     def test_get_correct_globals(self):
         # Extracted from test_math.MathTests.testFsum. Trigger the compilation
         # of a hot function from another module; at one point in the

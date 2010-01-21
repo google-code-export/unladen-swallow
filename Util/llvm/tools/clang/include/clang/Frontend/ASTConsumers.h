@@ -83,6 +83,7 @@ ASTConsumer *CreateBackendConsumer(BackendAction Action,
                                    const LangOptions &Features,
                                    const CodeGenOptions &CodeGenOpts,
                                    const TargetOptions &TargetOpts,
+                                   bool TimePasses,
                                    const std::string &ModuleID,
                                    llvm::raw_ostream *OS,
                                    llvm::LLVMContext& C);
@@ -93,18 +94,12 @@ ASTConsumer *CreateHTMLPrinter(llvm::raw_ostream *OS, Preprocessor &PP,
                                bool SyntaxHighlight = true,
                                bool HighlightMacros = true);
 
-// PCH generator: generates a precompiled header file; this file can be
-// used later with the PCHReader (clang-cc option -include-pch)
-// to speed up compile times.
+// PCH generator: generates a precompiled header file; this file can be used
+// later with the PCHReader (clang -cc1 option -include-pch) to speed up compile
+// times.
 ASTConsumer *CreatePCHGenerator(const Preprocessor &PP,
                                 llvm::raw_ostream *OS,
                                 const char *isysroot = 0);
-
-// Block rewriter: rewrites code using the Apple blocks extension to pure
-// C code.  Output is always sent to stdout.
-ASTConsumer *CreateBlockRewriter(const std::string &InFile,
-                                 Diagnostic &Diags,
-                                 const LangOptions &LangOpts);
 
 // Inheritance viewer: for C++ code, creates a graph of the inheritance
 // tree for the given class and displays it with "dotty".

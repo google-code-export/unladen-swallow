@@ -51,7 +51,7 @@ bool SVal::hasConjuredSymbol() const {
 const FunctionDecl *SVal::getAsFunctionDecl() const {
   if (const loc::MemRegionVal* X = dyn_cast<loc::MemRegionVal>(this)) {
     const MemRegion* R = X->getRegion();
-    if (const CodeTextRegion *CTR = R->getAs<CodeTextRegion>())
+    if (const FunctionTextRegion *CTR = R->getAs<FunctionTextRegion>())
       return CTR->getDecl();
   }
 
@@ -96,6 +96,10 @@ const SymExpr *SVal::getAsSymbolicExpression() const {
 const MemRegion *SVal::getAsRegion() const {
   if (const loc::MemRegionVal *X = dyn_cast<loc::MemRegionVal>(this))
     return X->getRegion();
+
+  if (const nonloc::LocAsInteger *X = dyn_cast<nonloc::LocAsInteger>(this)) {
+    return X->getLoc().getAsRegion();
+  }
 
   return 0;
 }

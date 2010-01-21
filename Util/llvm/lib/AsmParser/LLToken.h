@@ -29,6 +29,7 @@ namespace lltok {
     less, greater,     // <  >
     lparen, rparen,    // (  )
     backslash,         // \    (not /)
+    exclaim,           // !
 
     kw_x,
     kw_begin,   kw_end,
@@ -69,6 +70,7 @@ namespace lltok {
     kw_cc, kw_ccc, kw_fastcc, kw_coldcc,
     kw_x86_stdcallcc, kw_x86_fastcallcc,
     kw_arm_apcscc, kw_arm_aapcscc, kw_arm_aapcs_vfpcc,
+    kw_msp430_intrcc,
 
     kw_signext,
     kw_zeroext,
@@ -127,11 +129,8 @@ namespace lltok {
     LabelStr,          // foo:
     GlobalVar,         // @foo @"foo"
     LocalVar,          // %foo %"foo"
+    MetadataVar,       // !foo
     StringConstant,    // "foo"
-    NamedOrCustomMD,   // !foo
-
-    // Metadata valued tokens.
-    Metadata,          // !"foo" !{i8 42}
 
     // Type valued tokens (TyVal).
     Type,

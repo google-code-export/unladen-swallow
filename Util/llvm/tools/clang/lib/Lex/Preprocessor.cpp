@@ -26,6 +26,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/Lex/Preprocessor.h"
+#include "MacroArgs.h"
+#include "clang/Lex/ExternalPreprocessorSource.h"
 #include "clang/Lex/HeaderSearch.h"
 #include "clang/Lex/MacroInfo.h"
 #include "clang/Lex/Pragma.h"
@@ -42,6 +44,7 @@
 using namespace clang;
 
 //===----------------------------------------------------------------------===//
+ExternalPreprocessorSource::~ExternalPreprocessorSource() { }
 
 Preprocessor::Preprocessor(Diagnostic &diags, const LangOptions &opts,
                            const TargetInfo &target, SourceManager &SM,
@@ -49,8 +52,9 @@ Preprocessor::Preprocessor(Diagnostic &diags, const LangOptions &opts,
                            IdentifierInfoLookup* IILookup,
                            bool OwnsHeaders)
   : Diags(&diags), Features(opts), Target(target),FileMgr(Headers.getFileMgr()),
-    SourceMgr(SM), HeaderInfo(Headers), Identifiers(opts, IILookup),
-    BuiltinInfo(Target), CurPPLexer(0), CurDirLookup(0), Callbacks(0) {
+    SourceMgr(SM), HeaderInfo(Headers), ExternalSource(0),
+    Identifiers(opts, IILookup), BuiltinInfo(Target), CodeCompletionFile(0), 
+    CurPPLexer(0), CurDirLookup(0), Callbacks(0), MacroArgCache(0) {
   ScratchBuf = new ScratchBuffer(SourceMgr);
   CounterValue = 0; // __COUNTER__ starts at 0.
   OwnsHeaderSearch = OwnsHeaders;
@@ -75,6 +79,9 @@ Preprocessor::Preprocessor(Diagnostic &diags, const LangOptions &opts,
 
   CachedLexPos = 0;
 
+  // We haven't read anything from the external source.
+  ReadMacrosFromExternalSource = false;
+      
   // "Poison" __VA_ARGS__, which can only appear in the expansion of a macro.
   // This gets unpoisoned where it is allowed.
   (Ident__VA_ARGS__ = getIdentifierInfo("__VA_ARGS__"))->setIsPoisoned();
@@ -101,7 +108,7 @@ Preprocessor::~Preprocessor() {
        Macros.begin(), E = Macros.end(); I != E; ++I) {
     // We don't need to free the MacroInfo objects directly.  These
     // will be released when the BumpPtrAllocator 'BP' object gets
-    // destroyed. We still need to run the dstor, however, to free
+    // destroyed.  We still need to run the dtor, however, to free
     // memory alocated by MacroInfo.
     I->second->Destroy(BP);
     I->first->setHasMacroDefinition(false);
@@ -110,6 +117,10 @@ Preprocessor::~Preprocessor() {
   // Free any cached macro expanders.
   for (unsigned i = 0, e = NumCachedTokenLexers; i != e; ++i)
     delete TokenLexerCache[i];
+  
+  // Free any cached MacroArgs.
+  for (MacroArgs *ArgList = MacroArgCache; ArgList; )
+    ArgList = ArgList->deallocate();
 
   // Release pragma information.
   delete PragmaHandlers;
@@ -186,6 +197,79 @@ void Preprocessor::PrintStats() {
   llvm::errs() << (NumFastTokenPaste+NumTokenPaste)
              << " token paste (##) operations performed, "
              << NumFastTokenPaste << " on the fast path.\n";
+}
+
+Preprocessor::macro_iterator 
+Preprocessor::macro_begin(bool IncludeExternalMacros) const { 
+  if (IncludeExternalMacros && ExternalSource && 
+      !ReadMacrosFromExternalSource) {
+    ReadMacrosFromExternalSource = true;
+    ExternalSource->ReadDefinedMacros();
+  }
+  
+  return Macros.begin(); 
+}
+
+Preprocessor::macro_iterator 
+Preprocessor::macro_end(bool IncludeExternalMacros) const { 
+  if (IncludeExternalMacros && ExternalSource && 
+      !ReadMacrosFromExternalSource) {
+    ReadMacrosFromExternalSource = true;
+    ExternalSource->ReadDefinedMacros();
+  }
+  
+  return Macros.end(); 
+}
+
+bool Preprocessor::SetCodeCompletionPoint(const FileEntry *File, 
+                                          unsigned TruncateAtLine, 
+                                          unsigned TruncateAtColumn) {
+  using llvm::MemoryBuffer;
+
+  CodeCompletionFile = File;
+
+  // Okay to clear out the code-completion point by passing NULL.
+  if (!CodeCompletionFile)
+    return false;
+
+  // Load the actual file's contents.
+  const MemoryBuffer *Buffer = SourceMgr.getMemoryBufferForFile(File);
+  if (!Buffer)
+    return true;
+
+  // Find the byte position of the truncation point.
+  const char *Position = Buffer->getBufferStart();
+  for (unsigned Line = 1; Line < TruncateAtLine; ++Line) {
+    for (; *Position; ++Position) {
+      if (*Position != '\r' && *Position != '\n')
+        continue;
+      
+      // Eat \r\n or \n\r as a single line.
+      if ((Position[1] == '\r' || Position[1] == '\n') &&
+          Position[0] != Position[1])
+        ++Position;
+      ++Position;
+      break;
+    }
+  }
+  
+  Position += TruncateAtColumn - 1;
+  
+  // Truncate the buffer.
+  if (Position < Buffer->getBufferEnd()) {
+    MemoryBuffer *TruncatedBuffer 
+      = MemoryBuffer::getMemBufferCopy(Buffer->getBufferStart(), Position, 
+                                       Buffer->getBufferIdentifier());
+    SourceMgr.overrideFileContents(File, TruncatedBuffer);
+  }
+
+  return false;
+}
+
+bool Preprocessor::isCodeCompletionFile(SourceLocation FileLoc) const {
+  return CodeCompletionFile && FileLoc.isFileID() &&
+    SourceMgr.getFileEntryForID(SourceMgr.getFileID(FileLoc))
+      == CodeCompletionFile;
 }
 
 //===----------------------------------------------------------------------===//
@@ -380,33 +464,27 @@ void Preprocessor::EnterMainSourceFile() {
   FileID MainFileID = SourceMgr.getMainFileID();
 
   // Enter the main file source buffer.
-  EnterSourceFile(MainFileID, 0);
+  std::string ErrorStr;
+  bool Res = EnterSourceFile(MainFileID, 0, ErrorStr);
+  assert(!Res && "Entering main file should not fail!");
 
   // Tell the header info that the main file was entered.  If the file is later
   // #imported, it won't be re-entered.
   if (const FileEntry *FE = SourceMgr.getFileEntryForID(MainFileID))
     HeaderInfo.IncrementIncludeCount(FE);
 
-  std::vector<char> PrologFile;
-  PrologFile.reserve(4080);
-
-  // FIXME: Don't make a copy.
-  PrologFile.insert(PrologFile.end(), Predefines.begin(), Predefines.end());
-
-  // Memory buffer must end with a null byte!
-  PrologFile.push_back(0);
-
-  // Now that we have emitted the predefined macros, #includes, etc into
-  // PrologFile, preprocess it to populate the initial preprocessor state.
+  // Preprocess Predefines to populate the initial preprocessor state.
   llvm::MemoryBuffer *SB =
-    llvm::MemoryBuffer::getMemBufferCopy(&PrologFile.front(),&PrologFile.back(),
+    llvm::MemoryBuffer::getMemBufferCopy(Predefines.data(),
+                                         Predefines.data() + Predefines.size(),
                                          "<built-in>");
   assert(SB && "Cannot fail to create predefined source buffer");
   FileID FID = SourceMgr.createFileIDForMemBuffer(SB);
   assert(!FID.isInvalid() && "Could not create FileID for predefines?");
 
   // Start parsing the predefines.
-  EnterSourceFile(FID, 0);
+  Res = EnterSourceFile(FID, 0, ErrorStr);
+  assert(!Res && "Entering predefines should not fail!");
 }
 
 

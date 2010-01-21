@@ -75,26 +75,10 @@ void OptParserEmitter::run(raw_ostream &OS) {
     Records.getAllDerivedDefinitions("OptionGroup");
   std::vector<Record*> Opts = Records.getAllDerivedDefinitions("Option");
 
-  if (GenDefs) {
-    OS << "\
-//=== TableGen'erated File - Option Parsing Definitions ---------*- C++ -*-===//\n \
-//\n\
-// Option Parsing Definitions\n\
-//\n\
-// Automatically generated file, do not edit!\n\
-//\n\
-//===----------------------------------------------------------------------===//\n";
-  } else {
-    OS << "\
-//=== TableGen'erated File - Option Parsing Table ---------------*- C++ -*-===//\n \
-//\n\
-// Option Parsing Definitions\n\
-//\n\
-// Automatically generated file, do not edit!\n\
-//\n\
-//===----------------------------------------------------------------------===//\n";
-  }
-  OS << "\n";
+  if (GenDefs)
+    EmitSourceFileHeader("Option Parsing Definitions", OS);
+  else
+    EmitSourceFileHeader("Option Parsing Table", OS);
 
   array_pod_sort(Opts.begin(), Opts.end(), CompareOptionRecords);
   if (GenDefs) {
@@ -127,7 +111,18 @@ void OptParserEmitter::run(raw_ostream &OS) {
         OS << "INVALID";
 
       // The other option arguments (unused for groups).
-      OS << ", INVALID, 0, 0, 0, 0)\n";
+      OS << ", INVALID, 0, 0";
+
+      // The option help text.
+      if (!dynamic_cast<UnsetInit*>(R.getValueInit("HelpText"))) {
+        OS << ",\n";
+        OS << "       ";
+        write_cstring(OS, R.getValueAsString("HelpText"));
+      } else
+        OS << ", 0";
+
+      // The option meta-variable name (unused).
+      OS << ", 0)\n";
     }
     OS << "\n";
 

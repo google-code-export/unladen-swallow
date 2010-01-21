@@ -36,6 +36,14 @@ void UnqualifiedId::setTemplateId(TemplateIdAnnotation *TemplateId) {
   EndLocation = TemplateId->RAngleLoc;
 }
 
+void UnqualifiedId::setConstructorTemplateId(TemplateIdAnnotation *TemplateId) {
+  assert(TemplateId && "NULL template-id annotation?");
+  Kind = IK_ConstructorTemplateId;
+  this->TemplateId = TemplateId;
+  StartLocation = TemplateId->TemplateNameLoc;
+  EndLocation = TemplateId->RAngleLoc;
+}
+
 /// DeclaratorChunk::getFunction - Return a DeclaratorChunk for a function.
 /// "TheDeclarator" is the declarator that this will be added to.
 DeclaratorChunk DeclaratorChunk::getFunction(bool hasProto, bool isVariadic,
@@ -137,7 +145,7 @@ const char *DeclSpec::getSpecifierName(DeclSpec::SCS S) {
   case DeclSpec::SCS_private_extern: return "__private_extern__";
   case DeclSpec::SCS_mutable:     return "mutable";
   }
-  llvm::llvm_unreachable("Unknown typespec!");
+  llvm_unreachable("Unknown typespec!");
 }
 
 const char *DeclSpec::getSpecifierName(TSW W) {
@@ -147,7 +155,7 @@ const char *DeclSpec::getSpecifierName(TSW W) {
   case TSW_long:        return "long";
   case TSW_longlong:    return "long long";
   }
-  llvm::llvm_unreachable("Unknown typespec!");
+  llvm_unreachable("Unknown typespec!");
 }
 
 const char *DeclSpec::getSpecifierName(TSC C) {
@@ -156,7 +164,7 @@ const char *DeclSpec::getSpecifierName(TSC C) {
   case TSC_imaginary:   return "imaginary";
   case TSC_complex:     return "complex";
   }
-  llvm::llvm_unreachable("Unknown typespec!");
+  llvm_unreachable("Unknown typespec!");
 }
 
 
@@ -166,7 +174,7 @@ const char *DeclSpec::getSpecifierName(TSS S) {
   case TSS_signed:      return "signed";
   case TSS_unsigned:    return "unsigned";
   }
-  llvm::llvm_unreachable("Unknown typespec!");
+  llvm_unreachable("Unknown typespec!");
 }
 
 const char *DeclSpec::getSpecifierName(DeclSpec::TST T) {
@@ -195,7 +203,7 @@ const char *DeclSpec::getSpecifierName(DeclSpec::TST T) {
   case DeclSpec::TST_decltype:    return "(decltype)";
   case DeclSpec::TST_error:       return "(error)";
   }
-  llvm::llvm_unreachable("Unknown typespec!");
+  llvm_unreachable("Unknown typespec!");
 }
 
 const char *DeclSpec::getSpecifierName(TQ T) {
@@ -205,7 +213,7 @@ const char *DeclSpec::getSpecifierName(TQ T) {
   case DeclSpec::TQ_restrict:    return "restrict";
   case DeclSpec::TQ_volatile:    return "volatile";
   }
-  llvm::llvm_unreachable("Unknown typespec!");
+  llvm_unreachable("Unknown typespec!");
 }
 
 bool DeclSpec::SetStorageClassSpec(SCS S, SourceLocation Loc,

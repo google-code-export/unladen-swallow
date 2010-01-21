@@ -15,12 +15,27 @@
 #ifndef LLVM_CLANG_SEMA_OVERLOAD_H
 #define LLVM_CLANG_SEMA_OVERLOAD_H
 
+#include "clang/AST/Decl.h"
+#include "clang/AST/Expr.h"
+#include "clang/AST/Type.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 
 namespace clang {
+  class ASTContext;
   class CXXConstructorDecl;
+  class CXXConversionDecl;
   class FunctionDecl;
 
+  /// OverloadingResult - Capture the result of performing overload
+  /// resolution.
+  enum OverloadingResult {
+    OR_Success,             ///< Overload resolution succeeded.
+    OR_No_Viable_Function,  ///< No viable function found.
+    OR_Ambiguous,           ///< Ambiguous candidates found.
+    OR_Deleted              ///< Overload resoltuion refers to a deleted function.
+  };
+    
   /// ImplicitConversionKind - The kind of implicit conversion used to
   /// convert an argument to a parameter's type. The enumerator values
   /// match with Table 9 of (C++ 13.3.3.1.1) and are listed such that
@@ -30,6 +45,7 @@ namespace clang {
     ICK_Lvalue_To_Rvalue,      ///< Lvalue-to-rvalue conversion (C++ 4.1)
     ICK_Array_To_Pointer,      ///< Array-to-pointer conversion (C++ 4.2)
     ICK_Function_To_Pointer,   ///< Function-to-pointer (C++ 4.3)
+    ICK_NoReturn_Adjustment,   ///< Removal of noreturn from a type (Clang)
     ICK_Qualification,         ///< Qualification conversions (C++ 4.4)
     ICK_Integral_Promotion,    ///< Integral promotions (C++ 4.5)
     ICK_Floating_Promotion,    ///< Floating point promotions (C++ 4.6)
@@ -134,6 +150,15 @@ namespace clang {
     /// conversions.
     CXXConstructorDecl *CopyConstructor;
 
+    void setFromType(QualType T) { FromTypePtr = T.getAsOpaquePtr(); }
+    void setToType(QualType T) { ToTypePtr = T.getAsOpaquePtr(); }
+    QualType getFromType() const {
+      return QualType::getFromOpaquePtr(FromTypePtr);
+    }
+    QualType getToType() const {
+      return QualType::getFromOpaquePtr(ToTypePtr);
+    }
+
     void setAsIdentityConversion();
     ImplicitConversionRank getRank() const;
     bool isPointerConversionToBool() const;
@@ -175,6 +200,93 @@ namespace clang {
     void DebugPrint() const;
   };
 
+  /// Represents an ambiguous user-defined conversion sequence.
+  struct AmbiguousConversionSequence {
+    typedef llvm::SmallVector<FunctionDecl*, 4> ConversionSet;
+
+    void *FromTypePtr;
+    void *ToTypePtr;
+    char Buffer[sizeof(ConversionSet)];
+
+    QualType getFromType() const {
+      return QualType::getFromOpaquePtr(FromTypePtr);
+    }
+    QualType getToType() const {
+      return QualType::getFromOpaquePtr(ToTypePtr);
+    }
+    void setFromType(QualType T) { FromTypePtr = T.getAsOpaquePtr(); }
+    void setToType(QualType T) { ToTypePtr = T.getAsOpaquePtr(); }
+
+    ConversionSet &conversions() {
+      return *reinterpret_cast<ConversionSet*>(Buffer);
+    }
+
+    const ConversionSet &conversions() const {
+      return *reinterpret_cast<const ConversionSet*>(Buffer);
+    }
+
+    void addConversion(FunctionDecl *D) {
+      conversions().push_back(D);
+    }
+
+    typedef ConversionSet::iterator iterator;
+    iterator begin() { return conversions().begin(); }
+    iterator end() { return conversions().end(); }
+
+    typedef ConversionSet::const_iterator const_iterator;
+    const_iterator begin() const { return conversions().begin(); }
+    const_iterator end() const { return conversions().end(); }
+
+    void construct();
+    void destruct();
+    void copyFrom(const AmbiguousConversionSequence &);
+  };
+
+  /// BadConversionSequence - Records information about an invalid
+  /// conversion sequence.
+  struct BadConversionSequence {
+    enum FailureKind {
+      no_conversion,
+      unrelated_class,
+      suppressed_user,
+      bad_qualifiers
+    };
+
+    // This can be null, e.g. for implicit object arguments.
+    Expr *FromExpr;
+
+    FailureKind Kind;
+
+  private:
+    // The type we're converting from (an opaque QualType).
+    void *FromTy;
+
+    // The type we're converting to (an opaque QualType).
+    void *ToTy;
+
+  public:
+    void init(FailureKind K, Expr *From, QualType To) {
+      init(K, From->getType(), To);
+      FromExpr = From;
+    }
+    void init(FailureKind K, QualType From, QualType To) {
+      Kind = K;
+      FromExpr = 0;
+      setFromType(From);
+      setToType(To);
+    }
+
+    QualType getFromType() const { return QualType::getFromOpaquePtr(FromTy); }
+    QualType getToType() const { return QualType::getFromOpaquePtr(ToTy); }
+
+    void setFromExpr(Expr *E) {
+      FromExpr = E;
+      setFromType(E->getType());
+    }
+    void setFromType(QualType T) { FromTy = T.getAsOpaquePtr(); }
+    void setToType(QualType T) { ToTy = T.getAsOpaquePtr(); }
+  };
+
   /// ImplicitConversionSequence - Represents an implicit conversion
   /// sequence, which may be a standard conversion sequence
   /// (C++ 13.3.3.1.1), user-defined conversion sequence (C++ 13.3.3.1.2),
@@ -182,18 +294,26 @@ namespace clang {
   struct ImplicitConversionSequence {
     /// Kind - The kind of implicit conversion sequence. BadConversion
     /// specifies that there is no conversion from the source type to
-    /// the target type. The enumerator values are ordered such that
-    /// better implicit conversions have smaller values.
+    /// the target type.  AmbiguousConversion represents the unique
+    /// ambiguous conversion (C++0x [over.best.ics]p10).
     enum Kind {
       StandardConversion = 0,
       UserDefinedConversion,
+      AmbiguousConversion,
       EllipsisConversion,
       BadConversion
     };
 
+  private:
     /// ConversionKind - The kind of implicit conversion sequence.
     Kind ConversionKind;
 
+    void setKind(Kind K) {
+      if (isAmbiguous()) Ambiguous.destruct();
+      ConversionKind = K;
+    }
+
+  public:
     union {
       /// When ConversionKind == StandardConversion, provides the
       /// details of the standard conversion sequence.
@@ -202,12 +322,58 @@ namespace clang {
       /// When ConversionKind == UserDefinedConversion, provides the
       /// details of the user-defined conversion sequence.
       UserDefinedConversionSequence UserDefined;
+
+      /// When ConversionKind == AmbiguousConversion, provides the
+      /// details of the ambiguous conversion.
+      AmbiguousConversionSequence Ambiguous;
+
+      /// When ConversionKind == BadConversion, provides the details
+      /// of the bad conversion.
+      BadConversionSequence Bad;
     };
+
+    ImplicitConversionSequence() : ConversionKind(BadConversion) {}
+    ~ImplicitConversionSequence() {
+      if (isAmbiguous()) Ambiguous.destruct();
+    }
+    ImplicitConversionSequence(const ImplicitConversionSequence &Other)
+      : ConversionKind(Other.ConversionKind)
+    {
+      switch (ConversionKind) {
+      case StandardConversion: Standard = Other.Standard; break;
+      case UserDefinedConversion: UserDefined = Other.UserDefined; break;
+      case AmbiguousConversion: Ambiguous.copyFrom(Other.Ambiguous); break;
+      case EllipsisConversion: break;
+      case BadConversion: Bad = Other.Bad; break;
+      }
+    }
+
+    ImplicitConversionSequence &
+        operator=(const ImplicitConversionSequence &Other) {
+      if (isAmbiguous()) Ambiguous.destruct();
+      new (this) ImplicitConversionSequence(Other);
+      return *this;
+    }
     
-    /// When ConversionKind == BadConversion due to multiple conversion
-    /// functions, this will list those functions.
-    llvm::SmallVector<FunctionDecl*, 4> ConversionFunctionSet;
-    
+    Kind getKind() const { return ConversionKind; }
+    bool isBad() const { return ConversionKind == BadConversion; }
+    bool isStandard() const { return ConversionKind == StandardConversion; }
+    bool isEllipsis() const { return ConversionKind == EllipsisConversion; }
+    bool isAmbiguous() const { return ConversionKind == AmbiguousConversion; }
+    bool isUserDefined() const {
+      return ConversionKind == UserDefinedConversion;
+    }
+
+    void setBad() { setKind(BadConversion); }
+    void setStandard() { setKind(StandardConversion); }
+    void setEllipsis() { setKind(EllipsisConversion); }
+    void setUserDefined() { setKind(UserDefinedConversion); }
+    void setAmbiguous() {
+      if (isAmbiguous()) return;
+      ConversionKind = AmbiguousConversion;
+      Ambiguous.construct();
+    }
+
     // The result of a comparison between implicit conversion
     // sequences. Use Sema::CompareImplicitConversionSequences to
     // actually perform the comparison.
@@ -218,6 +384,13 @@ namespace clang {
     };
 
     void DebugPrint() const;
+  };
+
+  enum OverloadFailureKind {
+    ovl_fail_too_many_arguments,
+    ovl_fail_too_few_arguments,
+    ovl_fail_bad_conversion,
+    ovl_fail_bad_deduction
   };
 
   /// OverloadCandidate - A single candidate in an overload set (C++ 13.3).
@@ -260,16 +433,31 @@ namespace clang {
     /// object argument.
     bool IgnoreObjectArgument;
 
+    /// FailureKind - The reason why this candidate is not viable.
+    /// Actually an OverloadFailureKind.
+    unsigned char FailureKind;
+
     /// FinalConversion - For a conversion function (where Function is
     /// a CXXConversionDecl), the standard conversion that occurs
     /// after the call to the overload candidate to convert the result
     /// of calling the conversion function to the required type.
     StandardConversionSequence FinalConversion;
+
+    /// hasAmbiguousConversion - Returns whether this overload
+    /// candidate requires an ambiguous conversion or not.
+    bool hasAmbiguousConversion() const {
+      for (llvm::SmallVectorImpl<ImplicitConversionSequence>::const_iterator
+             I = Conversions.begin(), E = Conversions.end(); I != E; ++I) {
+        if (I->isAmbiguous()) return true;
+      }
+      return false;
+    }
   };
 
   /// OverloadCandidateSet - A set of overload candidates, used in C++
   /// overload resolution (C++ 13.3).
   class OverloadCandidateSet : public llvm::SmallVector<OverloadCandidate, 16> {
+    typedef llvm::SmallVector<OverloadCandidate, 16> inherited;
     llvm::SmallPtrSet<Decl *, 16> Functions;
     
   public:
@@ -277,6 +465,12 @@ namespace clang {
     /// overload set.
     bool isNewCandidate(Decl *F) { 
       return Functions.insert(F->getCanonicalDecl()); 
+    }
+
+    /// \brief Clear out all of the candidates.
+    void clear() {
+      inherited::clear();
+      Functions.clear();
     }
   };
 } // end namespace clang

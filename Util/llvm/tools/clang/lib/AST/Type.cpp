@@ -387,8 +387,6 @@ bool Type::isIntegerType() const {
     // FIXME: In C++, enum types are never integer types.
     if (TT->getDecl()->isEnum() && TT->getDecl()->isDefinition())
       return true;
-  if (isa<FixedWidthIntType>(CanonicalType))
-    return true;
   if (const VectorType *VT = dyn_cast<VectorType>(CanonicalType))
     return VT->getElementType()->isIntegerType();
   return false;
@@ -397,13 +395,11 @@ bool Type::isIntegerType() const {
 bool Type::isIntegralType() const {
   if (const BuiltinType *BT = dyn_cast<BuiltinType>(CanonicalType))
     return BT->getKind() >= BuiltinType::Bool &&
-    BT->getKind() <= BuiltinType::LongLong;
+    BT->getKind() <= BuiltinType::Int128;
   if (const TagType *TT = dyn_cast<TagType>(CanonicalType))
     if (TT->getDecl()->isEnum() && TT->getDecl()->isDefinition())
       return true;  // Complete enum types are integral.
                     // FIXME: In C++, enum types are never integral.
-  if (isa<FixedWidthIntType>(CanonicalType))
-    return true;
   return false;
 }
 
@@ -434,6 +430,18 @@ bool Type::isWideCharType() const {
   return false;
 }
 
+/// \brief Determine whether this type is any of the built-in character
+/// types.
+bool Type::isAnyCharacterType() const {
+  if (const BuiltinType *BT = dyn_cast<BuiltinType>(CanonicalType))
+    return (BT->getKind() >= BuiltinType::Char_U &&
+            BT->getKind() <= BuiltinType::Char32) ||
+           (BT->getKind() >= BuiltinType::Char_S &&
+            BT->getKind() <= BuiltinType::WChar);
+  
+  return false;
+}
+
 /// isSignedIntegerType - Return true if this is an integer type that is
 /// signed, according to C99 6.2.5p4 [char, signed char, short, int, long..],
 /// an enum decl which has a signed representation, or a vector of signed
@@ -441,15 +449,11 @@ bool Type::isWideCharType() const {
 bool Type::isSignedIntegerType() const {
   if (const BuiltinType *BT = dyn_cast<BuiltinType>(CanonicalType)) {
     return BT->getKind() >= BuiltinType::Char_S &&
-           BT->getKind() <= BuiltinType::LongLong;
+           BT->getKind() <= BuiltinType::Int128;
   }
 
   if (const EnumType *ET = dyn_cast<EnumType>(CanonicalType))
     return ET->getDecl()->getIntegerType()->isSignedIntegerType();
-
-  if (const FixedWidthIntType *FWIT =
-          dyn_cast<FixedWidthIntType>(CanonicalType))
-    return FWIT->isSigned();
 
   if (const VectorType *VT = dyn_cast<VectorType>(CanonicalType))
     return VT->getElementType()->isSignedIntegerType();
@@ -468,10 +472,6 @@ bool Type::isUnsignedIntegerType() const {
 
   if (const EnumType *ET = dyn_cast<EnumType>(CanonicalType))
     return ET->getDecl()->getIntegerType()->isUnsignedIntegerType();
-
-  if (const FixedWidthIntType *FWIT =
-          dyn_cast<FixedWidthIntType>(CanonicalType))
-    return !FWIT->isSigned();
 
   if (const VectorType *VT = dyn_cast<VectorType>(CanonicalType))
     return VT->getElementType()->isUnsignedIntegerType();
@@ -503,8 +503,6 @@ bool Type::isRealType() const {
            BT->getKind() <= BuiltinType::LongDouble;
   if (const TagType *TT = dyn_cast<TagType>(CanonicalType))
     return TT->getDecl()->isEnum() && TT->getDecl()->isDefinition();
-  if (isa<FixedWidthIntType>(CanonicalType))
-    return true;
   if (const VectorType *VT = dyn_cast<VectorType>(CanonicalType))
     return VT->getElementType()->isRealType();
   return false;
@@ -518,8 +516,6 @@ bool Type::isArithmeticType() const {
     // GCC allows forward declaration of enum types (forbid by C99 6.7.2.3p2).
     // If a body isn't seen by the time we get here, return false.
     return ET->getDecl()->isDefinition();
-  if (isa<FixedWidthIntType>(CanonicalType))
-    return true;
   return isa<ComplexType>(CanonicalType) || isa<VectorType>(CanonicalType);
 }
 
@@ -533,8 +529,6 @@ bool Type::isScalarType() const {
       return true;
     return false;
   }
-  if (isa<FixedWidthIntType>(CanonicalType))
-    return true;
   return isa<PointerType>(CanonicalType) ||
          isa<BlockPointerType>(CanonicalType) ||
          isa<MemberPointerType>(CanonicalType) ||
@@ -639,6 +633,40 @@ bool Type::isPODType() const {
   }
 }
 
+bool Type::isLiteralType() const {
+  if (isIncompleteType())
+    return false;
+
+  // C++0x [basic.types]p10:
+  //   A type is a literal type if it is:
+  switch (CanonicalType->getTypeClass()) {
+    // We're whitelisting
+  default: return false;
+
+    //   -- a scalar type
+  case Builtin:
+  case Complex:
+  case Pointer:
+  case MemberPointer:
+  case Vector:
+  case ExtVector:
+  case ObjCObjectPointer:
+  case Enum:
+    return true;
+
+    //   -- a class type with ...
+  case Record:
+    // FIXME: Do the tests
+    return false;
+
+    //   -- an array of literal type
+    // Extension: variable arrays cannot be literal types, since they're
+    // runtime-sized.
+  case ConstantArray:
+    return cast<ArrayType>(CanonicalType)->getElementType()->isLiteralType();
+  }
+}
+
 bool Type::isPromotableIntegerType() const {
   if (const BuiltinType *BT = getAs<BuiltinType>())
     switch (BT->getKind()) {
@@ -679,6 +707,7 @@ bool Type::isSpecifierType() const {
   case Typename:
   case ObjCInterface:
   case ObjCObjectPointer:
+  case Elaborated:
     return true;
   default:
     return false;
@@ -725,6 +754,7 @@ const char *BuiltinType::getName(const LangOptions &LO) const {
   case UndeducedAuto:     return "auto";
   case ObjCId:            return "id";
   case ObjCClass:         return "Class";
+  case ObjCSel:         return "SEL";
   }
 }
 
@@ -863,6 +893,11 @@ static bool isDependent(const TemplateArgument &Arg) {
   }
 
   return false;
+}
+
+bool TemplateSpecializationType::
+anyDependentTemplateArguments(const TemplateArgumentListInfo &Args) {
+  return anyDependentTemplateArguments(Args.getArgumentArray(), Args.size());
 }
 
 bool TemplateSpecializationType::

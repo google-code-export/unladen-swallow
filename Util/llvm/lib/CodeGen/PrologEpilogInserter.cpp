@@ -136,9 +136,10 @@ void PEI::getAnalysisUsage(AnalysisUsage &AU) const {
 /// pseudo instructions.
 void PEI::calculateCallsInformation(MachineFunction &Fn) {
   const TargetRegisterInfo *RegInfo = Fn.getTarget().getRegisterInfo();
+  MachineFrameInfo *FFI = Fn.getFrameInfo();
 
   unsigned MaxCallFrameSize = 0;
-  bool HasCalls = false;
+  bool HasCalls = FFI->hasCalls();
 
   // Get the function call frame set-up and tear-down instruction opcode
   int FrameSetupOpcode   = RegInfo->getCallFrameSetupOpcode();
@@ -166,7 +167,6 @@ void PEI::calculateCallsInformation(MachineFunction &Fn) {
         HasCalls = true;
       }
 
-  MachineFrameInfo *FFI = Fn.getFrameInfo();
   FFI->setHasCalls(HasCalls);
   FFI->setMaxCallFrameSize(MaxCallFrameSize);
 
@@ -674,7 +674,7 @@ void PEI::replaceFrameIndices(MachineFunction &Fn) {
         if (PrevI == BB->end())
           I = BB->begin();     // The replaced instr was the first in the block.
         else
-          I = next(PrevI);
+          I = llvm::next(PrevI);
         continue;
       }
 
@@ -860,7 +860,7 @@ void PEI::scavengeFrameVirtualRegs(MachineFunction &Fn) {
               // Remove all instructions up 'til the last use, since they're
               // just calculating the value we already have.
               BB->erase(I, LastUseMI);
-              MI = I = LastUseMI;
+              I = LastUseMI;
 
               // Extend the live range of the scratch register
               PrevLastUseMI->getOperand(PrevLastUseOp).setIsKill(false);

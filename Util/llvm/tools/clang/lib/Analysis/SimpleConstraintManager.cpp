@@ -15,6 +15,7 @@
 #include "SimpleConstraintManager.h"
 #include "clang/Analysis/PathSensitive/GRExprEngine.h"
 #include "clang/Analysis/PathSensitive/GRState.h"
+#include "clang/Analysis/PathSensitive/Checker.h"
 
 namespace clang {
 
@@ -64,16 +65,10 @@ const GRState *SimpleConstraintManager::Assume(const GRState *state,
     return Assume(state, cast<Loc>(Cond), Assumption);
 }
 
-const GRState *SimpleConstraintManager::Assume(const GRState *state, Loc Cond,
-                                               bool Assumption) {
-
-  state = AssumeAux(state, Cond, Assumption);
-
-  // EvalAssume is used to call into the GRTransferFunction object to perform
-  // any checker-specific update of the state based on this assumption being
-  // true or false.
-  return state ? state->getTransferFuncs().EvalAssume(state, Cond, Assumption)
-               : NULL;
+const GRState *SimpleConstraintManager::Assume(const GRState *state, Loc cond,
+                                               bool assumption) {
+  state = AssumeAux(state, cond, assumption);
+  return SU.ProcessAssume(state, cond, assumption);
 }
 
 const GRState *SimpleConstraintManager::AssumeAux(const GRState *state,
@@ -120,16 +115,10 @@ const GRState *SimpleConstraintManager::AssumeAux(const GRState *state,
 }
 
 const GRState *SimpleConstraintManager::Assume(const GRState *state,
-                                               NonLoc Cond,
-                                               bool Assumption) {
-
-  state = AssumeAux(state, Cond, Assumption);
-
-  // EvalAssume is used to call into the GRTransferFunction object to perform
-  // any checker-specific update of the state based on this assumption being
-  // true or false.
-  return state ? state->getTransferFuncs().EvalAssume(state, Cond, Assumption)
-               : NULL;
+                                               NonLoc cond,
+                                               bool assumption) {
+  state = AssumeAux(state, cond, assumption);
+  return SU.ProcessAssume(state, cond, assumption);
 }
 
 const GRState *SimpleConstraintManager::AssumeAux(const GRState *state,

@@ -29,12 +29,13 @@
 namespace llvm {
 
 class AliasAnalysis;
-class TargetLowering;
-class MachineModuleInfo;
 class DwarfWriter;
-class MachineFunction;
-class MachineConstantPoolValue;
 class FunctionLoweringInfo;
+class MachineConstantPoolValue;
+class MachineFunction;
+class MachineModuleInfo;
+class SDNodeOrdering;
+class TargetLowering;
 
 template<> struct ilist_traits<SDNode> : public ilist_default_traits<SDNode> {
 private:
@@ -110,6 +111,10 @@ class SelectionDAG {
   /// SelectionDAG.
   BumpPtrAllocator Allocator;
 
+  /// SDNodeOrdering - The ordering of the SDNodes. It roughly corresponds to
+  /// the ordering of the original LLVM instructions.
+  SDNodeOrdering *Ordering;
+
   /// VerifyNode - Sanity check the given node.  Aborts if it is invalid.
   void VerifyNode(SDNode *N);
 
@@ -119,6 +124,9 @@ class SelectionDAG {
   bool setSubgraphColorHelper(SDNode *N, const char *Color,
                               DenseSet<SDNode *> &visited,
                               int level, bool &printed);
+
+  void operator=(const SelectionDAG&); // Do not implement.
+  SelectionDAG(const SelectionDAG&);   // Do not implement.
 
 public:
   SelectionDAG(TargetLowering &tli, FunctionLoweringInfo &fli);
@@ -220,7 +228,7 @@ public:
   ///
   /// Note that this is an involved process that may invalidate pointers into
   /// the graph.
-  void Legalize(bool TypesNeedLegalizing, CodeGenOpt::Level OptLevel);
+  void Legalize(CodeGenOpt::Level OptLevel);
 
   /// LegalizeVectors - This transforms the SelectionDAG into a SelectionDAG
   /// that only uses vector math operations supported by the target.  This is
@@ -322,12 +330,10 @@ public:
                                   unsigned char TargetFlags = 0);
   SDValue getValueType(EVT);
   SDValue getRegister(unsigned Reg, EVT VT);
-  SDValue getDbgStopPoint(DebugLoc DL, SDValue Root, 
-                          unsigned Line, unsigned Col, MDNode *CU);
   SDValue getLabel(unsigned Opcode, DebugLoc dl, SDValue Root,
                    unsigned LabelID);
-  SDValue getBlockAddress(BlockAddress *BA, DebugLoc dl,
-                          bool isTarget = false);
+  SDValue getBlockAddress(BlockAddress *BA, EVT VT,
+                          bool isTarget = false, unsigned char TargetFlags = 0);
 
   SDValue getCopyToReg(SDValue Chain, DebugLoc dl, unsigned Reg, SDValue N) {
     return getNode(ISD::CopyToReg, dl, MVT::Other, Chain,
@@ -825,6 +831,12 @@ public:
     }
   }
 
+  /// AssignOrdering - Assign an order to the SDNode.
+  void AssignOrdering(SDNode *SD, unsigned Order);
+
+  /// GetOrdering - Get the order for the SDNode.
+  unsigned GetOrdering(const SDNode *SD) const;
+
   void dump() const;
 
   /// CreateStackTemporary - Create a stack temporary, suitable for holding the
@@ -883,6 +895,24 @@ public:
   /// getShuffleScalarElt - Returns the scalar element that will make up the ith
   /// element of the result of the vector shuffle.
   SDValue getShuffleScalarElt(const ShuffleVectorSDNode *N, unsigned Idx);
+
+  /// UnrollVectorOp - Utility function used by legalize and lowering to
+  /// "unroll" a vector operation by splitting out the scalars and operating
+  /// on each element individually.  If the ResNE is 0, fully unroll the vector
+  /// op. If ResNE is less than the width of the vector op, unroll up to ResNE.
+  /// If the  ResNE is greater than the width of the vector op, unroll the
+  /// vector op and fill the end of the resulting vector with UNDEFS.
+  SDValue UnrollVectorOp(SDNode *N, unsigned ResNE = 0);
+
+  /// isConsecutiveLoad - Return true if LD is loading 'Bytes' bytes from a 
+  /// location that is 'Dist' units away from the location that the 'Base' load 
+  /// is loading from.
+  bool isConsecutiveLoad(LoadSDNode *LD, LoadSDNode *Base,
+                         unsigned Bytes, int Dist) const;
+
+  /// InferPtrAlignment - Infer alignment of a load / store address. Return 0 if
+  /// it cannot be inferred.
+  unsigned InferPtrAlignment(SDValue Ptr) const;
 
 private:
   bool RemoveNodeFromCSEMaps(SDNode *N);

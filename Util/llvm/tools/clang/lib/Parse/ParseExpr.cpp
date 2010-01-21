@@ -23,7 +23,7 @@
 #include "clang/Parse/DeclSpec.h"
 #include "clang/Parse/Scope.h"
 #include "clang/Basic/PrettyStackTrace.h"
-#include "ExtensionRAIIObject.h"
+#include "RAIIObjectsForParser.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/SmallString.h"
 using namespace clang;
@@ -200,11 +200,6 @@ static prec::Level getBinOpPrecedence(tok::TokenKind Kind,
 ///         expression ',' assignment-expression
 ///
 Parser::OwningExprResult Parser::ParseExpression() {
-  if (Tok.is(tok::code_completion)) {
-    Actions.CodeCompleteOrdinaryName(CurScope);
-    ConsumeToken();
-  }
-
   OwningExprResult LHS(ParseAssignmentExpression());
   if (LHS.isInvalid()) return move(LHS);
 
@@ -248,6 +243,11 @@ Parser::ParseExpressionWithLeadingExtension(SourceLocation ExtLoc) {
 /// ParseAssignmentExpression - Parse an expr that doesn't include commas.
 ///
 Parser::OwningExprResult Parser::ParseAssignmentExpression() {
+  if (Tok.is(tok::code_completion)) {
+    Actions.CodeCompleteOrdinaryName(CurScope, Action::CCC_Expression);
+    ConsumeToken();
+  }
+
   if (Tok.is(tok::kw_throw))
     return ParseThrowExpression();
 
@@ -317,6 +317,9 @@ Parser::ParseRHSOfBinaryExpression(OwningExprResult LHS, unsigned MinPrec) {
     OwningExprResult TernaryMiddle(Actions, true);
     if (NextTokPrec == prec::Conditional) {
       if (Tok.isNot(tok::colon)) {
+        // Don't parse FOO:BAR as if it were a typo for FOO::BAR.
+        ColonProtectionRAIIObject X(*this);
+
         // Handle this production specially:
         //   logical-OR-expression '?' expression ':' conditional-expression
         // In particular, the RHS of the '?' is 'expression', not
@@ -413,12 +416,12 @@ Parser::ParseRHSOfBinaryExpression(OwningExprResult LHS, unsigned MinPrec) {
 ///
 Parser::OwningExprResult Parser::ParseCastExpression(bool isUnaryExpression,
                                                      bool isAddressOfOperand,
-                                                     bool parseParenAsExprList){
+                                                     TypeTy *TypeOfCast) {
   bool NotCastExpr;
   OwningExprResult Res = ParseCastExpression(isUnaryExpression,
                                              isAddressOfOperand,
                                              NotCastExpr,
-                                             parseParenAsExprList);
+                                             TypeOfCast);
   if (NotCastExpr)
     Diag(Tok, diag::err_expected_expression);
   return move(Res);
@@ -538,7 +541,7 @@ Parser::OwningExprResult Parser::ParseCastExpression(bool isUnaryExpression,
 Parser::OwningExprResult Parser::ParseCastExpression(bool isUnaryExpression,
                                                      bool isAddressOfOperand,
                                                      bool &NotCastExpr,
-                                                     bool parseParenAsExprList){
+                                                     TypeTy *TypeOfCast) {
   OwningExprResult Res(Actions);
   tok::TokenKind SavedKind = Tok.getKind();
   NotCastExpr = false;
@@ -562,9 +565,15 @@ Parser::OwningExprResult Parser::ParseCastExpression(bool isUnaryExpression,
     TypeTy *CastTy;
     SourceLocation LParenLoc = Tok.getLocation();
     SourceLocation RParenLoc;
-    Res = ParseParenExpression(ParenExprType, false/*stopIfCastExr*/,
-                               parseParenAsExprList, CastTy, RParenLoc);
-    if (Res.isInvalid()) return move(Res);
+    
+    {
+      // The inside of the parens don't need to be a colon protected scope.
+      ColonProtectionRAIIObject X(*this, false);
+    
+      Res = ParseParenExpression(ParenExprType, false/*stopIfCastExr*/,
+                                 TypeOfCast, CastTy, RParenLoc);
+      if (Res.isInvalid()) return move(Res);
+    }
 
     switch (ParenExprType) {
     case SimpleExpr:   break;    // Nothing else to do.
@@ -607,9 +616,17 @@ Parser::OwningExprResult Parser::ParseCastExpression(bool isUnaryExpression,
     // Turn a potentially qualified name into a annot_typename or
     // annot_cxxscope if it would be valid.  This handles things like x::y, etc.
     if (getLang().CPlusPlus) {
-      // If TryAnnotateTypeOrScopeToken annotates the token, tail recurse.
-      if (TryAnnotateTypeOrScopeToken())
-        return ParseCastExpression(isUnaryExpression, isAddressOfOperand);
+      // Avoid the unnecessary parse-time lookup in the common case
+      // where the syntax forbids a type.
+      const Token &Next = NextToken();
+      if (Next.is(tok::coloncolon) ||
+          (!ColonIsSacred && Next.is(tok::colon)) ||
+          Next.is(tok::less) ||
+          Next.is(tok::l_paren)) {
+        // If TryAnnotateTypeOrScopeToken annotates the token, tail recurse.
+        if (TryAnnotateTypeOrScopeToken())
+          return ParseCastExpression(isUnaryExpression, isAddressOfOperand);
+      }
     }
 
     // Consume the identifier so that we can see if it is followed by a '(' or
@@ -826,6 +843,7 @@ Parser::OwningExprResult Parser::ParseCastExpression(bool isUnaryExpression,
   case tok::kw___is_empty:
   case tok::kw___is_polymorphic:
   case tok::kw___is_abstract:
+  case tok::kw___is_literal:
   case tok::kw___has_trivial_constructor:
   case tok::kw___has_trivial_copy:
   case tok::kw___has_trivial_assign:
@@ -1047,7 +1065,8 @@ Parser::ParseExprAfterTypeofSizeofAlignof(const Token &OpTok,
     // operands.
     EnterExpressionEvaluationContext Unevaluated(Actions,
                                                  Action::Unevaluated);
-    Operand = ParseParenExpression(ExprType, true/*stopIfCastExpr*/, false,
+    Operand = ParseParenExpression(ExprType, true/*stopIfCastExpr*/, 
+                                   0/*TypeOfCast*/,
                                    CastTy, RParenLoc);
     CastRange = SourceRange(LParenLoc, RParenLoc);
 
@@ -1304,7 +1323,7 @@ Parser::OwningExprResult Parser::ParseBuiltinPrimaryExpression() {
 ///
 Parser::OwningExprResult
 Parser::ParseParenExpression(ParenParseOption &ExprType, bool stopIfCastExpr,
-                             bool parseAsExprList, TypeTy *&CastTy,
+                             TypeTy *TypeOfCast, TypeTy *&CastTy,
                              SourceLocation &RParenLoc) {
   assert(Tok.is(tok::l_paren) && "Not a paren expr!");
   GreaterThanIsOperatorScope G(GreaterThanIsOperator, true);
@@ -1315,7 +1334,7 @@ Parser::ParseParenExpression(ParenParseOption &ExprType, bool stopIfCastExpr,
 
   if (ExprType >= CompoundStmt && Tok.is(tok::l_brace)) {
     Diag(Tok, diag::ext_gnu_statement_expr);
-    OwningStmtResult Stmt(ParseCompoundStatement(true));
+    OwningStmtResult Stmt(ParseCompoundStatement(0, true));
     ExprType = CompoundStmt;
 
     // If the substmt parsed correctly, build the AST node.
@@ -1365,7 +1384,7 @@ Parser::ParseParenExpression(ParenParseOption &ExprType, bool stopIfCastExpr,
 
       // Parse the cast-expression that follows it next.
       // TODO: For cast expression with CastTy.
-      Result = ParseCastExpression(false, false, true);
+      Result = ParseCastExpression(false, false, CastTy);
       if (!Result.isInvalid())
         Result = Actions.ActOnCastExpr(CurScope, OpenLoc, CastTy, RParenLoc,
                                        move(Result));
@@ -1374,15 +1393,15 @@ Parser::ParseParenExpression(ParenParseOption &ExprType, bool stopIfCastExpr,
 
     Diag(Tok, diag::err_expected_lbrace_in_compound_literal);
     return ExprError();
-  } else if (parseAsExprList) {
+  } else if (TypeOfCast) {
     // Parse the expression-list.
     ExprVector ArgExprs(Actions);
     CommaLocsTy CommaLocs;
 
     if (!ParseExpressionList(ArgExprs, CommaLocs)) {
       ExprType = SimpleExpr;
-      Result = Actions.ActOnParenListExpr(OpenLoc, Tok.getLocation(),
-                                          move_arg(ArgExprs));
+      Result = Actions.ActOnParenOrParenListExpr(OpenLoc, Tok.getLocation(),
+                                          move_arg(ArgExprs), TypeOfCast);
     }
   } else {
     Result = ParseExpression();
@@ -1503,7 +1522,7 @@ void Parser::ParseBlockId() {
 
   if (Tok.is(tok::kw___attribute)) {
     SourceLocation Loc;
-    AttributeList *AttrList = ParseAttributes(&Loc);
+    AttributeList *AttrList = ParseGNUAttributes(&Loc);
     DeclaratorInfo.AddAttributes(AttrList, Loc);
   }
 
@@ -1565,7 +1584,7 @@ Parser::OwningExprResult Parser::ParseBlockLiteralExpression() {
 
     if (Tok.is(tok::kw___attribute)) {
       SourceLocation Loc;
-      AttributeList *AttrList = ParseAttributes(&Loc);
+      AttributeList *AttrList = ParseGNUAttributes(&Loc);
       ParamInfo.AddAttributes(AttrList, Loc);
     }
 
@@ -1586,7 +1605,7 @@ Parser::OwningExprResult Parser::ParseBlockLiteralExpression() {
 
     if (Tok.is(tok::kw___attribute)) {
       SourceLocation Loc;
-      AttributeList *AttrList = ParseAttributes(&Loc);
+      AttributeList *AttrList = ParseGNUAttributes(&Loc);
       ParamInfo.AddAttributes(AttrList, Loc);
     }
 

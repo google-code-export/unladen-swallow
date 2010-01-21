@@ -22,13 +22,14 @@
 #include "clang/Analysis/PathSensitive/BugReporter.h"
 #include "clang/Analysis/PathSensitive/SymbolManager.h"
 #include "clang/Analysis/PathSensitive/GRTransferFuncs.h"
+#include "clang/Analysis/PathSensitive/CheckerVisitor.h"
 #include "clang/AST/DeclObjC.h"
+#include "clang/AST/StmtVisitor.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/FoldingSet.h"
 #include "llvm/ADT/ImmutableMap.h"
 #include "llvm/ADT/ImmutableList.h"
 #include "llvm/ADT/StringExtras.h"
-#include "llvm/Support/Compiler.h"
 #include "llvm/ADT/STLExtras.h"
 #include <stdarg.h>
 
@@ -51,8 +52,8 @@ using namespace clang;
 //  not release it."
 //
 
-using llvm::CStrInCStrNoCase;
-using llvm::StringsEqualNoCase;
+using llvm::StrInStrNoCase;
+using llvm::StringRef;
 
 enum NamingConvention { NoConvention, CreateRule, InitRule };
 
@@ -121,20 +122,20 @@ static NamingConvention deriveNamingConvention(Selector S) {
       break;
     case 3:
       // Methods starting with 'new' follow the create rule.
-      if (AtBeginning && StringsEqualNoCase("new", s, len))
+      if (AtBeginning && StringRef(s, len).equals_lower("new"))
         C = CreateRule;
       break;
     case 4:
       // Methods starting with 'alloc' or contain 'copy' follow the
       // create rule
-      if (C == NoConvention && StringsEqualNoCase("copy", s, len))
+      if (C == NoConvention && StringRef(s, len).equals_lower("copy"))
         C = CreateRule;
       else // Methods starting with 'init' follow the init rule.
-        if (AtBeginning && StringsEqualNoCase("init", s, len))
+        if (AtBeginning && StringRef(s, len).equals_lower("init"))
           C = InitRule;
       break;
     case 5:
-      if (AtBeginning && StringsEqualNoCase("alloc", s, len))
+      if (AtBeginning && StringRef(s, len).equals_lower("alloc"))
         C = CreateRule;
       break;
     }
@@ -168,7 +169,7 @@ ResolveToInterfaceMethodDecl(const ObjCMethodDecl *MD) {
 }
 
 namespace {
-class VISIBILITY_HIDDEN GenericNodeBuilder {
+class GenericNodeBuilder {
   GRStmtNodeBuilder *SNB;
   Stmt *S;
   const void *tag;
@@ -246,7 +247,7 @@ namespace {
 
 ///  RetEffect is used to summarize a function/method call's behavior with
 ///  respect to its return value.
-class VISIBILITY_HIDDEN RetEffect {
+class RetEffect {
 public:
   enum Kind { NoRet, Alias, OwnedSymbol, OwnedAllocatedSymbol,
               NotOwnedSymbol, GCNotOwnedSymbol, ReceiverAlias,
@@ -312,7 +313,7 @@ public:
 // Reference-counting logic (typestate + counts).
 //===----------------------------------------------------------------------===//
 
-class VISIBILITY_HIDDEN RefVal {
+class RefVal {
 public:
   enum Kind {
     Owned = 0, // Owning reference.
@@ -536,7 +537,7 @@ namespace clang {
 //===----------------------------------------------------------------------===//
 
 namespace {
-class VISIBILITY_HIDDEN RetainSummary {
+class RetainSummary {
   /// Args - an ordered vector of (index, ArgEffect) pairs, where index
   ///  specifies the argument (starting from 0).  This can be sparsely
   ///  populated; arguments with no entry in Args use 'DefaultArgEffect'.
@@ -627,7 +628,7 @@ public:
 //===----------------------------------------------------------------------===//
 
 namespace {
-class VISIBILITY_HIDDEN ObjCSummaryKey {
+class ObjCSummaryKey {
   IdentifierInfo* II;
   Selector S;
 public:
@@ -674,15 +675,13 @@ template <> struct DenseMapInfo<ObjCSummaryKey> {
                                            RHS.getSelector());
   }
 
-  static bool isPod() {
-    return DenseMapInfo<ObjCInterfaceDecl*>::isPod() &&
-           DenseMapInfo<Selector>::isPod();
-  }
 };
+template <>
+struct isPodLike<ObjCSummaryKey> { static const bool value = true; };
 } // end llvm namespace
 
 namespace {
-class VISIBILITY_HIDDEN ObjCSummaryCache {
+class ObjCSummaryCache {
   typedef llvm::DenseMap<ObjCSummaryKey, RetainSummary*> MapTy;
   MapTy M;
 public:
@@ -776,7 +775,7 @@ public:
 //===----------------------------------------------------------------------===//
 
 namespace {
-class VISIBILITY_HIDDEN RetainSummaryManager {
+class RetainSummaryManager {
 
   //==-----------------------------------------------------------------==//
   //  Typedefs.
@@ -1150,7 +1149,11 @@ RetainSummary* RetainSummaryManager::getSummary(FunctionDecl* FD) {
     // [PR 3337] Use 'getAs<FunctionType>' to strip away any typedefs on the
     // function's type.
     const FunctionType* FT = FD->getType()->getAs<FunctionType>();
-    const char* FName = FD->getIdentifier()->getNameStart();
+    const IdentifierInfo *II = FD->getIdentifier();
+    if (!II)
+      break;
+    
+    const char* FName = II->getNameStart();
 
     // Strip away preceding '_'.  Doing this here will effect all the checks
     // down below.
@@ -1369,11 +1372,11 @@ RetainSummary* RetainSummaryManager::getSummary(FunctionDecl* FD) {
         // "AppendValue", or "SetAttribute", then we assume that arguments may
         // "escape."  This means that something else holds on to the object,
         // allowing it be used even after its local retain count drops to 0.
-        ArgEffect E = (CStrInCStrNoCase(FName, "InsertValue") ||
-                       CStrInCStrNoCase(FName, "AddValue") ||
-                       CStrInCStrNoCase(FName, "SetValue") ||
-                       CStrInCStrNoCase(FName, "AppendValue") ||
-                       CStrInCStrNoCase(FName, "SetAttribute"))
+        ArgEffect E = (StrInStrNoCase(FName, "InsertValue") != StringRef::npos||
+                       StrInStrNoCase(FName, "AddValue") != StringRef::npos ||
+                       StrInStrNoCase(FName, "SetValue") != StringRef::npos ||
+                       StrInStrNoCase(FName, "AppendValue") != StringRef::npos||
+                       StrInStrNoCase(FName, "SetAttribute") != StringRef::npos)
                       ? MayEscape : DoNothing;
 
         S = getPersistentSummary(RetEffect::MakeNoRet(), DoNothing, E);
@@ -1552,7 +1555,8 @@ RetainSummaryManager::getCommonMethodSummary(const ObjCMethodDecl* MD,
   if (S.isKeywordSelector()) {
     const std::string &str = S.getAsString();
     assert(!str.empty());
-    if (CStrInCStrNoCase(&str[0], "delegate:")) ReceiverEff = StopTracking;
+    if (StrInStrNoCase(str, "delegate:") != StringRef::npos)
+      ReceiverEff = StopTracking;
   }
 
   // Look for methods that return an owned object.
@@ -1865,8 +1869,8 @@ typedef llvm::ImmutableList<SymbolRef> ARStack;
 static int AutoRCIndex = 0;
 static int AutoRBIndex = 0;
 
-namespace { class VISIBILITY_HIDDEN AutoreleasePoolContents {}; }
-namespace { class VISIBILITY_HIDDEN AutoreleaseStack {}; }
+namespace { class AutoreleasePoolContents {}; }
+namespace { class AutoreleaseStack {}; }
 
 namespace clang {
 template<> struct GRStateTrait<AutoreleaseStack>
@@ -1908,7 +1912,7 @@ static const GRState * SendAutorelease(const GRState *state,
 
 namespace {
 
-class VISIBILITY_HIDDEN CFRefCount : public GRTransferFuncs {
+class CFRefCount : public GRTransferFuncs {
 public:
   class BindingsPrinter : public GRState::Printer {
   public:
@@ -1983,8 +1987,9 @@ public:
                    Expr* Ex,
                    Expr* Receiver,
                    const RetainSummary& Summ,
+                   const MemRegion *Callee,
                    ExprIterator arg_beg, ExprIterator arg_end,
-                   ExplodedNode* Pred);
+                   ExplodedNode* Pred, const GRState *state);
 
   virtual void EvalCall(ExplodedNodeSet& Dst,
                         GRExprEngine& Eng,
@@ -1997,7 +2002,8 @@ public:
                                    GRExprEngine& Engine,
                                    GRStmtNodeBuilder& Builder,
                                    ObjCMessageExpr* ME,
-                                   ExplodedNode* Pred);
+                                   ExplodedNode* Pred,
+                                   const GRState *state);
 
   bool EvalObjCMessageExprAux(ExplodedNodeSet& Dst,
                               GRExprEngine& Engine,
@@ -2093,11 +2099,11 @@ namespace {
   // Bug Descriptions. //
   //===-------------===//
 
-  class VISIBILITY_HIDDEN CFRefBug : public BugType {
+  class CFRefBug : public BugType {
   protected:
     CFRefCount& TF;
 
-    CFRefBug(CFRefCount* tf, const char* name)
+    CFRefBug(CFRefCount* tf, llvm::StringRef name)
     : BugType(name, "Memory (Core Foundation/Objective-C)"), TF(*tf) {}
   public:
 
@@ -2110,7 +2116,7 @@ namespace {
     virtual bool isLeak() const { return false; }
   };
 
-  class VISIBILITY_HIDDEN UseAfterRelease : public CFRefBug {
+  class UseAfterRelease : public CFRefBug {
   public:
     UseAfterRelease(CFRefCount* tf)
     : CFRefBug(tf, "Use-after-release") {}
@@ -2120,7 +2126,7 @@ namespace {
     }
   };
 
-  class VISIBILITY_HIDDEN BadRelease : public CFRefBug {
+  class BadRelease : public CFRefBug {
   public:
     BadRelease(CFRefCount* tf) : CFRefBug(tf, "Bad release") {}
 
@@ -2130,7 +2136,7 @@ namespace {
     }
   };
 
-  class VISIBILITY_HIDDEN DeallocGC : public CFRefBug {
+  class DeallocGC : public CFRefBug {
   public:
     DeallocGC(CFRefCount *tf)
       : CFRefBug(tf, "-dealloc called while using garbage collection") {}
@@ -2140,7 +2146,7 @@ namespace {
     }
   };
 
-  class VISIBILITY_HIDDEN DeallocNotOwned : public CFRefBug {
+  class DeallocNotOwned : public CFRefBug {
   public:
     DeallocNotOwned(CFRefCount *tf)
       : CFRefBug(tf, "-dealloc sent to non-exclusively owned object") {}
@@ -2150,7 +2156,7 @@ namespace {
     }
   };
 
-  class VISIBILITY_HIDDEN OverAutorelease : public CFRefBug {
+  class OverAutorelease : public CFRefBug {
   public:
     OverAutorelease(CFRefCount *tf) :
       CFRefBug(tf, "Object sent -autorelease too many times") {}
@@ -2160,7 +2166,7 @@ namespace {
     }
   };
 
-  class VISIBILITY_HIDDEN ReturnedNotOwnedForOwned : public CFRefBug {
+  class ReturnedNotOwnedForOwned : public CFRefBug {
   public:
     ReturnedNotOwnedForOwned(CFRefCount *tf) :
       CFRefBug(tf, "Method should return an owned object") {}
@@ -2171,10 +2177,10 @@ namespace {
     }
   };
 
-  class VISIBILITY_HIDDEN Leak : public CFRefBug {
+  class Leak : public CFRefBug {
     const bool isReturn;
   protected:
-    Leak(CFRefCount* tf, const char* name, bool isRet)
+    Leak(CFRefCount* tf, llvm::StringRef name, bool isRet)
     : CFRefBug(tf, name), isReturn(isRet) {}
   public:
 
@@ -2183,15 +2189,15 @@ namespace {
     bool isLeak() const { return true; }
   };
 
-  class VISIBILITY_HIDDEN LeakAtReturn : public Leak {
+  class LeakAtReturn : public Leak {
   public:
-    LeakAtReturn(CFRefCount* tf, const char* name)
+    LeakAtReturn(CFRefCount* tf, llvm::StringRef name)
     : Leak(tf, name, true) {}
   };
 
-  class VISIBILITY_HIDDEN LeakWithinFunction : public Leak {
+  class LeakWithinFunction : public Leak {
   public:
-    LeakWithinFunction(CFRefCount* tf, const char* name)
+    LeakWithinFunction(CFRefCount* tf, llvm::StringRef name)
     : Leak(tf, name, false) {}
   };
 
@@ -2199,7 +2205,7 @@ namespace {
   // Bug Reports.  //
   //===---------===//
 
-  class VISIBILITY_HIDDEN CFRefReport : public RangedBugReport {
+  class CFRefReport : public RangedBugReport {
   protected:
     SymbolRef Sym;
     const CFRefCount &TF;
@@ -2209,7 +2215,7 @@ namespace {
       : RangedBugReport(D, D.getDescription(), n), Sym(sym), TF(tf) {}
 
     CFRefReport(CFRefBug& D, const CFRefCount &tf,
-                ExplodedNode *n, SymbolRef sym, const char* endText)
+                ExplodedNode *n, SymbolRef sym, llvm::StringRef endText)
       : RangedBugReport(D, D.getDescription(), endText, n), Sym(sym), TF(tf) {}
 
     virtual ~CFRefReport() {}
@@ -2240,7 +2246,7 @@ namespace {
                                    BugReporterContext& BRC);
   };
 
-  class VISIBILITY_HIDDEN CFRefLeakReport : public CFRefReport {
+  class CFRefLeakReport : public CFRefReport {
     SourceLocation AllocSite;
     const MemRegion* AllocBinding;
   public:
@@ -2255,64 +2261,7 @@ namespace {
   };
 } // end anonymous namespace
 
-void CFRefCount::RegisterChecks(GRExprEngine& Eng) {
-  BugReporter &BR = Eng.getBugReporter();
-  
-  useAfterRelease = new UseAfterRelease(this);
-  BR.Register(useAfterRelease);
 
-  releaseNotOwned = new BadRelease(this);
-  BR.Register(releaseNotOwned);
-
-  deallocGC = new DeallocGC(this);
-  BR.Register(deallocGC);
-
-  deallocNotOwned = new DeallocNotOwned(this);
-  BR.Register(deallocNotOwned);
-
-  overAutorelease = new OverAutorelease(this);
-  BR.Register(overAutorelease);
-
-  returnNotOwnedForOwned = new ReturnedNotOwnedForOwned(this);
-  BR.Register(returnNotOwnedForOwned);
-
-  // First register "return" leaks.
-  const char* name = 0;
-
-  if (isGCEnabled())
-    name = "Leak of returned object when using garbage collection";
-  else if (getLangOptions().getGCMode() == LangOptions::HybridGC)
-    name = "Leak of returned object when not using garbage collection (GC) in "
-    "dual GC/non-GC code";
-  else {
-    assert(getLangOptions().getGCMode() == LangOptions::NonGC);
-    name = "Leak of returned object";
-  }
-
-  // Leaks should not be reported if they are post-dominated by a sink.
-  leakAtReturn = new LeakAtReturn(this, name);
-  leakAtReturn->setSuppressOnSink(true);
-  BR.Register(leakAtReturn);
-
-  // Second, register leaks within a function/method.
-  if (isGCEnabled())
-    name = "Leak of object when using garbage collection";
-  else if (getLangOptions().getGCMode() == LangOptions::HybridGC)
-    name = "Leak of object when not using garbage collection (GC) in "
-    "dual GC/non-GC code";
-  else {
-    assert(getLangOptions().getGCMode() == LangOptions::NonGC);
-    name = "Leak";
-  }
-
-  // Leaks should not be reported if they are post-dominated by sinks.
-  leakWithinFunction = new LeakWithinFunction(this, name);
-  leakWithinFunction->setSuppressOnSink(true);
-  BR.Register(leakWithinFunction);
-
-  // Save the reference to the BugReporter.
-  this->BR = &BR;
-}
 
 static const char* Msgs[] = {
   // GC only
@@ -2603,7 +2552,7 @@ PathDiagnosticPiece* CFRefReport::VisitNode(const ExplodedNode* N,
 }
 
 namespace {
-  class VISIBILITY_HIDDEN FindUniqueBinding :
+  class FindUniqueBinding :
   public StoreManager::BindingsHandler {
     SymbolRef Sym;
     const MemRegion* Binding;
@@ -2832,11 +2781,9 @@ void CFRefCount::EvalSummary(ExplodedNodeSet& Dst,
                              Expr* Ex,
                              Expr* Receiver,
                              const RetainSummary& Summ,
+                             const MemRegion *Callee,
                              ExprIterator arg_beg, ExprIterator arg_end,
-                             ExplodedNode* Pred) {
-
-  // Get the state.
-  const GRState *state = Builder.GetState(Pred);
+                             ExplodedNode* Pred, const GRState *state) {
 
   // Evaluate the effect of the arguments.
   RefVal::Kind hasErr = (RefVal::Kind) 0;
@@ -2844,6 +2791,8 @@ void CFRefCount::EvalSummary(ExplodedNodeSet& Dst,
   Expr* ErrorExpr = NULL;
   SymbolRef ErrorSym = 0;
 
+  llvm::SmallVector<const MemRegion*, 10> RegionsToInvalidate;
+  
   for (ExprIterator I = arg_beg; I != arg_end; ++I, ++idx) {
     SVal V = state->getSValAsScalarOrLoc(*I);
     SymbolRef Sym = V.getAsLocSymbol();
@@ -2866,16 +2815,8 @@ void CFRefCount::EvalSummary(ExplodedNodeSet& Dst,
           continue;
 
         // Invalidate the value of the variable passed by reference.
-
-        // FIXME: We can have collisions on the conjured symbol if the
-        //  expression *I also creates conjured symbols.  We probably want
-        //  to identify conjured symbols by an expression pair: the enclosing
-        //  expression (the context) and the expression itself.  This should
-        //  disambiguate conjured symbols.
-        unsigned Count = Builder.getCurrentBlockCount();
-        StoreManager& StoreMgr = Eng.getStateManager().getStoreManager();
-
         const MemRegion *R = MR->getRegion();
+
         // Are we dealing with an ElementRegion?  If the element type is
         // a basic integer type (e.g., char, int) and the underying region
         // is a variable region then strip off the ElementRegion.
@@ -2899,14 +2840,11 @@ void CFRefCount::EvalSummary(ExplodedNodeSet& Dst,
           }
           // FIXME: What about layers of ElementRegions?
         }
-
-        StoreManager::InvalidatedSymbols IS;
-        state = StoreMgr.InvalidateRegion(state, R, *I, Count, &IS);
-        for (StoreManager::InvalidatedSymbols::iterator I = IS.begin(),
-             E = IS.end(); I!=E; ++I) {
-          // Remove any existing reference-count binding.
-          state = state->remove<RefBindings>(*I);
-        }
+        
+        // Mark this region for invalidation.  We batch invalidate regions
+        // below for efficiency.
+        RegionsToInvalidate.push_back(R);
+        continue;
       }
       else {
         // Nuke all other arguments passed by reference.
@@ -2920,6 +2858,36 @@ void CFRefCount::EvalSummary(ExplodedNodeSet& Dst,
       // invalidate the values referred by the location.
       V = cast<nonloc::LocAsInteger>(V).getLoc();
       goto tryAgain;
+    }
+  }
+  
+  // Block calls result in all captured values passed-via-reference to be
+  // invalidated.
+  if (const BlockDataRegion *BR = dyn_cast_or_null<BlockDataRegion>(Callee)) {
+    RegionsToInvalidate.push_back(BR);
+  }
+  
+  // Invalidate regions we designed for invalidation use the batch invalidation
+  // API.
+  if (!RegionsToInvalidate.empty()) {    
+    // FIXME: We can have collisions on the conjured symbol if the
+    //  expression *I also creates conjured symbols.  We probably want
+    //  to identify conjured symbols by an expression pair: the enclosing
+    //  expression (the context) and the expression itself.  This should
+    //  disambiguate conjured symbols.
+    unsigned Count = Builder.getCurrentBlockCount();
+    StoreManager& StoreMgr = Eng.getStateManager().getStoreManager();
+
+    
+    StoreManager::InvalidatedSymbols IS;
+    state = StoreMgr.InvalidateRegions(state, RegionsToInvalidate.data(),
+                                       RegionsToInvalidate.data() +
+                                       RegionsToInvalidate.size(),
+                                       Ex, Count, &IS);
+    for (StoreManager::InvalidatedSymbols::iterator I = IS.begin(),
+         E = IS.end(); I!=E; ++I) {
+        // Remove any existing reference-count binding.
+      state = state->remove<RefBindings>(*I);
     }
   }
 
@@ -2974,6 +2942,17 @@ void CFRefCount::EvalSummary(ExplodedNodeSet& Dst,
       // that are returned by value.
 
       QualType T = Ex->getType();
+
+      // For CallExpr, use the result type to know if it returns a reference.
+      if (const CallExpr *CE = dyn_cast<CallExpr>(Ex)) {
+        const Expr *Callee = CE->getCallee();
+        if (const FunctionDecl *FD = state->getSVal(Callee).getAsFunctionDecl())
+          T = FD->getResultType();
+      }
+      else if (const ObjCMessageExpr *ME = dyn_cast<ObjCMessageExpr>(Ex)) {
+        if (const ObjCMethodDecl *MD = ME->getMethodDecl())
+          T = MD->getResultType();
+      }
 
       if (Loc::IsLocType(T) || (T->isIntegerType() && T->isScalarType())) {
         unsigned Count = Builder.getCurrentBlockCount();
@@ -3052,34 +3031,44 @@ void CFRefCount::EvalCall(ExplodedNodeSet& Dst,
                           GRStmtNodeBuilder& Builder,
                           CallExpr* CE, SVal L,
                           ExplodedNode* Pred) {
-  const FunctionDecl* FD = L.getAsFunctionDecl();
-  RetainSummary* Summ = !FD ? Summaries.getDefaultSummary()
-                        : Summaries.getSummary(const_cast<FunctionDecl*>(FD));
+
+  RetainSummary *Summ = 0;
+  
+  // FIXME: Better support for blocks.  For now we stop tracking anything
+  // that is passed to blocks.
+  // FIXME: Need to handle variables that are "captured" by the block.
+  if (dyn_cast_or_null<BlockDataRegion>(L.getAsRegion())) {
+    Summ = Summaries.getPersistentStopSummary();
+  }
+  else {
+    const FunctionDecl* FD = L.getAsFunctionDecl();
+    Summ = !FD ? Summaries.getDefaultSummary() :
+                 Summaries.getSummary(const_cast<FunctionDecl*>(FD));
+  }
 
   assert(Summ);
-  EvalSummary(Dst, Eng, Builder, CE, 0, *Summ,
-              CE->arg_begin(), CE->arg_end(), Pred);
+  EvalSummary(Dst, Eng, Builder, CE, 0, *Summ, L.getAsRegion(),
+              CE->arg_begin(), CE->arg_end(), Pred, Builder.GetState(Pred));
 }
 
 void CFRefCount::EvalObjCMessageExpr(ExplodedNodeSet& Dst,
                                      GRExprEngine& Eng,
                                      GRStmtNodeBuilder& Builder,
                                      ObjCMessageExpr* ME,
-                                     ExplodedNode* Pred) {
-  
+                                     ExplodedNode* Pred,
+                                     const GRState *state) {
   RetainSummary *Summ =
     ME->getReceiver()
-      ? Summaries.getInstanceMethodSummary(ME, Builder.GetState(Pred),
-                                           Pred->getLocationContext())
+      ? Summaries.getInstanceMethodSummary(ME, state,Pred->getLocationContext())
       : Summaries.getClassMethodSummary(ME);
 
   assert(Summ && "RetainSummary is null");
-  EvalSummary(Dst, Eng, Builder, ME, ME->getReceiver(), *Summ,
-              ME->arg_begin(), ME->arg_end(), Pred);
+  EvalSummary(Dst, Eng, Builder, ME, ME->getReceiver(), *Summ, NULL,
+              ME->arg_begin(), ME->arg_end(), Pred, state);
 }
 
 namespace {
-class VISIBILITY_HIDDEN StopTrackingCallback : public SymbolVisitor {
+class StopTrackingCallback : public SymbolVisitor {
   const GRState *state;
 public:
   StopTrackingCallback(const GRState *st) : state(st) {}
@@ -3501,7 +3490,7 @@ CFRefCount::HandleAutoreleaseCounts(const GRState * state, GenericNodeBuilder Bd
 
     CFRefReport *report =
       new CFRefReport(*static_cast<CFRefBug*>(overAutorelease),
-                      *this, N, Sym, os.str().c_str());
+                      *this, N, Sym, os.str());
     BR->EmitReport(report);
   }
 
@@ -3670,8 +3659,130 @@ void CFRefCount::ProcessNonLeakError(ExplodedNodeSet& Dst,
 }
 
 //===----------------------------------------------------------------------===//
+// Pieces of the retain/release checker implemented using a CheckerVisitor.
+// More pieces of the retain/release checker will be migrated to this interface
+// (ideally, all of it some day).
+//===----------------------------------------------------------------------===//
+
+namespace {
+class RetainReleaseChecker
+  : public CheckerVisitor<RetainReleaseChecker> {
+  CFRefCount *TF;
+public:
+    RetainReleaseChecker(CFRefCount *tf) : TF(tf) {}
+    static void* getTag() { static int x = 0; return &x; }
+    
+    void PostVisitBlockExpr(CheckerContext &C, const BlockExpr *BE);
+};
+} // end anonymous namespace
+
+
+void RetainReleaseChecker::PostVisitBlockExpr(CheckerContext &C,
+                                              const BlockExpr *BE) {
+  
+  // Scan the BlockDecRefExprs for any object the retain/release checker
+  // may be tracking.  
+  if (!BE->hasBlockDeclRefExprs())
+    return;
+  
+  const GRState *state = C.getState();
+  const BlockDataRegion *R =
+    cast<BlockDataRegion>(state->getSVal(BE).getAsRegion());
+  
+  BlockDataRegion::referenced_vars_iterator I = R->referenced_vars_begin(),
+                                            E = R->referenced_vars_end();
+  
+  if (I == E)
+    return;
+  
+  // FIXME: For now we invalidate the tracking of all symbols passed to blocks
+  // via captured variables, even though captured variables result in a copy
+  // and in implicit increment/decrement of a retain count.
+  llvm::SmallVector<const MemRegion*, 10> Regions;
+  const LocationContext *LC = C.getPredecessor()->getLocationContext();
+  MemRegionManager &MemMgr = C.getValueManager().getRegionManager();
+  
+  for ( ; I != E; ++I) {
+    const VarRegion *VR = *I;
+    if (VR->getSuperRegion() == R) {
+      VR = MemMgr.getVarRegion(VR->getDecl(), LC);
+    }
+    Regions.push_back(VR);
+  }
+  
+  state =
+    state->scanReachableSymbols<StopTrackingCallback>(Regions.data(),
+                                    Regions.data() + Regions.size()).getState();
+  C.addTransition(state);
+}
+
+//===----------------------------------------------------------------------===//
 // Transfer function creation for external clients.
 //===----------------------------------------------------------------------===//
+
+void CFRefCount::RegisterChecks(GRExprEngine& Eng) {
+  BugReporter &BR = Eng.getBugReporter();
+  
+  useAfterRelease = new UseAfterRelease(this);
+  BR.Register(useAfterRelease);
+  
+  releaseNotOwned = new BadRelease(this);
+  BR.Register(releaseNotOwned);
+  
+  deallocGC = new DeallocGC(this);
+  BR.Register(deallocGC);
+  
+  deallocNotOwned = new DeallocNotOwned(this);
+  BR.Register(deallocNotOwned);
+  
+  overAutorelease = new OverAutorelease(this);
+  BR.Register(overAutorelease);
+  
+  returnNotOwnedForOwned = new ReturnedNotOwnedForOwned(this);
+  BR.Register(returnNotOwnedForOwned);
+  
+  // First register "return" leaks.
+  const char* name = 0;
+  
+  if (isGCEnabled())
+    name = "Leak of returned object when using garbage collection";
+  else if (getLangOptions().getGCMode() == LangOptions::HybridGC)
+    name = "Leak of returned object when not using garbage collection (GC) in "
+    "dual GC/non-GC code";
+  else {
+    assert(getLangOptions().getGCMode() == LangOptions::NonGC);
+    name = "Leak of returned object";
+  }
+  
+  // Leaks should not be reported if they are post-dominated by a sink.
+  leakAtReturn = new LeakAtReturn(this, name);
+  leakAtReturn->setSuppressOnSink(true);
+  BR.Register(leakAtReturn);
+  
+  // Second, register leaks within a function/method.
+  if (isGCEnabled())
+    name = "Leak of object when using garbage collection";
+  else if (getLangOptions().getGCMode() == LangOptions::HybridGC)
+    name = "Leak of object when not using garbage collection (GC) in "
+    "dual GC/non-GC code";
+  else {
+    assert(getLangOptions().getGCMode() == LangOptions::NonGC);
+    name = "Leak";
+  }
+  
+  // Leaks should not be reported if they are post-dominated by sinks.
+  leakWithinFunction = new LeakWithinFunction(this, name);
+  leakWithinFunction->setSuppressOnSink(true);
+  BR.Register(leakWithinFunction);
+  
+  // Save the reference to the BugReporter.
+  this->BR = &BR;
+  
+  // Register the RetainReleaseChecker with the GRExprEngine object.
+  // Functionality in CFRefCount will be migrated to RetainReleaseChecker
+  // over time.
+  Eng.registerCheck(new RetainReleaseChecker(this));
+}
 
 GRTransferFuncs* clang::MakeCFRefCountTF(ASTContext& Ctx, bool GCEnabled,
                                          const LangOptions& lopts) {

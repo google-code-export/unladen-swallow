@@ -1,4 +1,4 @@
-// RUN: clang-cc -fsyntax-only -verify -Wformat-nonliteral %s
+// RUN: %clang_cc1 -fsyntax-only -verify -Wformat-nonliteral %s
 
 #include <stdarg.h>
 typedef __typeof(sizeof(int)) size_t;
@@ -8,6 +8,7 @@ int printf(const char *restrict, ...);
 int snprintf(char *restrict, size_t, const char *restrict, ...);
 int sprintf(char *restrict, const char *restrict, ...);
 int vasprintf(char **, const char *, va_list);
+int asprintf(char **, const char *, ...);
 int vfprintf(FILE *, const char *restrict, va_list);
 int vprintf(const char *restrict, va_list);
 int vsnprintf(char *, size_t, const char *, va_list);
@@ -50,6 +51,7 @@ void check_conditional_literal(const char* s, int i) {
   printf(i == 1 ? "yes" : "no"); // no-warning
   printf(i == 0 ? (i == 1 ? "yes" : "no") : "dont know"); // no-warning
   printf(i == 0 ? (i == 1 ? s : "no") : "dont know"); // expected-warning{{format string is not a string literal}}
+  printf("yes" ?: "no %d", 1); // expected-warning{{more data arguments than '%' conversions}}
 }
 
 void check_writeback_specifier()

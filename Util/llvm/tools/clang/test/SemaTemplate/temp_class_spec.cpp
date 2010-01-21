@@ -1,4 +1,4 @@
-// RUN: clang-cc -fsyntax-only -verify %s
+// RUN: %clang_cc1 -fsyntax-only -verify %s
 template<typename T>
 struct is_pointer {
   static const bool value = false;
@@ -330,3 +330,21 @@ template<typename T, T N, typename U> class A0;
 template<typename T, T N> class A0<T, N, int> { }; // expected-note{{here}}
 template<typename T, T N> class A0<T, N, int>;
 template<typename T, T N> class A0<T, N, int> { }; // expected-error{{redef}}
+
+namespace PR6025 {
+  template< int N > struct A;
+
+  namespace N 
+  {
+    template< typename F > 
+    struct B;
+  }
+
+  template< typename Protect, typename Second > 
+  struct C;
+
+  template <class T>
+  struct C< T, A< N::B<T>::value > >
+  {
+  };
+}

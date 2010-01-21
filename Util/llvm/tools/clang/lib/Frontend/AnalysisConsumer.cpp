@@ -14,9 +14,9 @@
 #include "clang/Frontend/AnalysisConsumer.h"
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/Decl.h"
+#include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/ParentMap.h"
-#include "clang/Analysis/Analyses/LiveVariables.h"
 #include "clang/Analysis/Analyses/LiveVariables.h"
 #include "clang/Analysis/CFG.h"
 #include "clang/Analysis/LocalCheckers.h"
@@ -30,7 +30,6 @@
 #include "clang/Basic/SourceManager.h"
 #include "clang/Frontend/PathDiagnosticClients.h"
 #include "clang/Lex/Preprocessor.h"
-#include "llvm/Support/Compiler.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/System/Path.h"
 #include "llvm/System/Program.h"
@@ -62,7 +61,7 @@ CreatePlistHTMLDiagnosticClient(const std::string& prefix,
 
 namespace {
 
- class VISIBILITY_HIDDEN AnalysisConsumer : public ASTConsumer {
+ class AnalysisConsumer : public ASTConsumer {
  public:
   typedef void (*CodeAction)(AnalysisConsumer &C, AnalysisManager &M, Decl *D);
    
@@ -140,13 +139,17 @@ public:
       return;
       
     declDisplayed = true;
-    // FIXME: Is getCodeDecl() always a named decl?
+    SourceManager &SM = Mgr->getASTContext().getSourceManager();
+    PresumedLoc Loc = SM.getPresumedLoc(D->getLocation());
+    llvm::errs() << "ANALYZE: " << Loc.getFilename();
+
     if (isa<FunctionDecl>(D) || isa<ObjCMethodDecl>(D)) {
       const NamedDecl *ND = cast<NamedDecl>(D);
-      SourceManager &SM = Mgr->getASTContext().getSourceManager();
-      llvm::errs() << "ANALYZE: "
-        << SM.getPresumedLoc(ND->getLocation()).getFilename()
-        << ' ' << ND->getNameAsString() << '\n';
+      llvm::errs() << ' ' << ND->getNameAsString() << '\n';
+    }
+    else if (isa<BlockDecl>(D)) {
+      llvm::errs() << ' ' << "block(line:" << Loc.getLine() << ",col:"
+                   << Loc.getColumn() << '\n';
     }
   }
 
@@ -168,7 +171,6 @@ public:
     Mgr.reset(new AnalysisManager(*Ctx, PP.getDiagnostics(),
                                   PP.getLangOptions(), PD,
                                   CreateStoreMgr, CreateConstraintMgr,
-                                  Opts.AnalyzerDisplayProgress,
                                   Opts.VisualizeEGDot, Opts.VisualizeEGUbi,
                                   Opts.PurgeDead, Opts.EagerlyAssume,
                                   Opts.TrimGraph));
@@ -226,6 +228,19 @@ void AnalysisConsumer::HandleTopLevelSingleDecl(Decl *D) {
       break;
     }
 
+    case Decl::CXXMethod: {
+      CXXMethodDecl *CXXMD = cast<CXXMethodDecl>(D);
+
+      if (Opts.AnalyzeSpecificFunction.size() > 0 &&
+          Opts.AnalyzeSpecificFunction != CXXMD->getName())
+        return;
+
+      Stmt *Body = CXXMD->getBody();
+      if (Body)
+        HandleCode(CXXMD, Body, FunctionActions);
+      break;
+    }
+
     default:
       break;
   }
@@ -238,7 +253,7 @@ void AnalysisConsumer::HandleTranslationUnit(ASTContext &C) {
   if (!TranslationUnitActions.empty()) {  
     // Find the entry function definition (if any).
     FunctionDecl *FD = 0;
-    
+    // Must specify an entry function.
     if (!Opts.AnalyzeSpecificFunction.empty()) {
       for (DeclContext::decl_iterator I=TU->decls_begin(), E=TU->decls_end();
            I != E; ++I) {
@@ -251,9 +266,11 @@ void AnalysisConsumer::HandleTranslationUnit(ASTContext &C) {
       }
     }
 
-    for (Actions::iterator I = TranslationUnitActions.begin(), 
-         E = TranslationUnitActions.end(); I != E; ++I)
-      (*I)(*this, *Mgr, FD);  
+    if (FD) {
+      for (Actions::iterator I = TranslationUnitActions.begin(), 
+             E = TranslationUnitActions.end(); I != E; ++I)
+        (*I)(*this, *Mgr, FD);  
+    }
   }
 
   if (!ObjCImplementationActions.empty()) {
@@ -266,8 +283,19 @@ void AnalysisConsumer::HandleTranslationUnit(ASTContext &C) {
 
   // Explicitly destroy the PathDiagnosticClient.  This will flush its output.
   // FIXME: This should be replaced with something that doesn't rely on
-  // side-effects in PathDiagnosticClient's destructor.
+  // side-effects in PathDiagnosticClient's destructor. This is required when
+  // used with option -disable-free.
   Mgr.reset(NULL);
+}
+
+static void FindBlocks(DeclContext *D, llvm::SmallVectorImpl<Decl*> &WL) {
+  if (BlockDecl *BD = dyn_cast<BlockDecl>(D))
+    WL.push_back(BD);
+  
+  for (DeclContext::decl_iterator I = D->decls_begin(), E = D->decls_end();
+       I!=E; ++I)
+    if (DeclContext *DC = dyn_cast<DeclContext>(*I))
+      FindBlocks(DC, WL);
 }
 
 void AnalysisConsumer::HandleCode(Decl *D, Stmt* Body, Actions& actions) {
@@ -286,8 +314,16 @@ void AnalysisConsumer::HandleCode(Decl *D, Stmt* Body, Actions& actions) {
   Mgr->ClearContexts();
   
   // Dispatch on the actions.
+  llvm::SmallVector<Decl*, 10> WL;
+  WL.push_back(D);
+  
+  if (Body && Opts.AnalyzeNestedBlocks)
+    FindBlocks(cast<DeclContext>(D), WL);
+  
   for (Actions::iterator I = actions.begin(), E = actions.end(); I != E; ++I)
-    (*I)(*this, *Mgr, D);  
+    for (llvm::SmallVectorImpl<Decl*>::iterator WI=WL.begin(), WE=WL.end();
+         WI != WE; ++WI)
+      (*I)(*this, *Mgr, *WI);
 }
 
 //===----------------------------------------------------------------------===//
@@ -312,7 +348,8 @@ static void ActionWarnUninitVals(AnalysisConsumer &C, AnalysisManager& mgr,
 }
 
 
-static void ActionGRExprEngine(AnalysisConsumer &C, AnalysisManager& mgr, Decl *D, 
+static void ActionGRExprEngine(AnalysisConsumer &C, AnalysisManager& mgr,
+                               Decl *D, 
                                GRTransferFuncs* tf) {
 
   llvm::OwningPtr<GRTransferFuncs> TF(tf);
@@ -326,11 +363,7 @@ static void ActionGRExprEngine(AnalysisConsumer &C, AnalysisManager& mgr, Decl *
   if (!mgr.getLiveVariables(D))
     return;  
   
-  GRExprEngine Eng(mgr);
-
-  Eng.setTransferFunctions(tf);
-  Eng.RegisterInternalChecks(); // FIXME: Internal checks should just
-                                // automatically register.
+  GRExprEngine Eng(mgr, TF.take());
   
   if (C.Opts.EnableExperimentalInternalChecks)
     RegisterExperimentalInternalChecks(Eng);
@@ -339,7 +372,7 @@ static void ActionGRExprEngine(AnalysisConsumer &C, AnalysisManager& mgr, Decl *
   
   if (C.Opts.EnableExperimentalChecks)
     RegisterExperimentalChecks(Eng);
-
+  
   // Set the graph auditor.
   llvm::OwningPtr<ExplodedNode::Auditor> Auditor;
   if (mgr.shouldVisualizeUbigraph()) {
@@ -455,26 +488,34 @@ static void ActionWarnSizeofPointer(AnalysisConsumer &C, AnalysisManager &mgr,
 
 static void ActionInlineCall(AnalysisConsumer &C, AnalysisManager &mgr,
                              Decl *D) {
-  if (!D)
-    return;
-
+  // FIXME: This is largely copy of ActionGRExprEngine. Needs cleanup.  
+  // Display progress.
   C.DisplayFunction(D);
-  llvm::OwningPtr<GRTransferFuncs> TF(CreateCallInliner(mgr.getASTContext()));
 
-  // Construct the analysis engine.
-  GRExprEngine Eng(mgr);
+  // FIXME: Make a fake transfer function. The GRTransferFunc interface
+  // eventually will be removed.
+  GRExprEngine Eng(mgr, new GRTransferFuncs());
 
-  Eng.setTransferFunctions(TF.get());
+  if (C.Opts.EnableExperimentalInternalChecks)
+    RegisterExperimentalInternalChecks(Eng);
   
-  Eng.RegisterInternalChecks();
   RegisterAppleChecks(Eng, *D);
+  
+  if (C.Opts.EnableExperimentalChecks)
+    RegisterExperimentalChecks(Eng);
+
+  // Register call inliner as the last checker.
+  RegisterCallInliner(Eng);
 
   // Execute the worklist algorithm.
   Eng.ExecuteWorkList(mgr.getStackFrame(D));
-  
+
   // Visualize the exploded graph.
   if (mgr.shouldVisualizeGraphviz())
     Eng.ViewGraph(mgr.shouldTrimGraph());
+
+  // Display warnings.
+  Eng.getBugReporter().FlushReports();
 }
 
 //===----------------------------------------------------------------------===//

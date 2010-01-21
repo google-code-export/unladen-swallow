@@ -97,13 +97,6 @@ public:
   DefinedOrUnknownSVal getRegionValueSymbolVal(const MemRegion *R,
                                                QualType T = QualType());
 
-  DefinedOrUnknownSVal getRegionValueSymbolValOrUnknown(const MemRegion *R,
-                                                        QualType T) {
-    if (SymMgr.canSymbolicate(T))
-      return getRegionValueSymbolVal(R, T);
-    return UnknownVal();
-  }
-
   DefinedOrUnknownSVal getConjuredSymbolVal(const void *SymbolTag,
                                             const Expr *E, unsigned Count);
   DefinedOrUnknownSVal getConjuredSymbolVal(const void *SymbolTag,
@@ -114,6 +107,9 @@ public:
                                                       const TypedRegion *R);
 
   DefinedSVal getFunctionPointer(const FunctionDecl *FD);
+  
+  DefinedSVal getBlockPointer(const BlockDecl *BD, CanQualType locTy,
+                              const LocationContext *LC);
 
   NonLoc makeCompoundVal(QualType T, llvm::ImmutableList<SVal> Vals) {
     return nonloc::CompoundVal(BasicVals.getCompoundValData(T, Vals));

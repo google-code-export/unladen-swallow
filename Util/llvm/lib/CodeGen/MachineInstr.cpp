@@ -15,6 +15,7 @@
 #include "llvm/Constants.h"
 #include "llvm/Function.h"
 #include "llvm/InlineAsm.h"
+#include "llvm/Type.h"
 #include "llvm/Value.h"
 #include "llvm/Assembly/Writer.h"
 #include "llvm/CodeGen/MachineFunction.h"
@@ -27,11 +28,13 @@
 #include "llvm/Target/TargetRegisterInfo.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/DebugInfo.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/LeakDetector.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/ADT/FoldingSet.h"
+#include "llvm/Metadata.h"
 using namespace llvm;
 
 //===----------------------------------------------------------------------===//
@@ -276,8 +279,13 @@ void MachineOperand::print(raw_ostream &OS, const TargetMachine *TM) const {
     OS << '>';
     break;
   case MachineOperand::MO_BlockAddress:
-    OS << "<";
+    OS << '<';
     WriteAsOperand(OS, getBlockAddress(), /*PrintType=*/false);
+    OS << '>';
+    break;
+  case MachineOperand::MO_Metadata:
+    OS << '<';
+    WriteAsOperand(OS, getMetadata(), /*PrintType=*/false);
     OS << '>';
     break;
   default:
@@ -555,8 +563,13 @@ void MachineInstr::addOperand(const MachineOperand &Op) {
       Operands.back().ParentMI = this;
   
       // If the operand is a register, update the operand's use list.
-      if (Op.isReg())
+      if (Op.isReg()) {
         Operands.back().AddRegOperandToRegInfo(RegInfo);
+        // If the register operand is flagged as early, mark the operand as such
+        unsigned OpNo = Operands.size() - 1;
+        if (TID->getOperandConstraint(OpNo, TOI::EARLY_CLOBBER) != -1)
+          Operands[OpNo].setIsEarlyClobber(true);
+      }
       return;
     }
   }
@@ -573,8 +586,12 @@ void MachineInstr::addOperand(const MachineOperand &Op) {
 
     // Do explicitly set the reginfo for this operand though, to ensure the
     // next/prev fields are properly nulled out.
-    if (Operands[OpNo].isReg())
+    if (Operands[OpNo].isReg()) {
       Operands[OpNo].AddRegOperandToRegInfo(0);
+      // If the register operand is flagged as early, mark the operand as such
+      if (TID->getOperandConstraint(OpNo, TOI::EARLY_CLOBBER) != -1)
+        Operands[OpNo].setIsEarlyClobber(true);
+    }
 
   } else if (Operands.size()+1 <= Operands.capacity()) {
     // Otherwise, we have to remove register operands from their register use
@@ -594,8 +611,12 @@ void MachineInstr::addOperand(const MachineOperand &Op) {
     Operands.insert(Operands.begin()+OpNo, Op);
     Operands[OpNo].ParentMI = this;
 
-    if (Operands[OpNo].isReg())
+    if (Operands[OpNo].isReg()) {
       Operands[OpNo].AddRegOperandToRegInfo(RegInfo);
+      // If the register operand is flagged as early, mark the operand as such
+      if (TID->getOperandConstraint(OpNo, TOI::EARLY_CLOBBER) != -1)
+        Operands[OpNo].setIsEarlyClobber(true);
+    }
     
     // Re-add all the implicit ops.
     for (unsigned i = OpNo+1, e = Operands.size(); i != e; ++i) {
@@ -613,6 +634,11 @@ void MachineInstr::addOperand(const MachineOperand &Op) {
   
     // Re-add all the operands.
     AddRegOperandsToUseLists(*RegInfo);
+
+      // If the register operand is flagged as early, mark the operand as such
+    if (Operands[OpNo].isReg()
+        && TID->getOperandConstraint(OpNo, TOI::EARLY_CLOBBER) != -1)
+      Operands[OpNo].setIsEarlyClobber(true);
   }
 }
 
@@ -1058,8 +1084,24 @@ bool MachineInstr::isInvariantLoad(AliasAnalysis *AA) const {
   return true;
 }
 
+/// isConstantValuePHI - If the specified instruction is a PHI that always
+/// merges together the same virtual register, return the register, otherwise
+/// return 0.
+unsigned MachineInstr::isConstantValuePHI() const {
+  if (getOpcode() != TargetInstrInfo::PHI)
+    return 0;
+  assert(getNumOperands() >= 3 &&
+         "It's illegal to have a PHI without source operands");
+
+  unsigned Reg = getOperand(1).getReg();
+  for (unsigned i = 3, e = getNumOperands(); i < e; i += 2)
+    if (getOperand(i).getReg() != Reg)
+      return 0;
+  return Reg;
+}
+
 void MachineInstr::dump() const {
-  errs() << "  " << *this;
+  dbgs() << "  " << *this;
 }
 
 void MachineInstr::print(raw_ostream &OS, const TargetMachine *TM) const {
@@ -1125,7 +1167,7 @@ void MachineInstr::print(raw_ostream &OS, const TargetMachine *TM) const {
 
   // Briefly indicate whether any call clobbers were omitted.
   if (OmittedAnyCallClobbers) {
-    if (FirstOp) FirstOp = false; else OS << ",";
+    if (!FirstOp) OS << ",";
     OS << " ...";
   }
 
@@ -1143,15 +1185,21 @@ void MachineInstr::print(raw_ostream &OS, const TargetMachine *TM) const {
   }
 
   if (!debugLoc.isUnknown() && MF) {
-    if (!HaveSemi) OS << ";"; HaveSemi = true;
+    if (!HaveSemi) OS << ";";
 
     // TODO: print InlinedAtLoc information
 
     DebugLocTuple DLT = MF->getDebugLocTuple(debugLoc);
-    DICompileUnit CU(DLT.Scope);
-    if (!CU.isNull())
-      OS << " dbg:" << CU.getDirectory() << '/' << CU.getFilename() << ":"
-         << DLT.Line << ":" << DLT.Col;
+    DIScope Scope(DLT.Scope);
+    OS << " dbg:";
+    // Omit the directory, since it's usually long and uninteresting.
+    if (!Scope.isNull())
+      OS << Scope.getFilename();
+    else
+      OS << "<unknown>";
+    OS << ':' << DLT.Line;
+    if (DLT.Col != 0)
+      OS << ':' << DLT.Col;
   }
 
   OS << "\n";
@@ -1271,4 +1319,13 @@ bool MachineInstr::addRegisterDead(unsigned IncomingReg,
                                        false /*IsKill*/,
                                        true  /*IsDead*/));
   return true;
+}
+
+void MachineInstr::addRegisterDefined(unsigned IncomingReg,
+                                      const TargetRegisterInfo *RegInfo) {
+  MachineOperand *MO = findRegisterDefOperand(IncomingReg, false, RegInfo);
+  if (!MO || MO->getSubReg())
+    addOperand(MachineOperand::CreateReg(IncomingReg,
+                                         true  /*IsDef*/,
+                                         true  /*IsImp*/));
 }

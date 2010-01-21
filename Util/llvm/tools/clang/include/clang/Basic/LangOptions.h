@@ -14,6 +14,8 @@
 #ifndef LLVM_CLANG_LANGOPTIONS_H
 #define LLVM_CLANG_LANGOPTIONS_H
 
+#include <string>
+
 namespace clang {
 
 /// LangOptions - This class keeps track of the various options that can be
@@ -44,7 +46,7 @@ public:
   unsigned LaxVectorConversions : 1;
   unsigned AltiVec           : 1;  // Support AltiVec-style vector initializers.
   unsigned Exceptions        : 1;  // Support exception handling.
-  unsigned Rtti              : 1;  // Support rtti information.
+  unsigned RTTI              : 1;  // Support RTTI information.
 
   unsigned NeXTRuntime       : 1; // Use NeXT runtime.
   unsigned Freestanding      : 1; // Freestanding implementation
@@ -87,9 +89,13 @@ public:
   unsigned ShortWChar        : 1; // Force wchar_t to be unsigned short int.
 
   unsigned OpenCL            : 1; // OpenCL C99 language extensions.
-
+  
+  unsigned AssumeSaneOperatorNew : 1; // Whether to add __attribute__((malloc))
+                                      // to the declaration of C++'s new
+                                      // operators
   unsigned ElideConstructors : 1; // Whether C++ copy constructors should be
                                   // elided if possible.
+  unsigned CatchUndefined     :1; // Generate code to check for undefined ops.
 private:
   unsigned GC : 2;                // Objective-C Garbage Collection modes.  We
                                   // declare this enum as unsigned because MSVC
@@ -101,15 +107,10 @@ private:
                                   // on making enums signed.  Set/Query this
                                   // value using accessors.
 
-  /// The user provided name for the "main file", if non-null. This is
-  /// useful in situations where the input file name does not match
-  /// the original input file, for example with -save-temps.
-  const char *MainFileName;
-
 public:
   unsigned InstantiationDepth;    // Maximum template instantiation depth.
 
-  const char *ObjCConstantStringClass;
+  std::string ObjCConstantStringClass;
 
   enum GCMode { NonGC, GCOnly, HybridGC };
   enum StackProtectorMode { SSPOff, SSPOn, SSPReq };
@@ -124,12 +125,11 @@ public:
     GNUMode = ImplicitInt = Digraphs = 0;
     HexFloats = 0;
     GC = ObjC1 = ObjC2 = ObjCNonFragileABI = 0;
-    ObjCConstantStringClass = 0;
     C99 = Microsoft = CPlusPlus = CPlusPlus0x = 0;
     CXXOperatorNames = PascalStrings = WritableStrings = 0;
     Exceptions = Freestanding = NoBuiltin = 0;
     NeXTRuntime = 1;
-    Rtti = 1;
+    RTTI = 1;
     LaxVectorConversions = 1;
     HeinousExtensions = 0;
     AltiVec = OpenCL = StackProtector = 0;
@@ -143,6 +143,8 @@ public:
     BlockIntrospection = 0;
     EmitAllDecls = 0;
     MathErrno = 1;
+
+    AssumeSaneOperatorNew = 1;
 
     // FIXME: The default should be 1.
     AccessControl = 0;
@@ -164,8 +166,7 @@ public:
 
     CharIsSigned = 1;
     ShortWChar = 0;
-
-    MainFileName = 0;
+    CatchUndefined = 0;
   }
 
   GCMode getGCMode() const { return (GCMode) GC; }
@@ -177,9 +178,6 @@ public:
   void setStackProtectorMode(StackProtectorMode m) {
     StackProtector = static_cast<unsigned>(m);
   }
-
-  const char *getMainFileName() const { return MainFileName; }
-  void setMainFileName(const char *Name) { MainFileName = Name; }
 
   VisibilityMode getVisibilityMode() const {
     return (VisibilityMode) SymbolVisibility;

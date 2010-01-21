@@ -127,10 +127,6 @@ AlphaTargetLowering::AlphaTargetLowering(TargetMachine &TM)
 
   setOperationAction(ISD::BIT_CONVERT, MVT::f32, Promote);
 
-  // We don't have line number support yet.
-  setOperationAction(ISD::DBG_STOPPOINT, MVT::Other, Expand);
-  setOperationAction(ISD::DEBUG_LOC, MVT::Other, Expand);
-  setOperationAction(ISD::DBG_LABEL, MVT::Other, Expand);
   setOperationAction(ISD::EH_LABEL, MVT::Other, Expand);
 
   // Not implemented yet.
@@ -194,7 +190,6 @@ static SDValue LowerJumpTable(SDValue Op, SelectionDAG &DAG) {
   EVT PtrVT = Op.getValueType();
   JumpTableSDNode *JT = cast<JumpTableSDNode>(Op);
   SDValue JTI = DAG.getTargetJumpTable(JT->getIndex(), PtrVT);
-  SDValue Zero = DAG.getConstant(0, PtrVT);
   // FIXME there isn't really any debug info here
   DebugLoc dl = Op.getDebugLoc();
 

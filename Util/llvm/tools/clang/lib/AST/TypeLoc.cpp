@@ -13,6 +13,7 @@
 
 #include "llvm/Support/raw_ostream.h"
 #include "clang/AST/TypeLocVisitor.h"
+#include "clang/AST/Expr.h"
 using namespace clang;
 
 //===----------------------------------------------------------------------===//
@@ -93,4 +94,44 @@ void TypeLoc::initializeImpl(TypeLoc TL, SourceLocation Loc) {
   do {
     TypeLocInitializer(Loc).Visit(TL);
   } while ((TL = TL.getNextTypeLoc()));
+}
+
+namespace {
+  struct TSTChecker : public TypeLocVisitor<TSTChecker, bool> {
+    // Overload resolution does the real work for us.
+    static bool isTypeSpec(TypeSpecTypeLoc _) { return true; }
+    static bool isTypeSpec(TypeLoc _) { return false; }
+
+#define ABSTRACT_TYPELOC(CLASS, PARENT)
+#define TYPELOC(CLASS, PARENT) \
+    bool Visit##CLASS##TypeLoc(CLASS##TypeLoc TyLoc) { \
+      return isTypeSpec(TyLoc); \
+    }
+#include "clang/AST/TypeLocNodes.def"
+  };
+}
+
+
+/// \brief Determines if the given type loc corresponds to a
+/// TypeSpecTypeLoc.  Since there is not actually a TypeSpecType in
+/// the type hierarchy, this is made somewhat complicated.
+///
+/// There are a lot of types that currently use TypeSpecTypeLoc
+/// because it's a convenient base class.  Ideally we would not accept
+/// those here, but ideally we would have better implementations for
+/// them.
+bool TypeSpecTypeLoc::classof(const TypeLoc *TL) {
+  if (TL->getType().hasLocalQualifiers()) return false;
+  return TSTChecker().Visit(*TL);
+}
+
+// Reimplemented to account for GNU/C++ extension
+//     typeof unary-expression
+// where there are no parentheses.
+SourceRange TypeOfExprTypeLoc::getSourceRange() const {
+  if (getRParenLoc().isValid())
+    return SourceRange(getTypeofLoc(), getRParenLoc());
+  else
+    return SourceRange(getTypeofLoc(),
+                       getUnderlyingExpr()->getSourceRange().getEnd());
 }

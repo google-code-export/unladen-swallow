@@ -13,6 +13,7 @@
 
 #include "clang/Analysis/PathSensitive/Store.h"
 #include "clang/Analysis/PathSensitive/GRState.h"
+#include "clang/AST/CharUnits.h"
 
 using namespace clang;
 
@@ -77,15 +78,20 @@ const MemRegion *StoreManager::CastRegion(const MemRegion *R, QualType CastToTy)
 
   // Process region cast according to the kind of the region being cast.
   switch (R->getKind()) {
-    case MemRegion::BEG_TYPED_REGIONS:
-    case MemRegion::MemSpaceRegionKind:
-    case MemRegion::BEG_DECL_REGIONS:
-    case MemRegion::END_DECL_REGIONS:
-    case MemRegion::END_TYPED_REGIONS: {
+    case MemRegion::CXXThisRegionKind:
+    case MemRegion::GenericMemSpaceRegionKind:
+    case MemRegion::StackLocalsSpaceRegionKind:
+    case MemRegion::StackArgumentsSpaceRegionKind:
+    case MemRegion::HeapSpaceRegionKind:
+    case MemRegion::UnknownSpaceRegionKind:
+    case MemRegion::GlobalsSpaceRegionKind: {
       assert(0 && "Invalid region cast");
       break;
     }
-    case MemRegion::CodeTextRegionKind: {
+    
+    case MemRegion::FunctionTextRegionKind:
+    case MemRegion::BlockTextRegionKind:
+    case MemRegion::BlockDataRegionKind: {
       // CodeTextRegion should be cast to only a function or block pointer type,
       // although they can in practice be casted to anything, e.g, void*, char*,
       // etc.  
@@ -94,7 +100,6 @@ const MemRegion *StoreManager::CastRegion(const MemRegion *R, QualType CastToTy)
     }
 
     case MemRegion::StringRegionKind:
-    case MemRegion::ObjCObjectRegionKind:
       // FIXME: Need to handle arbitrary downcasts.
     case MemRegion::SymbolicRegionKind:
     case MemRegion::AllocaRegionKind:
@@ -102,6 +107,7 @@ const MemRegion *StoreManager::CastRegion(const MemRegion *R, QualType CastToTy)
     case MemRegion::FieldRegionKind:
     case MemRegion::ObjCIvarRegionKind:
     case MemRegion::VarRegionKind:
+    case MemRegion::CXXObjectRegionKind:
       return MakeElementRegion(R, PointeeTy);
 
     case MemRegion::ElementRegionKind: {
@@ -133,9 +139,9 @@ const MemRegion *StoreManager::CastRegion(const MemRegion *R, QualType CastToTy)
       if (!baseR)
         return NULL;
 
-      int64_t off = rawOff.getByteOffset();
+      CharUnits off = CharUnits::fromQuantity(rawOff.getByteOffset());
 
-      if (off == 0) {
+      if (off.isZero()) {
         // Edge case: we are at 0 bytes off the beginning of baseR.  We
         // check to see if type we are casting to is the same as the base
         // region.  If so, just return the base region.
@@ -163,7 +169,7 @@ const MemRegion *StoreManager::CastRegion(const MemRegion *R, QualType CastToTy)
       // We can only compute sizeof(PointeeTy) if it is a complete type.
       if (IsCompleteType(Ctx, PointeeTy)) {
         // Compute the size in **bytes**.
-        int64_t pointeeTySize = (int64_t) (Ctx.getTypeSize(PointeeTy) / 8);
+        CharUnits pointeeTySize = Ctx.getTypeSizeInChars(PointeeTy);
 
         // Is the offset a multiple of the size?  If so, we can layer the
         // ElementRegion (with elementType == PointeeTy) directly on top of
@@ -177,7 +183,7 @@ const MemRegion *StoreManager::CastRegion(const MemRegion *R, QualType CastToTy)
       if (!newSuperR) {
         // Create an intermediate ElementRegion to represent the raw byte.
         // This will be the super region of the final ElementRegion.
-        newSuperR = MakeElementRegion(baseR, Ctx.CharTy, off);
+        newSuperR = MakeElementRegion(baseR, Ctx.CharTy, off.getQuantity());
       }
 
       return MakeElementRegion(newSuperR, PointeeTy, newIndex);
@@ -192,13 +198,53 @@ const MemRegion *StoreManager::CastRegion(const MemRegion *R, QualType CastToTy)
 /// CastRetrievedVal - Used by subclasses of StoreManager to implement
 ///  implicit casts that arise from loads from regions that are reinterpreted
 ///  as another region.
-SVal  StoreManager::CastRetrievedVal(SVal V, const TypedRegion *R,
-                                     QualType castTy) {
+SVal StoreManager::CastRetrievedVal(SVal V, const TypedRegion *R,
+                                    QualType castTy, bool performTestOnly) {
+  
   if (castTy.isNull())
     return V;
   
-  assert(ValMgr.getContext().hasSameUnqualifiedType(castTy,
-                                         R->getValueType(ValMgr.getContext())));
+  ASTContext &Ctx = ValMgr.getContext();
+
+  if (performTestOnly) {  
+    // Automatically translate references to pointers.
+    QualType T = R->getValueType(Ctx);
+    if (const ReferenceType *RT = T->getAs<ReferenceType>())
+      T = Ctx.getPointerType(RT->getPointeeType());
+    
+    assert(ValMgr.getContext().hasSameUnqualifiedType(castTy, T));
+    return V;
+  }
+  
+  if (const Loc *L = dyn_cast<Loc>(&V))
+    return ValMgr.getSValuator().EvalCastL(*L, castTy);
+  else if (const NonLoc *NL = dyn_cast<NonLoc>(&V))
+    return ValMgr.getSValuator().EvalCastNL(*NL, castTy);
+  
   return V;
 }
 
+const GRState *StoreManager::InvalidateRegions(const GRState *state,
+                                               const MemRegion * const *I,
+                                               const MemRegion * const *End,
+                                               const Expr *E,
+                                               unsigned Count,
+                                               InvalidatedSymbols *IS) {
+  for ( ; I != End ; ++I)
+    state = InvalidateRegion(state, *I, E, Count, IS);
+  
+  return state;
+}
+
+//===----------------------------------------------------------------------===//
+// Common getLValueXXX methods.
+//===----------------------------------------------------------------------===//
+
+/// getLValueCompoundLiteral - Returns an SVal representing the lvalue
+///   of a compound literal.  Within RegionStore a compound literal
+///   has an associated region, and the lvalue of the compound literal
+///   is the lvalue of that region.
+SVal StoreManager::getLValueCompoundLiteral(const CompoundLiteralExpr* CL,
+                                            const LocationContext *LC) {
+  return loc::MemRegionVal(MRMgr.getCompoundLiteralRegion(CL, LC));
+}

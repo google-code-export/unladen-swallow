@@ -43,6 +43,7 @@ namespace llvm {
 }
 
 namespace clang {
+  class TargetCodeGenInfo;
   class ASTContext;
   class FunctionDecl;
   class IdentifierInfo;
@@ -85,6 +86,7 @@ class CodeGenModule : public BlockModule {
   const CodeGenOptions &CodeGenOpts;
   llvm::Module &TheModule;
   const llvm::TargetData &TheTargetData;
+  mutable const TargetCodeGenInfo *TheTargetCodeGenInfo;
   Diagnostic &Diags;
   CodeGenTypes Types;
   MangleContext MangleCtx;
@@ -153,7 +155,7 @@ class CodeGenModule : public BlockModule {
 
   /// CXXGlobalInits - Variables with global initializers that need to run
   /// before main.
-  std::vector<const VarDecl*> CXXGlobalInits;
+  std::vector<llvm::Constant*> CXXGlobalInits;
 
   /// CFConstantStringClassRef - Cached reference to the class for constant
   /// strings. This value has type int * but is actually an Obj-C class pointer.
@@ -191,6 +193,7 @@ public:
   Diagnostic &getDiags() const { return Diags; }
   const llvm::TargetData &getTargetData() const { return TheTargetData; }
   llvm::LLVMContext &getLLVMContext() { return VMContext; }
+  const TargetCodeGenInfo &getTargetCodeGenInfo() const;
 
   /// getDeclVisibilityMode - Compute the visibility of the decl \arg D.
   LangOptions::VisibilityMode getDeclVisibilityMode(const Decl *D) const;
@@ -212,45 +215,36 @@ public:
   llvm::Constant *GetAddrOfFunction(GlobalDecl GD,
                                     const llvm::Type *Ty = 0);
 
-  /// GenerateVtable - Generate the vtable for the given type.  LayoutClass is
-  /// the class to use for the virtual base layout information.  For
-  /// non-construction vtables, this is always the same as RD.  Offset is the
-  /// offset in bits for the RD object in the LayoutClass, if we're generating a
-  /// construction vtable, otherwise 0.
-  llvm::Constant *GenerateVtable(const CXXRecordDecl *LayoutClass,
-                                 const CXXRecordDecl *RD,
-                                 uint64_t Offset=0);
+  /// GetAddrOfRTTIDescriptor - Get the address of the RTTI descriptor 
+  /// for the given type.
+  llvm::Constant *GetAddrOfRTTIDescriptor(QualType Ty);
 
-  /// GenerateVTT - Generate the VTT for the given type.
-  llvm::Constant *GenerateVTT(const CXXRecordDecl *RD);
+  llvm::Constant *GetAddrOfThunk(GlobalDecl GD,
+                                 const ThunkAdjustment &ThisAdjustment);
+  llvm::Constant *GetAddrOfCovariantThunk(GlobalDecl GD,
+                                const CovariantThunkAdjustment &ThisAdjustment);
+  void BuildThunksForVirtual(GlobalDecl GD);
+  void BuildThunksForVirtualRecursive(GlobalDecl GD, GlobalDecl BaseOGD);
 
-  /// GenerateRtti - Generate the rtti information for the given type.
-  llvm::Constant *GenerateRtti(const CXXRecordDecl *RD);
-  /// GenerateRttiRef - Generate a reference to the rtti information for the
-  /// given type.
-  llvm::Constant *GenerateRttiRef(const CXXRecordDecl *RD);
-  /// GenerateRttiNonClass - Generate the rtti information for the given
-  /// non-class type.
-  llvm::Constant *GenerateRttiNonClass(QualType Ty);
+  /// BuildThunk - Build a thunk for the given method.
+  llvm::Constant *BuildThunk(GlobalDecl GD, bool Extern, 
+                             const ThunkAdjustment &ThisAdjustment);
 
-  /// BuildThunk - Build a thunk for the given method
-  llvm::Constant *BuildThunk(const CXXMethodDecl *MD, bool Extern, int64_t nv,
-                             int64_t v);
   /// BuildCoVariantThunk - Build a thunk for the given method
-  llvm::Constant *BuildCovariantThunk(const CXXMethodDecl *MD, bool Extern,
-                                      int64_t nv_t, int64_t v_t,
-                                      int64_t nv_r, int64_t v_r);
-
-  typedef std::pair<const CXXRecordDecl *, uint64_t> CtorVtable_t;
-  typedef llvm::DenseMap<const CXXRecordDecl *,
-                         llvm::DenseMap<CtorVtable_t, int64_t>*> AddrMap_t;
-  llvm::DenseMap<const CXXRecordDecl *, AddrMap_t*> AddressPoints;
+  llvm::Constant *
+  BuildCovariantThunk(const GlobalDecl &GD, bool Extern,
+                      const CovariantThunkAdjustment &Adjustment);
 
   /// GetCXXBaseClassOffset - Returns the offset from a derived class to its
   /// base class. Returns null if the offset is 0.
   llvm::Constant *GetCXXBaseClassOffset(const CXXRecordDecl *ClassDecl,
                                         const CXXRecordDecl *BaseClassDecl);
 
+  /// ComputeThunkAdjustment - Returns the two parts required to compute the
+  /// offset for an object.
+  ThunkAdjustment ComputeThunkAdjustment(const CXXRecordDecl *ClassDecl,
+                                         const CXXRecordDecl *BaseClassDecl);
+  
   /// GetStringForStringLiteral - Return the appropriate bytes for a string
   /// literal, properly padded to match the literal type. If only the address of
   /// a constant is needed consider using GetAddrOfConstantStringLiteral.
@@ -416,6 +410,11 @@ public:
     GVA_TemplateInstantiation
   };
 
+  /// getVtableLinkage - Return the appropriate linkage for the vtable, VTT,
+  /// and type information of the given class.
+  static llvm::GlobalVariable::LinkageTypes 
+  getVtableLinkage(const CXXRecordDecl *RD);
+  
 private:
   /// UniqueMangledName - Unique a name by (if necessary) inserting it into the
   /// MangledNames string map.
@@ -427,9 +426,6 @@ private:
   llvm::Constant *GetOrCreateLLVMGlobal(const char *MangledName,
                                         const llvm::PointerType *PTy,
                                         const VarDecl *D);
-  void DeferredCopyConstructorToEmit(GlobalDecl D);
-  void DeferredCopyAssignmentToEmit(GlobalDecl D);
-  void DeferredDestructorToEmit(GlobalDecl D);
 
   /// SetCommonAttributes - Set attributes which are common to any
   /// form of a global definition (alias, Objective-C method,
@@ -482,7 +478,9 @@ private:
 
   /// EmitCXXGlobalInitFunc - Emit a function that initializes C++ globals.
   void EmitCXXGlobalInitFunc();
-  
+
+  void EmitCXXGlobalVarDeclInitFunc(const VarDecl *D);
+
   // FIXME: Hardcoding priority here is gross.
   void AddGlobalCtor(llvm::Function *Ctor, int Priority=65535);
   void AddGlobalDtor(llvm::Function *Dtor, int Priority=65535);

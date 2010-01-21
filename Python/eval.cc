@@ -4165,8 +4165,23 @@ static int
 mark_called_and_maybe_compile(PyCodeObject *co, PyFrameObject *f)
 {
 	co->co_hotness += 10;
+
+	// f->f_use_llvm is initialized to 0 in PyFrame_New, and we rely on it
+	// being that way so that we can return early to indicate that this
+	// frame should not use native code.
+	assert(f->f_use_llvm == 0 && "f_use_llvm was not false on entry!");
+
 	if (co->co_fatalbailcount >= PY_MAX_FATALBAILCOUNT) {
-		co->co_use_llvm = f->f_use_llvm = 0;
+		co->co_use_llvm = 0;
+		return 0;
+	}
+
+	if (co->co_flags & CO_FDO_GLOBALS &&
+	    (co->co_assumed_globals != f->f_globals ||
+	     co->co_assumed_builtins != f->f_builtins)) {
+		// If there's no way a code object's assumptions about its
+		// globals and/or builtins could be valid, don't even try the
+		// machine code.
 		return 0;
 	}
 
@@ -4188,7 +4203,7 @@ mark_called_and_maybe_compile(PyCodeObject *co, PyFrameObject *f)
 			should_compile = true;
 		break;
 	case PY_JIT_ALWAYS:
-		co->co_use_llvm = f->f_use_llvm = 1;
+		should_compile = 1;
 		break;
 	case PY_JIT_NEVER:
 		break;
@@ -4206,16 +4221,16 @@ mark_called_and_maybe_compile(PyCodeObject *co, PyFrameObject *f)
 			// Use the default optimization level if the user hasn't
 			// explicitly set co_optimization.
 			new_opt_level = std::max(Py_DEFAULT_JIT_OPT_LEVEL,
-						 Py_OptimizeFlag);
+			                         Py_OptimizeFlag);
 		}
 		if (_PyCode_WatchGlobals(co, f->f_globals, f->f_builtins)) {
 			return -1;
 		}
 		// This call should block when using -j always.
 		Py_ShouldBlock block = (Py_JitControl == PY_JIT_ALWAYS
-					? PY_BLOCK : PY_NO_BLOCK);
+		                        ? PY_BLOCK : PY_NO_BLOCK);
 		Py_CompileResult r = PyLlvm_JitInBackground(co, new_opt_level,
-							    block);
+		                                            block);
 		PY_LOG_TSC_EVENT(EVAL_COMPILE_END);
 		switch (r) {
 		default: assert(0 && "invalid enum value");
@@ -4240,10 +4255,12 @@ mark_called_and_maybe_compile(PyCodeObject *co, PyFrameObject *f)
 		// invalidated (ie by a global dict assignment from another
 		// thread) while it is being compiled.
 		if (co->co_fatalbailcount >= PY_MAX_FATALBAILCOUNT) {
-			co->co_use_llvm = f->f_use_llvm = 0;
+			co->co_use_llvm = 0;
 		}
 #endif
 	}
+
+	f->f_use_llvm = co->co_use_llvm;
 	return 0;
 }
 #endif  /* WITH_LLVM */

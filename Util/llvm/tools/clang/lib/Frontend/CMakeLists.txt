@@ -21,6 +21,7 @@ add_clang_library(clangFrontend
   HTMLPrint.cpp
   InitHeaderSearch.cpp
   InitPreprocessor.cpp
+  LangStandards.cpp
   PCHReader.cpp
   PCHReaderDecl.cpp
   PCHReaderStmt.cpp
@@ -30,7 +31,6 @@ add_clang_library(clangFrontend
   PlistDiagnostics.cpp
   PrintParserCallbacks.cpp
   PrintPreprocessedOutput.cpp
-  RewriteBlocks.cpp
   RewriteMacros.cpp
   RewriteObjC.cpp
   RewriteTest.cpp

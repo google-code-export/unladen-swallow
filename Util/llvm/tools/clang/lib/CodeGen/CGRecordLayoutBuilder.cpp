@@ -88,8 +88,6 @@ void CGRecordLayoutBuilder::LayoutBitField(const FieldDecl *D,
 
   AppendBytes(NumBytesToAppend);
 
-  AlignmentAsLLVMStruct = std::max(AlignmentAsLLVMStruct, getTypeAlignment(Ty));
-
   BitsAvailableInLastField =
     NextFieldOffsetInBytes * 8 - (FieldOffset + FieldSize);
 }
@@ -218,12 +216,28 @@ void CGRecordLayoutBuilder::LayoutUnion(const RecordDecl *D) {
     AppendPadding(Layout.getSize() / 8, Align);
 }
 
+void CGRecordLayoutBuilder::LayoutBases(const CXXRecordDecl *RD,
+                                        const ASTRecordLayout &Layout) {
+  // Check if we need to add a vtable pointer.
+  if (RD->isDynamicClass() && !Layout.getPrimaryBase()) {
+    const llvm::Type *Int8PtrTy = 
+      llvm::Type::getInt8PtrTy(Types.getLLVMContext());
+    
+    assert(NextFieldOffsetInBytes == 0 &&
+           "Vtable pointer must come first!");
+    AppendField(NextFieldOffsetInBytes, Int8PtrTy->getPointerTo());
+  }
+}
+
 bool CGRecordLayoutBuilder::LayoutFields(const RecordDecl *D) {
   assert(!D->isUnion() && "Can't call LayoutFields on a union!");
   assert(Alignment && "Did not set alignment!");
 
   const ASTRecordLayout &Layout = Types.getContext().getASTRecordLayout(D);
 
+  if (const CXXRecordDecl *RD = dyn_cast<CXXRecordDecl>(D))
+    LayoutBases(RD, Layout);
+  
   unsigned FieldNo = 0;
 
   for (RecordDecl::field_iterator Field = D->field_begin(),
@@ -247,6 +261,14 @@ void CGRecordLayoutBuilder::AppendTailPadding(uint64_t RecordSize) {
   uint64_t RecordSizeInBytes = RecordSize / 8;
   assert(NextFieldOffsetInBytes <= RecordSizeInBytes && "Size mismatch!");
 
+  uint64_t AlignedNextFieldOffset = 
+    llvm::RoundUpToAlignment(NextFieldOffsetInBytes, AlignmentAsLLVMStruct);
+
+  if (AlignedNextFieldOffset == RecordSizeInBytes) {
+    // We don't need any padding.
+    return;
+  }
+  
   unsigned NumPadBytes = RecordSizeInBytes - NextFieldOffsetInBytes;
   AppendBytes(NumPadBytes);
 }
@@ -330,36 +352,6 @@ void CGRecordLayoutBuilder::CheckForMemberPointer(const FieldDecl *FD) {
 
 }
 
-static const CXXMethodDecl *GetKeyFunction(const RecordDecl *D) {
-  const CXXRecordDecl *RD = dyn_cast<CXXRecordDecl>(D);
-  if (!RD || !RD->isDynamicClass())
-    return 0;
-  
-  for (CXXRecordDecl::method_iterator I = RD->method_begin(), 
-       E = RD->method_end(); I != E; ++I) {
-    const CXXMethodDecl *MD = *I;
-    
-    if (!MD->isVirtual())
-      continue;
-    
-    if (MD->isPure())
-      continue;
-
-    // FIXME: This doesn't work.  If we have an out of line body, that body will
-    // set the MD to have a body, what we want to know is, was the body present
-    // inside the declaration of the class.  For now, we just avoid the problem
-    // by pretending there is no key function.
-    return 0;
-    if (MD->getBody())
-      continue;
-
-    // We found it.
-    return MD;
-  }
-  
-  return 0;
-}
-
 CGRecordLayout *
 CGRecordLayoutBuilder::ComputeLayout(CodeGenTypes &Types,
                                      const RecordDecl *D) {
@@ -389,7 +381,5 @@ CGRecordLayoutBuilder::ComputeLayout(CodeGenTypes &Types,
     Types.addBitFieldInfo(Info.FD, Info.FieldNo, Info.Start, Info.Size);
   }
 
-  const CXXMethodDecl *KeyFunction = GetKeyFunction(D);
-
-  return new CGRecordLayout(Ty, Builder.ContainsMemberPointer, KeyFunction);
+  return new CGRecordLayout(Ty, Builder.ContainsMemberPointer);
 }

@@ -26,6 +26,7 @@ class LiveVariables;
 class CalleeSavedInfo;
 class SDNode;
 class SelectionDAG;
+class MachineMemOperand;
 
 template<class T> class SmallVectorImpl;
 
@@ -87,7 +88,13 @@ public:
     /// only needed in cases where the register classes implied by the
     /// instructions are insufficient. The actual MachineInstrs to perform
     /// the copy are emitted with the TargetInstrInfo::copyRegToReg hook.
-    COPY_TO_REGCLASS = 10
+    COPY_TO_REGCLASS = 10,
+
+    // DEBUG_VALUE - a mapping of the llvm.dbg.value intrinsic
+    DEBUG_VALUE = 11,
+
+    // DEBUG_DECLARE - a mapping of the llvm.dbg.declare intrinsic
+    DEBUG_DECLARE = 12
   };
 
   unsigned getNumOpcodes() const { return NumOpcodes; }
@@ -142,6 +149,18 @@ public:
     return false;
   }
 
+  /// isCoalescableExtInstr - Return true if the instruction is a "coalescable"
+  /// extension instruction. That is, it's like a copy where it's legal for the
+  /// source to overlap the destination. e.g. X86::MOVSX64rr32. If this returns
+  /// true, then it's expected the pre-extension value is available as a subreg
+  /// of the result register. This also returns the sub-register index in
+  /// SubIdx.
+  virtual bool isCoalescableExtInstr(const MachineInstr &MI,
+                                     unsigned &SrcReg, unsigned &DstReg,
+                                     unsigned &SubIdx) const {
+    return false;
+  }
+
   /// isIdentityCopy - Return true if the instruction is a copy (or
   /// extract_subreg, insert_subreg, subreg_to_reg) where the source and
   /// destination registers are the same.
@@ -182,11 +201,13 @@ public:
 
   /// hasLoadFromStackSlot - If the specified machine instruction has
   /// a load from a stack slot, return true along with the FrameIndex
-  /// of the loaded stack slot.  If not, return false.  Unlike
+  /// of the loaded stack slot and the machine mem operand containing
+  /// the reference.  If not, return false.  Unlike
   /// isLoadFromStackSlot, this returns true for any instructions that
   /// loads from the stack.  This is just a hint, as some cases may be
   /// missed.
   virtual bool hasLoadFromStackSlot(const MachineInstr *MI,
+                                    const MachineMemOperand *&MMO,
                                     int &FrameIndex) const {
     return 0;
   }
@@ -205,17 +226,18 @@ public:
   /// stack locations as well.  This uses a heuristic so it isn't
   /// reliable for correctness.
   virtual unsigned isStoreToStackSlotPostFE(const MachineInstr *MI,
-                                      int &FrameIndex) const {
+                                            int &FrameIndex) const {
     return 0;
   }
 
   /// hasStoreToStackSlot - If the specified machine instruction has a
   /// store to a stack slot, return true along with the FrameIndex of
-  /// the loaded stack slot.  If not, return false.  Unlike
-  /// isStoreToStackSlot, this returns true for any instructions that
-  /// loads from the stack.  This is just a hint, as some cases may be
-  /// missed.
+  /// the loaded stack slot and the machine mem operand containing the
+  /// reference.  If not, return false.  Unlike isStoreToStackSlot,
+  /// this returns true for any instructions that loads from the
+  /// stack.  This is just a hint, as some cases may be missed.
   virtual bool hasStoreToStackSlot(const MachineInstr *MI,
+                                   const MachineMemOperand *&MMO,
                                    int &FrameIndex) const {
     return 0;
   }
@@ -227,6 +249,14 @@ public:
                              unsigned DestReg, unsigned SubIdx,
                              const MachineInstr *Orig,
                              const TargetRegisterInfo *TRI) const = 0;
+
+  /// duplicate - Create a duplicate of the Orig instruction in MF. This is like
+  /// MachineFunction::CloneMachineInstr(), but the target may update operands
+  /// that are required to be unique.
+  ///
+  /// The instruction must be duplicable as indicated by isNotDuplicable().
+  virtual MachineInstr *duplicate(MachineInstr *Orig,
+                                  MachineFunction &MF) const = 0;
 
   /// convertToThreeAddress - This method must be implemented by targets that
   /// set the M_CONVERTIBLE_TO_3_ADDR flag.  When this flag is set, the target
@@ -282,11 +312,10 @@ public:
   ///    just return false, leaving TBB/FBB null.
   /// 2. If this block ends with only an unconditional branch, it sets TBB to be
   ///    the destination block.
-  /// 3. If this block ends with an conditional branch and it falls through to
-  ///    a successor block, it sets TBB to be the branch destination block and
-  ///    a list of operands that evaluate the condition. These
-  ///    operands can be passed to other TargetInstrInfo methods to create new
-  ///    branches.
+  /// 3. If this block ends with a conditional branch and it falls through to a
+  ///    successor block, it sets TBB to be the branch destination block and a
+  ///    list of operands that evaluate the condition. These operands can be
+  ///    passed to other TargetInstrInfo methods to create new branches.
   /// 4. If this block ends with a conditional branch followed by an
   ///    unconditional branch, it returns the 'true' destination in TBB, the
   ///    'false' destination in FBB, and a list of operands that evaluate the
@@ -461,14 +490,6 @@ public:
     return 0;
   }
   
-  /// BlockHasNoFallThrough - Return true if the specified block does not
-  /// fall-through into its successor block.  This is primarily used when a
-  /// branch is unanalyzable.  It is useful for things like unconditional
-  /// indirect branches (jump tables).
-  virtual bool BlockHasNoFallThrough(const MachineBasicBlock &MBB) const {
-    return false;
-  }
-  
   /// ReverseBranchCondition - Reverses the branch condition of the specified
   /// condition list, returning false on success and true if it cannot be
   /// reversed.
@@ -514,6 +535,13 @@ public:
     return false;
   }
 
+  /// isPredicable - Return true if the specified instruction can be predicated.
+  /// By default, this returns true for every instruction with a
+  /// PredicateOperand.
+  virtual bool isPredicable(MachineInstr *MI) const {
+    return MI->getDesc().isPredicable();
+  }
+
   /// isSafeToMoveRegClassDefs - Return true if it's safe to move a machine
   /// instruction that defines the specified register class.
   virtual bool isSafeToMoveRegClassDefs(const TargetRegisterClass *RC) const {
@@ -536,13 +564,6 @@ public:
   /// length.
   virtual unsigned getInlineAsmLength(const char *Str,
                                       const MCAsmInfo &MAI) const;
-
-  /// TailDuplicationLimit - Returns the limit on the number of instructions
-  /// in basic block MBB beyond which it will not be tail-duplicated.
-  virtual unsigned TailDuplicationLimit(const MachineBasicBlock &MBB,
-                                        unsigned DefaultLimit) const {
-    return DefaultLimit;
-  }
 };
 
 /// TargetInstrInfoImpl - This is the default implementation of
@@ -565,6 +586,8 @@ public:
                              unsigned DestReg, unsigned SubReg,
                              const MachineInstr *Orig,
                              const TargetRegisterInfo *TRI) const;
+  virtual MachineInstr *duplicate(MachineInstr *Orig,
+                                  MachineFunction &MF) const;
   virtual bool isIdentical(const MachineInstr *MI,
                            const MachineInstr *Other,
                            const MachineRegisterInfo *MRI) const;

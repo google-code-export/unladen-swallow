@@ -23,6 +23,7 @@
 #include "ARMTargetMachine.h"
 #include "llvm/Constants.h"
 #include "llvm/Module.h"
+#include "llvm/Type.h"
 #include "llvm/Assembly/Writer.h"
 #include "llvm/CodeGen/AsmPrinter.h"
 #include "llvm/CodeGen/DwarfWriter.h"
@@ -174,16 +175,16 @@ namespace {
       printDataDirective(MCPV->getType());
 
       ARMConstantPoolValue *ACPV = static_cast<ARMConstantPoolValue*>(MCPV);
-      std::string Name;
+      SmallString<128> TmpNameStr;
 
       if (ACPV->isLSDA()) {
-        SmallString<16> LSDAName;
-        raw_svector_ostream(LSDAName) << MAI->getPrivateGlobalPrefix() <<
+        raw_svector_ostream(TmpNameStr) << MAI->getPrivateGlobalPrefix() <<
           "_LSDA_" << getFunctionNumber();
-        Name = LSDAName.str();
+        O << TmpNameStr.str();
       } else if (ACPV->isBlockAddress()) {
-        Name = GetBlockAddressSymbol(ACPV->getBlockAddress())->getName();
+        O << GetBlockAddressSymbol(ACPV->getBlockAddress())->getName();
       } else if (ACPV->isGlobalValue()) {
+        std::string Name;
         GlobalValue *GV = ACPV->getGV();
         bool isIndirect = Subtarget->isTargetDarwin() &&
           Subtarget->GVIsIndirectSymbol(GV, TM.getRelocationModel());
@@ -200,16 +201,16 @@ namespace {
             GV->hasHiddenVisibility() ? MMIMachO.getHiddenGVStubEntry(Sym) :
                                         MMIMachO.getGVStubEntry(Sym);
           if (StubSym == 0) {
-            SmallString<128> NameStr;
-            Mang->getNameWithPrefix(NameStr, GV, false);
-            StubSym = OutContext.GetOrCreateSymbol(NameStr.str());
+            Mang->getNameWithPrefix(TmpNameStr, GV, false);
+            StubSym = OutContext.GetOrCreateSymbol(TmpNameStr.str());
           }
         }
+        O << Name;
       } else {
         assert(ACPV->isExtSymbol() && "unrecognized constant pool value");
-        Name = Mang->makeNameProper(ACPV->getSymbol());
+        Mang->getNameWithPrefix(TmpNameStr, ACPV->getSymbol());
+        OutContext.GetOrCreateSymbol(TmpNameStr.str())->print(O, MAI);
       }
-      O << Name;
 
       if (ACPV->hasModifier()) O << "(" << ACPV->getModifier() << ")";
       if (ACPV->getPCAdjustment() != 0) {
@@ -330,6 +331,8 @@ bool ARMAsmPrinter::runOnMachineFunction(MachineFunction &MF) {
 void ARMAsmPrinter::printOperand(const MachineInstr *MI, int OpNum,
                                  const char *Modifier) {
   const MachineOperand &MO = MI->getOperand(OpNum);
+  unsigned TF = MO.getTargetFlags();
+
   switch (MO.getType()) {
   default:
     assert(0 && "<unknown operand type>");
@@ -356,12 +359,12 @@ void ARMAsmPrinter::printOperand(const MachineInstr *MI, int OpNum,
   case MachineOperand::MO_Immediate: {
     int64_t Imm = MO.getImm();
     O << '#';
-    if (Modifier) {
-      if (strcmp(Modifier, "lo16") == 0)
-        O << ":lower16:";
-      else if (strcmp(Modifier, "hi16") == 0)
-        O << ":upper16:";
-    }
+    if ((Modifier && strcmp(Modifier, "lo16") == 0) ||
+        (TF & ARMII::MO_LO16))
+      O << ":lower16:";
+    else if ((Modifier && strcmp(Modifier, "hi16") == 0) ||
+             (TF & ARMII::MO_HI16))
+      O << ":upper16:";
     O << Imm;
     break;
   }
@@ -371,6 +374,13 @@ void ARMAsmPrinter::printOperand(const MachineInstr *MI, int OpNum,
   case MachineOperand::MO_GlobalAddress: {
     bool isCallOp = Modifier && !strcmp(Modifier, "call");
     GlobalValue *GV = MO.getGlobal();
+
+    if ((Modifier && strcmp(Modifier, "lo16") == 0) ||
+        (TF & ARMII::MO_LO16))
+      O << ":lower16:";
+    else if ((Modifier && strcmp(Modifier, "hi16") == 0) ||
+             (TF & ARMII::MO_HI16))
+      O << ":upper16:";
     O << Mang->getMangledName(GV);
 
     printOffset(MO.getOffset());
@@ -382,9 +392,10 @@ void ARMAsmPrinter::printOperand(const MachineInstr *MI, int OpNum,
   }
   case MachineOperand::MO_ExternalSymbol: {
     bool isCallOp = Modifier && !strcmp(Modifier, "call");
-    std::string Name = Mang->makeNameProper(MO.getSymbolName());
-
-    O << Name;
+    SmallString<128> NameStr;
+    Mang->getNameWithPrefix(NameStr, MO.getSymbolName());
+    OutContext.GetOrCreateSymbol(NameStr.str())->print(O, MAI);
+    
     if (isCallOp && Subtarget->isTargetELF() &&
         TM.getRelocationModel() == Reloc::PIC_)
       O << "(PLT)";
@@ -998,7 +1009,7 @@ void ARMAsmPrinter::printNoHashImmediate(const MachineInstr *MI, int OpNum) {
 
 void ARMAsmPrinter::printVFPf32ImmOperand(const MachineInstr *MI, int OpNum) {
   const ConstantFP *FP = MI->getOperand(OpNum).getFPImm();
-  O << '#' << ARM::getVFPf32Imm(FP->getValueAPF());
+  O << '#' << FP->getValueAPF().convertToFloat();
   if (VerboseAsm) {
     O.PadToColumn(MAI->getCommentColumn());
     O << MAI->getCommentString() << ' ';
@@ -1008,7 +1019,7 @@ void ARMAsmPrinter::printVFPf32ImmOperand(const MachineInstr *MI, int OpNum) {
 
 void ARMAsmPrinter::printVFPf64ImmOperand(const MachineInstr *MI, int OpNum) {
   const ConstantFP *FP = MI->getOperand(OpNum).getFPImm();
-  O << '#' << ARM::getVFPf64Imm(FP->getValueAPF());
+  O << '#' << FP->getValueAPF().convertToDouble();
   if (VerboseAsm) {
     O.PadToColumn(MAI->getCommentColumn());
     O << MAI->getCommentString() << ' ';
@@ -1036,6 +1047,7 @@ bool ARMAsmPrinter::PrintAsmOperand(const MachineInstr *MI, unsigned OpNum,
       printNoHashImmediate(MI, OpNum);
       return false;
     case 'P': // Print a VFP double precision register.
+    case 'q': // Print a NEON quad precision register.
       printOperand(MI, OpNum);
       return false;
     case 'Q':

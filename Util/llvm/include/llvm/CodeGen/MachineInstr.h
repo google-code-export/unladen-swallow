@@ -288,13 +288,18 @@ public:
   bool addRegisterKilled(unsigned IncomingReg,
                          const TargetRegisterInfo *RegInfo,
                          bool AddIfNotFound = false);
-  
+
   /// addRegisterDead - We have determined MI defined a register without a use.
   /// Look for the operand that defines it and mark it as IsDead. If
   /// AddIfNotFound is true, add a implicit operand if it's not found. Returns
   /// true if the operand exists / is added.
   bool addRegisterDead(unsigned IncomingReg, const TargetRegisterInfo *RegInfo,
                        bool AddIfNotFound = false);
+
+  /// addRegisterDefined - We have determined MI defines a register. Make sure
+  /// there is an operand defining Reg.
+  void addRegisterDefined(unsigned IncomingReg,
+                          const TargetRegisterInfo *RegInfo);
 
   /// isSafeToMove - Return true if it is safe to move this instruction. If
   /// SawStore is set to true, it means that there is a store (or call) between
@@ -319,6 +324,11 @@ public:
   /// a function if it does not change.  This should only return true of *all*
   /// loads the instruction does are invariant (if it does multiple loads).
   bool isInvariantLoad(AliasAnalysis *AA) const;
+
+  /// isConstantValuePHI - If the specified instruction is a PHI that always
+  /// merges together the same virtual register, return the register, otherwise
+  /// return 0.
+  unsigned isConstantValuePHI() const;
 
   //
   // Debugging support
