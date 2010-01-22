@@ -25,6 +25,9 @@ Feedback-directed optimization
 - TODO: Explain data gathering (r778)
 - TODO: Bailing back to the interpreter
 
+If run with `-j never` or `-j always`, Unladen Swallow will not gather any data
+at runtime.
+
 Whenever we encode assumptions about the world into the generated machine code,
 we need a way to detect that those assumptions are no longer valid and recover
 gracefully. These assumptions are protected by cheap-to-execute tests called

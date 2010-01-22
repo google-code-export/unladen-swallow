@@ -728,6 +728,10 @@ PyEval_EvalFrame(PyFrameObject *f)
 	PyObject *retval = NULL;	/* Return value */
 	PyThreadState *tstate = PyThreadState_GET();
 	PyCodeObject *co;
+#ifdef WITH_LLVM
+	/* We only collect feedback if it will be useful. */
+	int rec_feedback = (Py_JitControl == PY_JIT_WHENHOT);
+#endif
 
 	/* when tracing we set things up so that
 
@@ -874,17 +878,17 @@ PyEval_EvalFrame(PyFrameObject *f)
 /* Feedback-gathering macros */
 #ifdef WITH_LLVM
 #define RECORD_TYPE(arg_index, obj) \
-	record_type(co, opcode, f->f_lasti, arg_index, obj)
+	if(rec_feedback){record_type(co, opcode, f->f_lasti, arg_index, obj);}
 #define RECORD_OBJECT(arg_index, obj) \
-	record_object(co, opcode, f->f_lasti, arg_index, obj)
+	if(rec_feedback){record_object(co, opcode, f->f_lasti, arg_index, obj);}
 #define RECORD_FUNC(obj) \
-	record_func(co, opcode, f->f_lasti, 0, obj)
+	if(rec_feedback){record_func(co, opcode, f->f_lasti, 0, obj);}
 #define RECORD_TRUE() \
-	inc_feedback_counter(co, opcode, f->f_lasti, PY_FDO_JUMP_TRUE)
+	if(rec_feedback){inc_feedback_counter(co, opcode, f->f_lasti, PY_FDO_JUMP_TRUE);}
 #define RECORD_FALSE() \
-	inc_feedback_counter(co, opcode, f->f_lasti, PY_FDO_JUMP_FALSE)
+	if(rec_feedback){inc_feedback_counter(co, opcode, f->f_lasti, PY_FDO_JUMP_FALSE);}
 #define RECORD_NONBOOLEAN() \
-	inc_feedback_counter(co, opcode, f->f_lasti, PY_FDO_JUMP_NON_BOOLEAN)
+	if(rec_feedback){inc_feedback_counter(co, opcode, f->f_lasti, PY_FDO_JUMP_NON_BOOLEAN);}
 #define UPDATE_HOTNESS_JABS() \
 	do { if (oparg <= f->f_lasti) ++co->co_hotness; } while (0)
 #else
