@@ -1421,22 +1421,16 @@ def generator(obj):
             # Toggling between native code and the interpreter between yields
             # used to cause crashes because f_lasti doesn't get translated
             # between the scheme used for LLVM and the scheme used for the
-            # interpreter. For now these assignments are no-ops for the lifetime
-            # of the generator object, but do take effect when a new generator
-            # instance is created.
-            def generator(obj):
+            # interpreter.  Currently, due to our generator pseudo
+            # on-stack-replacement, these assignments take effect on generator
+            # reentry.
+            def generator():
                 yield 1
                 generator.func_code.__use_llvm__ = True
                 yield 2
-                # We iterate over the generator while the first instance is
-                # still running. This is to test that the modification to the
-                # shared code object above takes effect. We don't have any way
-                # of checking whether LLVM is really being used, but the
-                # important thing is that it doesn't crash.
-                list(obj)
                 generator.func_code.__use_llvm__ = False
                 yield 3
-            self.assertEqual(list(generator(generator([]))), [1, 2, 3])
+            self.assertEqual(list(generator()), [1, 2, 3])
 
     @at_each_optimization_level
     def test_closure(self, level):
@@ -2580,6 +2574,22 @@ def foo():
         l = map(list, l)
         self.assertEqual(foo.__code__.co_hotness, iterations * HOTNESS_CALL)
         self.assertEqual(foo.__code__.__use_llvm__, True)
+        self.assertEqual(foo.__code__.co_optimization, JIT_OPT_LEVEL)
+
+    def test_generator_hotness_osr(self):
+        foo = compile_for_llvm("foo", """
+def foo(iterations):
+    for i in xrange(iterations):
+        yield i
+""", optimization_level=None)
+        iterations = JIT_SPIN_COUNT * HOTNESS_CALL / HOTNESS_LOOP
+        for _ in foo(iterations):
+            pass
+        # We don't currently increment the hotness counter on loop backedges in
+        # the compiled code, so the hotness stops growing when it passes the
+        # threshold.
+        self.assertEqual(foo.__code__.co_hotness, 100001)
+        self.assertTrue(foo.__code__.__use_llvm__)
         self.assertEqual(foo.__code__.co_optimization, JIT_OPT_LEVEL)
 
     def test_fast_load_global(self):

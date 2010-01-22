@@ -263,7 +263,8 @@ static PyObject * update_star_args(int, int, PyObject *, PyObject ***);
 static PyObject * load_args(PyObject ***, int);
 
 #ifdef WITH_LLVM
-static int mark_called_and_maybe_compile(PyCodeObject *co, PyFrameObject *f);
+static inline void mark_called(PyCodeObject *co);
+static inline int maybe_compile(PyCodeObject *co, PyFrameObject *f);
 
 /* Record data for use in generating optimized machine code. */
 static void record_type(PyCodeObject *, int, int, int, PyObject *);
@@ -1018,10 +1019,12 @@ PyEval_EvalFrame(PyFrameObject *f)
 	tstate->frame = f;
 
 #ifdef WITH_LLVM
+	maybe_compile(co, f);
+
 	if (f->f_use_llvm) {
 		assert(bail_reason == _PYFRAME_NO_BAIL);
 		assert(co->co_native_function != NULL &&
-		       "mark_called_and_maybe_compile was supposed to ensure"
+		       "maybe_compile was supposed to ensure"
 		       " that co_native_function exists");
 		if (!co->co_use_llvm) {
 			// A frame cannot use_llvm if the underlying code object
@@ -3115,10 +3118,7 @@ PyEval_EvalCodeEx(PyCodeObject *co, PyObject *globals, PyObject *locals,
 	/* This is where a code object is considered "called". Doing it here
 	 * instead of PyEval_EvalFrame() makes support for generators somewhat
 	 * cleaner. */
-	if (mark_called_and_maybe_compile(co, f) == -1) {
-		Py_DECREF(f);
-		return NULL;
-	}
+	mark_called(co);
 #endif
 
 	fastlocals = f->f_localsplus;
@@ -4139,10 +4139,22 @@ err_args(PyObject *func, int flags, int min_arity, int max_arity, int nargs)
 }
 
 #ifdef WITH_LLVM
-// Increments co's hotness level and, if it has passed the hotness
-// threshold, compiles the bytecode to native code.  If the code
-// object was marked as needing to be run through LLVM, also compiles
-// the bytecode to native code, even if the code object isn't hot yet.
+static inline void
+mark_called(PyCodeObject *co)
+{
+	co->co_hotness += 10;
+}
+
+// Decide whether to compile a code object's bytecode to native code based on
+// the current Py_JitControl setting and the code's hotness.  We do the
+// compilation if any of the following conditions are true:
+//
+// - We are running under PY_JIT_WHENHOT and co's hotness has passed the
+//   hotness threshold.
+// - The code object was marked as needing to be run through LLVM
+//   (co_use_llvm is true).
+// - We are running under PY_JIT_ALWAYS.
+//
 // Returns 0 on success or -1 on failure.
 //
 // If this code object has had too many fatal guard failures (see
@@ -4152,15 +4164,15 @@ err_args(PyObject *func, int flags, int min_arity, int max_arity, int nargs)
 // you should keep a close eye on the benchmarks, particularly call_simple.
 // In the past, seemingly-insignificant changes have produced 10-15% swings
 // in the macrobenchmarks. You've been warned.
-static int
-mark_called_and_maybe_compile(PyCodeObject *co, PyFrameObject *f)
+static inline int
+maybe_compile(PyCodeObject *co, PyFrameObject *f)
 {
-	co->co_hotness += 10;
-
-	// f->f_use_llvm is initialized to 0 in PyFrame_New, and we rely on it
-	// being that way so that we can return early to indicate that this
-	// frame should not use native code.
-	assert(f->f_use_llvm == 0 && "f_use_llvm was not false on entry!");
+	if (f->f_bailed_from_llvm != _PYFRAME_NO_BAIL) {
+		// Don't consider compiling code objects that we've already
+		// bailed from.  This avoids re-entering code that we just
+		// bailed from.
+		return 0;
+	}
 
 	if (co->co_fatalbailcount >= PY_MAX_FATALBAILCOUNT) {
 		co->co_use_llvm = 0;
@@ -4200,14 +4212,13 @@ mark_called_and_maybe_compile(PyCodeObject *co, PyFrameObject *f)
 
 	if (co->co_use_llvm) {
 		if (co->co_llvm_function == NULL) {
+			// Translate the bytecode to IR and optimize it if we
+			// haven't already done that.
 			int target_optimization =
 				std::max(Py_DEFAULT_JIT_OPT_LEVEL,
 					 Py_OptimizeFlag);
 			if (co->co_optimization < target_optimization) {
 				PY_LOG_TSC_EVENT(EVAL_COMPILE_START);
-				// If the LLVM version of the function wasn't
-				// created yet, setting the optimization level
-				// will create it.
 				int r;
 				PY_LOG_TSC_EVENT(LLVM_COMPILE_START);
 				if (_PyCode_WatchGlobals(co, f->f_globals,
@@ -4450,10 +4461,7 @@ fast_function(PyObject *func, PyObject ***pp_stack, int n, int na, int nk)
 		if (f == NULL)
 			return NULL;
 #ifdef WITH_LLVM
-		if (mark_called_and_maybe_compile(co, f) == -1) {
-			Py_DECREF(f);
-			return NULL;
-		}
+		mark_called(co);
 #endif
 
 		fastlocals = f->f_localsplus;

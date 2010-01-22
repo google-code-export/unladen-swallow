@@ -62,16 +62,19 @@ application's performance. This model is as follows:
     - For each loop backedge, add 1 to the hotness level.
 - If the hotness level exceeds a given threshold (see eval.cc),
   compile the code object to machine code via LLVM. This check is done on
-  function-entry.
+  function-entry and generator re-entry.
 
 There several classes of functions we're trying to catch with this model:
 
 - Straight-line utility functions (lots of invocations, low running time).
 - Loop-heavy main functions (few invocations, high running time).
+- Long-running generators (few invocations, long lifetime).
 
 Previous models:
 - Simple call count-based model (10000 calls == hot). This was implemented as
   an obviously-deficient baseline to be improved upon.
+- Previously, we didn't check code hotness on generator re-entry, which we
+  changed to catch long-running generators that are called once.
 
 Instrumentation:
 - Passing --with-instrumentation to ./configure will cause Python to print,

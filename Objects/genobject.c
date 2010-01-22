@@ -80,6 +80,10 @@ gen_send_ex(PyGenObject *gen, PyObject *arg, int exc)
 	assert(f->f_back == NULL);
 	f->f_back = tstate->frame;
 
+#ifdef WITH_LLVM
+	f->f_bailed_from_llvm = _PYFRAME_NO_BAIL;
+#endif
+
 	gen->gi_running = 1;
 	f->f_throwflag = exc;
 	result = PyEval_EvalFrame(f);
