@@ -1049,6 +1049,16 @@ PyEval_EvalFrame(PyFrameObject *f)
 			goto exit_eval_frame;
 		}
 	}
+
+	// Create co_runtime_feedback now that we're about to use it.  You
+	// might think this would cause a problem if the user flips
+	// Py_JitControl from "never" to "whenhot", but since the value of
+	// rec_feedback is constant for the duration of this frame's execution,
+	// we will not accidentally try to record feedback without initializing
+	// co_runtime_feedback.
+	if (rec_feedback && co->co_runtime_feedback == NULL) {
+		co->co_runtime_feedback = PyFeedbackMap_New();
+	}
 #endif  /* WITH_LLVM */
 
 	switch (bail_reason) {
