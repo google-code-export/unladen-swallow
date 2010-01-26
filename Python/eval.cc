@@ -189,6 +189,15 @@ public:
 			errs() << "    " << i->getKey() << " bailed "
 			       << i->getValue() << " times\n";
 		}
+
+		errs() << "\n" << this->guard_bail_site_freq_.size()
+		       << " guard bail sites:\n";
+		for (BailData::iterator i = this->guard_bail_site_freq_.begin(),
+		     end = this->guard_bail_site_freq_.end(); i != end; ++i) {
+			errs() << "    " << i->getKey() << " bailed "
+			       << i->getValue() << " times\n";
+		}
+
 	}
 
 	void RecordBail(PyFrameObject *frame, _PyFrameBailReason bail_reason) {
@@ -224,11 +233,40 @@ public:
 				abort();   // Unknown bail reason.
 		}
 #undef BAIL_CASE
+
+		if (bail_reason != _PYFRAME_GUARD_FAIL)
+			return;
+
+		wrapper << ":";
+
+#define GUARD_CASE(name) \
+	case name: \
+		wrapper << #name; \
+		break;
+
+		switch (frame->f_guard_type) {
+			GUARD_CASE(_PYGUARD_DEFAULT)
+			GUARD_CASE(_PYGUARD_BINOP)
+			GUARD_CASE(_PYGUARD_ATTR)
+			GUARD_CASE(_PYGUARD_CFUNC)
+			GUARD_CASE(_PYGUARD_BRANCH)
+			GUARD_CASE(_PYGUARD_STORE_SUBSCR)
+			default:
+				wrapper << ((int)frame->f_guard_type);
+		}
+#undef GUARD_CASE
+
+		wrapper.flush();
+
+		BailData::value_type &g_entry =
+			this->guard_bail_site_freq_.GetOrCreateValue(record, 0);
+		g_entry.setValue(g_entry.getValue() + 1);
 	}
 
 private:
 	typedef llvm::StringMap<unsigned> BailData;
 	BailData bail_site_freq_;
+	BailData guard_bail_site_freq_;
 
 	long total_;
 	long trace_on_entry_;

@@ -71,6 +71,7 @@ typedef struct _frame {
        bailed back from JITted code to the interpreter loop and
        why. */
     unsigned char f_bailed_from_llvm;
+    unsigned char f_guard_type;
 #endif
 
     PyTryBlock f_blockstack[CO_MAXBLOCKS]; /* for try and loop blocks */
@@ -87,6 +88,15 @@ typedef enum _PyFrameBailReason {
     _PYFRAME_FATAL_GUARD_FAIL,
     _PYFRAME_GUARD_FAIL,
 } _PyFrameBailReason;
+
+enum _PyFrameGuardType {
+    _PYGUARD_DEFAULT = 0,
+    _PYGUARD_BINOP,
+    _PYGUARD_ATTR,
+    _PYGUARD_CFUNC,
+    _PYGUARD_BRANCH,
+    _PYGUARD_STORE_SUBSCR,
+};
 
 /* Standard object interface */
 

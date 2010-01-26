@@ -1766,7 +1766,7 @@ LlvmFunctionBuilder::AttributeAccessor::GuardAttributeAccess(
     // Fill in the bail bb.
     builder.SetInsertPoint(bail_block);
     fbuilder->Push(obj_v);
-    fbuilder->CreateBailPoint(_PYFRAME_GUARD_FAIL);
+    fbuilder->CreateGuardBailPoint(_PYGUARD_ATTR);
 }
 
 void
@@ -2185,7 +2185,7 @@ LlvmFunctionBuilder::CALL_FUNCTION_fast(int oparg,
     // Handle bailing back to the interpreter if the assumptions below don't
     // hold.
     this->builder_.SetInsertPoint(invalid_assumptions);
-    this->CreateBailPoint(_PYFRAME_GUARD_FAIL);
+    this->CreateGuardBailPoint(_PYGUARD_CFUNC);
 
     this->builder_.SetInsertPoint(not_profiling);
 #ifdef WITH_TSC
@@ -2554,7 +2554,7 @@ LlvmFunctionBuilder::FillPyCondBranchBailBlock(BasicBlock *bail_to,
     BasicBlock *current = this->builder_.GetInsertBlock();
 
     this->builder_.SetInsertPoint(bail_to);
-    this->CreateBailPoint(bail_idx, _PYFRAME_GUARD_FAIL);
+    this->CreateGuardBailPoint(bail_idx, _PYGUARD_BRANCH);
 
     this->builder_.SetInsertPoint(current);
 }
@@ -2670,6 +2670,17 @@ LlvmFunctionBuilder::CreateBailPoint(unsigned bail_idx, char reason)
         ConstantInt::get(PyTypeBuilder<char>::get(this->context_), reason),
         FrameTy::f_bailed_from_llvm(this->builder_, this->frame_));
     this->builder_.CreateBr(this->GetBailBlock());
+}
+
+void
+LlvmFunctionBuilder::CreateGuardBailPoint(unsigned bail_idx, char reason)
+{
+#ifdef Py_WITH_INSTRUMENTATION
+    this->builder_.CreateStore(
+        ConstantInt::get(PyTypeBuilder<char>::get(this->context_), reason),
+        FrameTy::f_guard_type(this->builder_, this->frame_));
+#endif
+    this->CreateBailPoint(bail_idx, _PYFRAME_GUARD_FAIL);
 }
 
 void
@@ -3123,7 +3134,7 @@ LlvmFunctionBuilder::STORE_SUBSCR_list_int()
     this->Push(value);
     this->Push(obj);
     this->Push(key);
-    this->CreateBailPoint(_PYFRAME_GUARD_FAIL);
+    this->CreateGuardBailPoint(_PYGUARD_STORE_SUBSCR);
 
     this->builder_.SetInsertPoint(success);
     this->DecRef(value);
@@ -3305,7 +3316,7 @@ LlvmFunctionBuilder::OptimizedBinOp(const char *apifunc)
     this->builder_.SetInsertPoint(bailpoint);
     this->Push(lhs);
     this->Push(rhs);
-    this->CreateBailPoint(_PYFRAME_GUARD_FAIL);
+    this->CreateGuardBailPoint(_PYGUARD_BINOP);
 
     this->builder_.SetInsertPoint(success);
     this->DecRef(lhs);

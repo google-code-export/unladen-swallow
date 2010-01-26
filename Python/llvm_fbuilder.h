@@ -435,7 +435,13 @@ private:
     // Set up a block preceding the bail-to-interpreter block.
     void CreateBailPoint(unsigned bail_idx, char reason);
     void CreateBailPoint(char reason) {
-        CreateBailPoint(f_lasti_, reason);
+        CreateBailPoint(this->f_lasti_, reason);
+    }
+
+    // Set up a block preceding the bail-to-interpreter block.
+    void CreateGuardBailPoint(unsigned bail_idx, char reason);
+    void CreateGuardBailPoint(char reason) {
+        CreateGuardBailPoint(this->f_lasti_, reason);
     }
 
     // Only for use in the constructor: Fills in the block that
