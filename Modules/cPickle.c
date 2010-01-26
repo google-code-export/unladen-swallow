@@ -695,7 +695,7 @@ _Pickler_Write(Picklerobject *self, const char *s, Py_ssize_t n)
 	}
 	self->output_len += n;
 
- 	if (self.file && self->output_len >= PICKLER_MAX_BUFSIZE) {
+	if (self->file && self->output_len >= PICKLER_MAX_BUFSIZE) {
 		/* suppress optimization since the optimizer won't get a
 		   look at the entire pickled object */
 		self->uses_gets = 1;
