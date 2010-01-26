@@ -1299,6 +1299,9 @@ clean: pycremoval
 	rm -f sysconfig llvm  # Our empty targets.
 	rm -f $(BCLIBRARY)
 	-rm -f Lib/lib2to3/*Grammar*.pickle
+ifeq (@BUILD_LLVM@, 1)
+	(cd @LLVM_PATH@/.. ; $(MAKE) clean)
+endif
 
 profile-removal:
 	find . -name '*.gc??' -exec rm -f {} ';'
