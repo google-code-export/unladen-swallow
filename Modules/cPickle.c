@@ -15,6 +15,9 @@ PyDoc_STRVAR(cPickle_module_documentation,
 /* Bump this when new opcodes are added to the pickle protocol. */
 #define HIGHEST_PROTOCOL 2
 
+/* Maximum size we ever allow the output buffer to get before flushing. */
+#define PICKLER_MAX_BUFSIZE 64*1024
+
 /*
  * Note: The UNICODE macro controls the TCHAR meaning of the win32 API. Since
  * all headers have already been included here, we can safely redefine it.
@@ -579,7 +582,9 @@ typedef struct Picklerobject {
 
 	/* Write into a local buffer before flushing out to file. output_len
 	   tracks the current size; when output_len >= max_output_len, we
-	   PyMem_RESIZE. */
+	   PyMem_RESIZE.  In any case if we are pickling to a file we flush
+	   the buffer after it grows to more than PICKLER_MAX_BUFSIZE to
+	   avoid eating up all of memory in that case.  */
 	Py_ssize_t max_output_len;
 	Py_ssize_t output_len;
 	char *output_buffer;
@@ -664,6 +669,10 @@ cPickle_ErrFormat(PyObject *ErrType, char *stringformat, char *format, ...)
 	return NULL;
 }
 
+/* forward declarations needed by _Pickler_Write */
+static int _Pickler_FlushToFile(Picklerobject *);
+static int _Pickler_ClearBuffer(Picklerobject *);
+
 static int
 _Pickler_Write(Picklerobject *self, const char *s, Py_ssize_t n)
 {
@@ -685,6 +694,17 @@ _Pickler_Write(Picklerobject *self, const char *s, Py_ssize_t n)
 		self->output_buffer[self->output_len + i] = s[i];
 	}
 	self->output_len += n;
+
+ 	if (self.file && self->output_len >= PICKLER_MAX_BUFSIZE) {
+		/* suppress optimization since the optimizer won't get a
+		   look at the entire pickled object */
+		self->uses_gets = 1;
+		if (_Pickler_FlushToFile(self) < 0)
+			return -1;
+		if (_Pickler_ClearBuffer(self) < 0)
+			return -1;
+ 	}
+
 	return n;
 }
 
