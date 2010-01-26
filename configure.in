@@ -575,14 +575,68 @@ DLLLIBRARY=''
 LDLIBRARYDIR=''
 RUNSHARED=''
 
+# Check for --with-llvm=DIRECTORY or --without-llvm.
+#
+# Check for this really early so we can use it to toggle LINKCC.
+#
+# Expected behaviour:
+#   - Omit --with-llvm: use in-tree LLVM
+#   - --with-llvm (no DIRECTORY): use in-tree LLVM
+#   - --with-llvm=DIRECTORY: use the LLVM installed in DIRECTORY
+#   - --without-llvm: disable everything that requires LLVM
+dnl quadrigraphs "@<:@" and "@:>@" produce "[" and "]" in the output
+AC_MSG_CHECKING(for --with(out)-llvm)
+AC_ARG_WITH(llvm, 
+            AC_HELP_STRING(--with(out)-llvm@<:@=DIRECTORY@:>@,
+                           build against a preinstalled LLVM
+                           or disable LLVM integration entirely. Note that
+                           Python built with --without-llvm cannot load
+                           extension modules built with --with-llvm or
+                           vice-versa.),
+            [with_llvm=$withval])
+
+if test "$with_llvm" = "no"
+then
+    AC_MSG_RESULT(disabled)
+    BUILD_LLVM=disabled
+else
+    if test -z "$with_llvm"
+    then
+        AC_MSG_RESULT(built-in)
+        LLVM_PATH=""
+        BUILD_LLVM=1
+    else
+        AC_MSG_RESULT($with_llvm); 
+        LLVM_PATH=$with_llvm
+        AC_CHECK_FILE("$LLVM_PATH/bin/clang",
+            [], [echo "Did not find clang in the expected path"; exit 1])
+        AC_CHECK_FILE("$LLVM_PATH/bin/opt",
+            [], [echo "Did not find opt in the expected path"; exit 1])
+        AC_CHECK_FILE("$LLVM_PATH/bin/llvm-link",
+            [], [echo "Did not find llvm-link in the expected path"; exit 1])
+        AC_CHECK_FILE("$LLVM_PATH/bin/llvm-dis",
+            [], [echo "Did not find llvm-dis in the expected path"; exit 1])
+        AC_CHECK_FILE("$LLVM_PATH/bin/llvm-config",
+            [], [echo "Did not find llvm-config in the expected path"; exit 1])
+        echo "Using preinstalled LLVM: $LLVM_PATH"
+        BUILD_LLVM=0
+    fi
+    AC_DEFINE(WITH_LLVM, 1,
+        [Use LLVM for code generation. This makes things fast.])
+fi
+
 # LINKCC is the command that links the python executable -- default is $(CXX).
 # This is altered for AIX in order to build the export list before 
-# linking.
+# linking. If --without--lvm was specified, we use $(CC) to avoid depending on
+# libstdc++.
 AC_SUBST(LINKCC)
 AC_MSG_CHECKING(LINKCC)
 if test -z "$LINKCC"
 then
 	LINKCC='$(PURIFY) $(CXX)'
+	if test "$with_llvm" == "no" ; then
+		LINKCC='$(PURIFY) $(CC)'
+	fi
 	case $ac_sys_system in
 	AIX*)
 	   exp_extra="\"\""
@@ -1631,6 +1685,16 @@ AC_SUBST(BASECXXFLAGS)
 # after BASECFLAGS is fully set up.
 BASECXXFLAGS="$BASECFLAGS"
 BASECFLAGS="$BASECFLAGS $STRICT_PROTO"
+
+# We force C compilation for eval.cc so that we don't have to rename it.
+# Otherwise when configured --without-llvm, gcc will see the .cc extension and
+# compile the file as C++, which creates a dependency on libstdc++.
+AC_SUBST(FORCE_C)
+FORCE_C=""
+if test "$GCC" == "yes"
+then
+	FORCE_C="-x c"
+fi
 
 # Set info about shared libraries.
 AC_SUBST(SO)
@@ -3826,54 +3890,6 @@ then
         (not available on all compilers).])
 fi
 AC_MSG_RESULT($with_computed_gotos)
-
-# Check for --with-llvm=DIRECTORY or --without-llvm.
-#
-# Expected behaviour:
-#   - Omit --with-llvm: use in-tree LLVM
-#   - --with-llvm (no DIRECTORY): use in-tree LLVM
-#   - --with-llvm=DIRECTORY: use the LLVM installed in DIRECTORY
-#   - --without-llvm: disable everything that requires LLVM
-dnl quadrigraphs "@<:@" and "@:>@" produce "[" and "]" in the output
-AC_MSG_CHECKING(for --with(out)-llvm)
-AC_ARG_WITH(llvm, 
-            AC_HELP_STRING(--with(out)-llvm@<:@=DIRECTORY@:>@,
-                           build against a preinstalled LLVM
-                           or disable LLVM integration entirely. Note that
-                           Python built with --without-llvm cannot load
-                           extension modules built with --with-llvm or
-                           vice-versa.),
-            [with_llvm=$withval])
-
-if test "$with_llvm" = "no"
-then
-    AC_MSG_RESULT(disabled)
-    BUILD_LLVM=disabled
-else
-    if test -z "$with_llvm"
-    then
-        AC_MSG_RESULT(built-in)
-        LLVM_PATH=""
-        BUILD_LLVM=1
-    else
-        AC_MSG_RESULT($with_llvm); 
-        LLVM_PATH=$with_llvm
-        AC_CHECK_FILE("$LLVM_PATH/bin/clang",
-            [], [echo "Did not find clang in the expected path"; exit 1])
-        AC_CHECK_FILE("$LLVM_PATH/bin/opt",
-            [], [echo "Did not find opt in the expected path"; exit 1])
-        AC_CHECK_FILE("$LLVM_PATH/bin/llvm-link",
-            [], [echo "Did not find llvm-link in the expected path"; exit 1])
-        AC_CHECK_FILE("$LLVM_PATH/bin/llvm-dis",
-            [], [echo "Did not find llvm-dis in the expected path"; exit 1])
-        AC_CHECK_FILE("$LLVM_PATH/bin/llvm-config",
-            [], [echo "Did not find llvm-config in the expected path"; exit 1])
-        echo "Using preinstalled LLVM: $LLVM_PATH"
-        BUILD_LLVM=0
-    fi
-    AC_DEFINE(WITH_LLVM, 1,
-        [Use LLVM for code generation. This makes things fast.])
-fi
 
 if test "$BUILD_LLVM" = "1"
 then

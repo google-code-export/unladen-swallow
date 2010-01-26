@@ -6,6 +6,9 @@
    XXX document it!
    */
 
+/* Note: this file will be compiled as C ifndef WITH_LLVM, so try to keep it
+   generally C. */
+
 /* enable more aggressive intra-module optimizations, where available */
 #define PY_LOCAL_AGGRESSIVE
 
@@ -19,6 +22,7 @@
 #include "structmember.h"
 
 #include "Util/EventTimer.h"
+#include <ctype.h>
 
 #ifdef WITH_LLVM
 #include "global_llvm_data.h"
@@ -28,25 +32,22 @@
 #include "llvm/Support/raw_ostream.h"
 #include "Util/RuntimeFeedback.h"
 #include "Util/Stats.h"
-#endif
 
-#include <ctype.h>
 #include <set>
 
-#ifdef WITH_LLVM
 using llvm::errs;
 #endif
 
 
-// Make a call to stop the call overhead timer before going through to
-// PyObject_Call.
+/* Make a call to stop the call overhead timer before going through to
+   PyObject_Call. */
 static inline PyObject *
 _PyObject_Call(PyObject *func, PyObject *arg, PyObject *kw)
 {
-	// If we're calling a compiled C function with *args or **kwargs, then
-	// this enum should be CALL_ENTER_C.  However, most calls to C
-	// functions are simple and are fast-tracked through the CALL_FUNCTION
-	// opcode.
+	/* If we're calling a compiled C function with *args or **kwargs, then
+	 * this enum should be CALL_ENTER_C.  However, most calls to C
+	 * functions are simple and are fast-tracked through the CALL_FUNCTION
+	 * opcode. */
 	PY_LOG_TSC_EVENT(CALL_ENTER_PYOBJ_CALL);
 	return PyObject_Call(func, arg, kw);
 }
@@ -656,7 +657,11 @@ _Py_CheckRecursiveCall(char *where)
 	return 0;
 }
 
+#ifdef __cplusplus
 extern "C" void
+#else
+extern void
+#endif
 _PyEval_RaiseForUnboundLocal(PyFrameObject *frame, int var_index)
 {
 	format_exc_check_arg(
@@ -1128,9 +1133,9 @@ PyEval_EvalFrame(PyFrameObject *f)
 	why = UNWIND_NOUNWIND;
 	w = NULL;
 
-	// Note that this goes after the LLVM handling code so we don't log
-	// this event when calling LLVM functions. Do this before the throwflag
-	// check below to avoid mismatched enter/exit events in the log.
+	/* Note that this goes after the LLVM handling code so we don't log
+	 * this event when calling LLVM functions. Do this before the throwflag
+	 * check below to avoid mismatched enter/exit events in the log. */
 	PY_LOG_TSC_EVENT(CALL_ENTER_EVAL);
 
 	if (f->f_throwflag) { /* support for generator.throw() */
@@ -1953,7 +1958,7 @@ PyEval_EvalFrame(PyFrameObject *f)
 			RECORD_TYPE(0, u);
 			RECORD_TYPE(1, v);
 			RECORD_TYPE(2, w);
-			// Don't bother recording the assigned object.
+			/* Don't bother recording the assigned object. */
 			err = _PyEval_AssignSlice(u, v, w, t); /* u[v:w] = t */
 			Py_DECREF(t);
 			Py_DECREF(u);
@@ -2005,7 +2010,7 @@ PyEval_EvalFrame(PyFrameObject *f)
 			/* v[w] = u */
 			RECORD_TYPE(0, v);
 			RECORD_TYPE(1, w);
-			// Don't bother recording the assigned object.
+			/* Don't bother recording the assigned object. */
 			err = PyObject_SetItem(v, w, u);
 			Py_DECREF(u);
 			Py_DECREF(v);
@@ -2736,20 +2741,22 @@ PyEval_EvalFrame(PyFrameObject *f)
 			num_args = oparg & 0xff;
 			num_kwargs = (oparg>>8) & 0xff;
 #ifdef WITH_LLVM
-			// We'll focus on these simple calls with only positional args for
-			// now (since they're easy to implement).
+			/* We'll focus on these simple calls with only
+			 * positional args for now (since they're easy to
+			 * implement). */
 			if (num_kwargs == 0) {
-				// Duplicate this bit of logic from
-				// _PyEval_CallFunction().
+				/* Duplicate this bit of logic from
+				 * _PyEval_CallFunction(). */
 				PyObject **func = stack_pointer - num_args - 1;
 				RECORD_FUNC(*func);
 			}
 #endif
 			x = _PyEval_CallFunction(stack_pointer,
 						 num_args, num_kwargs);
-			// +1 for the actual function object.
+			/* +1 for the actual function object. */
 			num_stack_slots = num_args + 2 * num_kwargs + 1;
-			// Clear the stack of the function object and arguments.
+			/* Clear the stack of the function object and
+			 * arguments. */
 			stack_pointer -= num_stack_slots;
 			PUSH(x);
 			if (x == NULL) {
@@ -2766,7 +2773,7 @@ PyEval_EvalFrame(PyFrameObject *f)
 		{
 			int num_args, num_kwargs, num_stack_slots, flags;
 			PY_LOG_TSC_EVENT(CALL_START_EVAL);
-			// TODO(jyasskin): Add feedback gathering.
+			/* TODO(jyasskin): Add feedback gathering. */
 			num_args = oparg & 0xff;
 			num_kwargs = (oparg>>8) & 0xff;
 			num_stack_slots = num_args + 2 * num_kwargs + 1;
@@ -3849,7 +3856,7 @@ _PyEval_TraceLeaveFunction(PyThreadState *tstate, PyFrameObject *f,
 			if (_PyEval_CallTrace(tstate->c_tracefunc,
 					      tstate->c_traceobj, f,
 					      PyTrace_RETURN, retval)) {
-				is_exception = true;
+				is_exception = 1;
 				err = -1;
 			}
 		}
@@ -5010,7 +5017,11 @@ _PyEval_ImportName(PyObject *level, PyObject *names, PyObject *module_name)
    Return -1 with an appropriate exception set on failure,
    1 if the given exception matches one or more of the given type(s),
    0 otherwise. */
+#ifdef __cplusplus
 extern "C" int
+#else
+extern int
+#endif
 _PyEval_CheckedExceptionMatches(PyObject *exc, PyObject *exc_type)
 {
 	int ret_val;

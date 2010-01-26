@@ -709,6 +709,7 @@ UNIVERSAL_ARCH_FLAGS
 OTHER_LIBTOOL_OPT
 LIBTOOL_CRUFT
 BASECXXFLAGS
+FORCE_C
 SO
 LDSHARED
 BLDSHARED
@@ -1346,6 +1347,11 @@ Optional Packages:
                           with --enable-framework
   --without-gcc           never use gcc
   --with-suffix=.exe      set executable suffix
+  --with(out)-llvm[=DIRECTORY]
+                          build against a preinstalled LLVM or disable LLVM
+                          integration entirely. Note that Python built with
+                          --without-llvm cannot load extension modules built
+                          with --with-llvm or vice-versa.
   --with-pydebug          build with Py_DEBUG defined
   --with-libs='lib1 ...'  link against additional libs
   --with-system-ffi       build _ctypes module using an installed ffi library
@@ -1368,11 +1374,6 @@ Optional Packages:
                           Enabled by default.
   --with-computed-gotos   Use computed gotos / threaded dispatch in evaluation
                           loops (not available on all compilers)
-  --with(out)-llvm[=DIRECTORY]
-                          build against a preinstalled LLVM or disable LLVM
-                          integration entirely. Note that Python built with
-                          --without-llvm cannot load extension modules built
-                          with --with-llvm or vice-versa.
   --with-instrumentation  Compile in a bunch of runtime instrumentation useful
                           for optimizing Python itself. Requires --with-llvm.
   --with(out)-tsc         enable/disable timestamp counter profile
@@ -4180,15 +4181,188 @@ DLLLIBRARY=''
 LDLIBRARYDIR=''
 RUNSHARED=''
 
+# Check for --with-llvm=DIRECTORY or --without-llvm.
+#
+# Check for this really early so we can use it to toggle LINKCC.
+#
+# Expected behaviour:
+#   - Omit --with-llvm: use in-tree LLVM
+#   - --with-llvm (no DIRECTORY): use in-tree LLVM
+#   - --with-llvm=DIRECTORY: use the LLVM installed in DIRECTORY
+#   - --without-llvm: disable everything that requires LLVM
+{ echo "$as_me:$LINENO: checking for --with(out)-llvm" >&5
+echo $ECHO_N "checking for --with(out)-llvm... $ECHO_C" >&6; }
+
+# Check whether --with-llvm was given.
+if test "${with_llvm+set}" = set; then
+  withval=$with_llvm; with_llvm=$withval
+fi
+
+
+if test "$with_llvm" = "no"
+then
+    { echo "$as_me:$LINENO: result: disabled" >&5
+echo "${ECHO_T}disabled" >&6; }
+    BUILD_LLVM=disabled
+else
+    if test -z "$with_llvm"
+    then
+        { echo "$as_me:$LINENO: result: built-in" >&5
+echo "${ECHO_T}built-in" >&6; }
+        LLVM_PATH=""
+        BUILD_LLVM=1
+    else
+        { echo "$as_me:$LINENO: result: $with_llvm" >&5
+echo "${ECHO_T}$with_llvm" >&6; };
+        LLVM_PATH=$with_llvm
+        as_ac_File=`echo "ac_cv_file_"$LLVM_PATH/bin/clang"" | $as_tr_sh`
+{ echo "$as_me:$LINENO: checking for \"$LLVM_PATH/bin/clang\"" >&5
+echo $ECHO_N "checking for \"$LLVM_PATH/bin/clang\"... $ECHO_C" >&6; }
+if { as_var=$as_ac_File; eval "test \"\${$as_var+set}\" = set"; }; then
+  echo $ECHO_N "(cached) $ECHO_C" >&6
+else
+  test "$cross_compiling" = yes &&
+  { { echo "$as_me:$LINENO: error: cannot check for file existence when cross compiling" >&5
+echo "$as_me: error: cannot check for file existence when cross compiling" >&2;}
+   { (exit 1); exit 1; }; }
+if test -r ""$LLVM_PATH/bin/clang""; then
+  eval "$as_ac_File=yes"
+else
+  eval "$as_ac_File=no"
+fi
+fi
+ac_res=`eval echo '${'$as_ac_File'}'`
+	       { echo "$as_me:$LINENO: result: $ac_res" >&5
+echo "${ECHO_T}$ac_res" >&6; }
+if test `eval echo '${'$as_ac_File'}'` = yes; then
+  :
+else
+  echo "Did not find clang in the expected path"; exit 1
+fi
+
+        as_ac_File=`echo "ac_cv_file_"$LLVM_PATH/bin/opt"" | $as_tr_sh`
+{ echo "$as_me:$LINENO: checking for \"$LLVM_PATH/bin/opt\"" >&5
+echo $ECHO_N "checking for \"$LLVM_PATH/bin/opt\"... $ECHO_C" >&6; }
+if { as_var=$as_ac_File; eval "test \"\${$as_var+set}\" = set"; }; then
+  echo $ECHO_N "(cached) $ECHO_C" >&6
+else
+  test "$cross_compiling" = yes &&
+  { { echo "$as_me:$LINENO: error: cannot check for file existence when cross compiling" >&5
+echo "$as_me: error: cannot check for file existence when cross compiling" >&2;}
+   { (exit 1); exit 1; }; }
+if test -r ""$LLVM_PATH/bin/opt""; then
+  eval "$as_ac_File=yes"
+else
+  eval "$as_ac_File=no"
+fi
+fi
+ac_res=`eval echo '${'$as_ac_File'}'`
+	       { echo "$as_me:$LINENO: result: $ac_res" >&5
+echo "${ECHO_T}$ac_res" >&6; }
+if test `eval echo '${'$as_ac_File'}'` = yes; then
+  :
+else
+  echo "Did not find opt in the expected path"; exit 1
+fi
+
+        as_ac_File=`echo "ac_cv_file_"$LLVM_PATH/bin/llvm-link"" | $as_tr_sh`
+{ echo "$as_me:$LINENO: checking for \"$LLVM_PATH/bin/llvm-link\"" >&5
+echo $ECHO_N "checking for \"$LLVM_PATH/bin/llvm-link\"... $ECHO_C" >&6; }
+if { as_var=$as_ac_File; eval "test \"\${$as_var+set}\" = set"; }; then
+  echo $ECHO_N "(cached) $ECHO_C" >&6
+else
+  test "$cross_compiling" = yes &&
+  { { echo "$as_me:$LINENO: error: cannot check for file existence when cross compiling" >&5
+echo "$as_me: error: cannot check for file existence when cross compiling" >&2;}
+   { (exit 1); exit 1; }; }
+if test -r ""$LLVM_PATH/bin/llvm-link""; then
+  eval "$as_ac_File=yes"
+else
+  eval "$as_ac_File=no"
+fi
+fi
+ac_res=`eval echo '${'$as_ac_File'}'`
+	       { echo "$as_me:$LINENO: result: $ac_res" >&5
+echo "${ECHO_T}$ac_res" >&6; }
+if test `eval echo '${'$as_ac_File'}'` = yes; then
+  :
+else
+  echo "Did not find llvm-link in the expected path"; exit 1
+fi
+
+        as_ac_File=`echo "ac_cv_file_"$LLVM_PATH/bin/llvm-dis"" | $as_tr_sh`
+{ echo "$as_me:$LINENO: checking for \"$LLVM_PATH/bin/llvm-dis\"" >&5
+echo $ECHO_N "checking for \"$LLVM_PATH/bin/llvm-dis\"... $ECHO_C" >&6; }
+if { as_var=$as_ac_File; eval "test \"\${$as_var+set}\" = set"; }; then
+  echo $ECHO_N "(cached) $ECHO_C" >&6
+else
+  test "$cross_compiling" = yes &&
+  { { echo "$as_me:$LINENO: error: cannot check for file existence when cross compiling" >&5
+echo "$as_me: error: cannot check for file existence when cross compiling" >&2;}
+   { (exit 1); exit 1; }; }
+if test -r ""$LLVM_PATH/bin/llvm-dis""; then
+  eval "$as_ac_File=yes"
+else
+  eval "$as_ac_File=no"
+fi
+fi
+ac_res=`eval echo '${'$as_ac_File'}'`
+	       { echo "$as_me:$LINENO: result: $ac_res" >&5
+echo "${ECHO_T}$ac_res" >&6; }
+if test `eval echo '${'$as_ac_File'}'` = yes; then
+  :
+else
+  echo "Did not find llvm-dis in the expected path"; exit 1
+fi
+
+        as_ac_File=`echo "ac_cv_file_"$LLVM_PATH/bin/llvm-config"" | $as_tr_sh`
+{ echo "$as_me:$LINENO: checking for \"$LLVM_PATH/bin/llvm-config\"" >&5
+echo $ECHO_N "checking for \"$LLVM_PATH/bin/llvm-config\"... $ECHO_C" >&6; }
+if { as_var=$as_ac_File; eval "test \"\${$as_var+set}\" = set"; }; then
+  echo $ECHO_N "(cached) $ECHO_C" >&6
+else
+  test "$cross_compiling" = yes &&
+  { { echo "$as_me:$LINENO: error: cannot check for file existence when cross compiling" >&5
+echo "$as_me: error: cannot check for file existence when cross compiling" >&2;}
+   { (exit 1); exit 1; }; }
+if test -r ""$LLVM_PATH/bin/llvm-config""; then
+  eval "$as_ac_File=yes"
+else
+  eval "$as_ac_File=no"
+fi
+fi
+ac_res=`eval echo '${'$as_ac_File'}'`
+	       { echo "$as_me:$LINENO: result: $ac_res" >&5
+echo "${ECHO_T}$ac_res" >&6; }
+if test `eval echo '${'$as_ac_File'}'` = yes; then
+  :
+else
+  echo "Did not find llvm-config in the expected path"; exit 1
+fi
+
+        echo "Using preinstalled LLVM: $LLVM_PATH"
+        BUILD_LLVM=0
+    fi
+
+cat >>confdefs.h <<\_ACEOF
+#define WITH_LLVM 1
+_ACEOF
+
+fi
+
 # LINKCC is the command that links the python executable -- default is $(CXX).
 # This is altered for AIX in order to build the export list before
-# linking.
+# linking. If --without--lvm was specified, we use $(CC) to avoid depending on
+# libstdc++.
 
 { echo "$as_me:$LINENO: checking LINKCC" >&5
 echo $ECHO_N "checking LINKCC... $ECHO_C" >&6; }
 if test -z "$LINKCC"
 then
 	LINKCC='$(PURIFY) $(CXX)'
+	if test "$with_llvm" == "no" ; then
+		LINKCC='$(PURIFY) $(CC)'
+	fi
 	case $ac_sys_system in
 	AIX*)
 	   exp_extra="\"\""
@@ -13382,6 +13556,16 @@ esac
 # after BASECFLAGS is fully set up.
 BASECXXFLAGS="$BASECFLAGS"
 BASECFLAGS="$BASECFLAGS $STRICT_PROTO"
+
+# We force C compilation for eval.cc so that we don't have to rename it.
+# Otherwise when configured --without-llvm, gcc will see the .cc extension and
+# compile the file as C++, which creates a dependency on libstdc++.
+
+FORCE_C=""
+if test "$GCC" == "yes"
+then
+	FORCE_C="-x c"
+fi
 
 # Set info about shared libraries.
 
@@ -25208,173 +25392,6 @@ fi
 { echo "$as_me:$LINENO: result: $with_computed_gotos" >&5
 echo "${ECHO_T}$with_computed_gotos" >&6; }
 
-# Check for --with-llvm=DIRECTORY or --without-llvm.
-#
-# Expected behaviour:
-#   - Omit --with-llvm: use in-tree LLVM
-#   - --with-llvm (no DIRECTORY): use in-tree LLVM
-#   - --with-llvm=DIRECTORY: use the LLVM installed in DIRECTORY
-#   - --without-llvm: disable everything that requires LLVM
-{ echo "$as_me:$LINENO: checking for --with(out)-llvm" >&5
-echo $ECHO_N "checking for --with(out)-llvm... $ECHO_C" >&6; }
-
-# Check whether --with-llvm was given.
-if test "${with_llvm+set}" = set; then
-  withval=$with_llvm; with_llvm=$withval
-fi
-
-
-if test "$with_llvm" = "no"
-then
-    { echo "$as_me:$LINENO: result: disabled" >&5
-echo "${ECHO_T}disabled" >&6; }
-    BUILD_LLVM=disabled
-else
-    if test -z "$with_llvm"
-    then
-        { echo "$as_me:$LINENO: result: built-in" >&5
-echo "${ECHO_T}built-in" >&6; }
-        LLVM_PATH=""
-        BUILD_LLVM=1
-    else
-        { echo "$as_me:$LINENO: result: $with_llvm" >&5
-echo "${ECHO_T}$with_llvm" >&6; };
-        LLVM_PATH=$with_llvm
-        as_ac_File=`echo "ac_cv_file_"$LLVM_PATH/bin/clang"" | $as_tr_sh`
-{ echo "$as_me:$LINENO: checking for \"$LLVM_PATH/bin/clang\"" >&5
-echo $ECHO_N "checking for \"$LLVM_PATH/bin/clang\"... $ECHO_C" >&6; }
-if { as_var=$as_ac_File; eval "test \"\${$as_var+set}\" = set"; }; then
-  echo $ECHO_N "(cached) $ECHO_C" >&6
-else
-  test "$cross_compiling" = yes &&
-  { { echo "$as_me:$LINENO: error: cannot check for file existence when cross compiling" >&5
-echo "$as_me: error: cannot check for file existence when cross compiling" >&2;}
-   { (exit 1); exit 1; }; }
-if test -r ""$LLVM_PATH/bin/clang""; then
-  eval "$as_ac_File=yes"
-else
-  eval "$as_ac_File=no"
-fi
-fi
-ac_res=`eval echo '${'$as_ac_File'}'`
-	       { echo "$as_me:$LINENO: result: $ac_res" >&5
-echo "${ECHO_T}$ac_res" >&6; }
-if test `eval echo '${'$as_ac_File'}'` = yes; then
-  :
-else
-  echo "Did not find clang in the expected path"; exit 1
-fi
-
-        as_ac_File=`echo "ac_cv_file_"$LLVM_PATH/bin/opt"" | $as_tr_sh`
-{ echo "$as_me:$LINENO: checking for \"$LLVM_PATH/bin/opt\"" >&5
-echo $ECHO_N "checking for \"$LLVM_PATH/bin/opt\"... $ECHO_C" >&6; }
-if { as_var=$as_ac_File; eval "test \"\${$as_var+set}\" = set"; }; then
-  echo $ECHO_N "(cached) $ECHO_C" >&6
-else
-  test "$cross_compiling" = yes &&
-  { { echo "$as_me:$LINENO: error: cannot check for file existence when cross compiling" >&5
-echo "$as_me: error: cannot check for file existence when cross compiling" >&2;}
-   { (exit 1); exit 1; }; }
-if test -r ""$LLVM_PATH/bin/opt""; then
-  eval "$as_ac_File=yes"
-else
-  eval "$as_ac_File=no"
-fi
-fi
-ac_res=`eval echo '${'$as_ac_File'}'`
-	       { echo "$as_me:$LINENO: result: $ac_res" >&5
-echo "${ECHO_T}$ac_res" >&6; }
-if test `eval echo '${'$as_ac_File'}'` = yes; then
-  :
-else
-  echo "Did not find opt in the expected path"; exit 1
-fi
-
-        as_ac_File=`echo "ac_cv_file_"$LLVM_PATH/bin/llvm-link"" | $as_tr_sh`
-{ echo "$as_me:$LINENO: checking for \"$LLVM_PATH/bin/llvm-link\"" >&5
-echo $ECHO_N "checking for \"$LLVM_PATH/bin/llvm-link\"... $ECHO_C" >&6; }
-if { as_var=$as_ac_File; eval "test \"\${$as_var+set}\" = set"; }; then
-  echo $ECHO_N "(cached) $ECHO_C" >&6
-else
-  test "$cross_compiling" = yes &&
-  { { echo "$as_me:$LINENO: error: cannot check for file existence when cross compiling" >&5
-echo "$as_me: error: cannot check for file existence when cross compiling" >&2;}
-   { (exit 1); exit 1; }; }
-if test -r ""$LLVM_PATH/bin/llvm-link""; then
-  eval "$as_ac_File=yes"
-else
-  eval "$as_ac_File=no"
-fi
-fi
-ac_res=`eval echo '${'$as_ac_File'}'`
-	       { echo "$as_me:$LINENO: result: $ac_res" >&5
-echo "${ECHO_T}$ac_res" >&6; }
-if test `eval echo '${'$as_ac_File'}'` = yes; then
-  :
-else
-  echo "Did not find llvm-link in the expected path"; exit 1
-fi
-
-        as_ac_File=`echo "ac_cv_file_"$LLVM_PATH/bin/llvm-dis"" | $as_tr_sh`
-{ echo "$as_me:$LINENO: checking for \"$LLVM_PATH/bin/llvm-dis\"" >&5
-echo $ECHO_N "checking for \"$LLVM_PATH/bin/llvm-dis\"... $ECHO_C" >&6; }
-if { as_var=$as_ac_File; eval "test \"\${$as_var+set}\" = set"; }; then
-  echo $ECHO_N "(cached) $ECHO_C" >&6
-else
-  test "$cross_compiling" = yes &&
-  { { echo "$as_me:$LINENO: error: cannot check for file existence when cross compiling" >&5
-echo "$as_me: error: cannot check for file existence when cross compiling" >&2;}
-   { (exit 1); exit 1; }; }
-if test -r ""$LLVM_PATH/bin/llvm-dis""; then
-  eval "$as_ac_File=yes"
-else
-  eval "$as_ac_File=no"
-fi
-fi
-ac_res=`eval echo '${'$as_ac_File'}'`
-	       { echo "$as_me:$LINENO: result: $ac_res" >&5
-echo "${ECHO_T}$ac_res" >&6; }
-if test `eval echo '${'$as_ac_File'}'` = yes; then
-  :
-else
-  echo "Did not find llvm-dis in the expected path"; exit 1
-fi
-
-        as_ac_File=`echo "ac_cv_file_"$LLVM_PATH/bin/llvm-config"" | $as_tr_sh`
-{ echo "$as_me:$LINENO: checking for \"$LLVM_PATH/bin/llvm-config\"" >&5
-echo $ECHO_N "checking for \"$LLVM_PATH/bin/llvm-config\"... $ECHO_C" >&6; }
-if { as_var=$as_ac_File; eval "test \"\${$as_var+set}\" = set"; }; then
-  echo $ECHO_N "(cached) $ECHO_C" >&6
-else
-  test "$cross_compiling" = yes &&
-  { { echo "$as_me:$LINENO: error: cannot check for file existence when cross compiling" >&5
-echo "$as_me: error: cannot check for file existence when cross compiling" >&2;}
-   { (exit 1); exit 1; }; }
-if test -r ""$LLVM_PATH/bin/llvm-config""; then
-  eval "$as_ac_File=yes"
-else
-  eval "$as_ac_File=no"
-fi
-fi
-ac_res=`eval echo '${'$as_ac_File'}'`
-	       { echo "$as_me:$LINENO: result: $ac_res" >&5
-echo "${ECHO_T}$ac_res" >&6; }
-if test `eval echo '${'$as_ac_File'}'` = yes; then
-  :
-else
-  echo "Did not find llvm-config in the expected path"; exit 1
-fi
-
-        echo "Using preinstalled LLVM: $LLVM_PATH"
-        BUILD_LLVM=0
-    fi
-
-cat >>confdefs.h <<\_ACEOF
-#define WITH_LLVM 1
-_ACEOF
-
-fi
-
 if test "$BUILD_LLVM" = "1"
 then
     LLVM_BASE="Util/llvm"
@@ -26203,10 +26220,10 @@ UNIVERSAL_ARCH_FLAGS!$UNIVERSAL_ARCH_FLAGS$ac_delim
 OTHER_LIBTOOL_OPT!$OTHER_LIBTOOL_OPT$ac_delim
 LIBTOOL_CRUFT!$LIBTOOL_CRUFT$ac_delim
 BASECXXFLAGS!$BASECXXFLAGS$ac_delim
+FORCE_C!$FORCE_C$ac_delim
 SO!$SO$ac_delim
 LDSHARED!$LDSHARED$ac_delim
 BLDSHARED!$BLDSHARED$ac_delim
-CCSHARED!$CCSHARED$ac_delim
 _ACEOF
 
   if test `sed -n "s/.*$ac_delim\$/X/p" conf$$subs.sed | grep -c X` = 97; then
@@ -26248,6 +26265,7 @@ _ACEOF
 ac_delim='%!_!# '
 for ac_last_try in false false false false false :; do
   cat >conf$$subs.sed <<_ACEOF
+CCSHARED!$CCSHARED$ac_delim
 LINKFORSHARED!$LINKFORSHARED$ac_delim
 CFLAGSFORSHARED!$CFLAGSFORSHARED$ac_delim
 SHLIBS!$SHLIBS$ac_delim
@@ -26277,7 +26295,7 @@ SRCDIRS!$SRCDIRS$ac_delim
 LTLIBOBJS!$LTLIBOBJS$ac_delim
 _ACEOF
 
-  if test `sed -n "s/.*$ac_delim\$/X/p" conf$$subs.sed | grep -c X` = 27; then
+  if test `sed -n "s/.*$ac_delim\$/X/p" conf$$subs.sed | grep -c X` = 28; then
     break
   elif $ac_last_try; then
     { { echo "$as_me:$LINENO: error: could not make $CONFIG_STATUS" >&5
