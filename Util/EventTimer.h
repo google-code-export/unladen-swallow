@@ -1,4 +1,3 @@
-// -*- C++ -*-
 #ifndef UTIL_EVENTTIMER_H
 #define UTIL_EVENTTIMER_H
 
@@ -7,7 +6,7 @@
 
 #ifdef WITH_TSC
 
-// This must be kept in sync with event_names in EventTimer.cc
+/* This must be kept in sync with event_names in EventTimer.cc */
 typedef enum {
     CALL_START_EVAL,        // Top of CALL_FUNCTION_* opcodes
     CALL_START_LLVM,        // Top of CALL_FUNCTION_* LLVM IRs
@@ -42,22 +41,21 @@ typedef struct {
     tsc_t time;
 } _PyTscEvent;
 
-/// Log an event and the TSC when it occurred.
+/* Log an event and the TSC when it occurred. */
 #ifdef __cplusplus
 extern "C" PyAPI_FUNC(void) _PyLog_TscEvent(_PyTscEventId event);
 #else
 extern PyAPI_FUNC(void) _PyLog_TscEvent(_PyTscEventId event);
 #endif
 
-/// Simple macro that wraps up the ifdef WITH_TSC check so that callers don't
-/// have to spell it out in their code.
+/* Simple macro that wraps up the ifdef WITH_TSC check so that callers don't
+   have to spell it out in their code. */
 #define PY_LOG_TSC_EVENT(event) _PyLog_TscEvent(event)
 
 #else
 
 #define PY_LOG_TSC_EVENT(event)
 
-#endif  // WITH_TSC
+#endif  /* WITH_TSC */
 
-
-#endif  // UTIL_EVENTTIMER_H
+#endif  /* UTIL_EVENTTIMER_H */

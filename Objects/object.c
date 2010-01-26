@@ -1348,8 +1348,8 @@ PyObject_GenericGetAttr(PyObject *obj, PyObject *name)
 			goto done;
 	}
 
-        // TODO(rnk): This function uses a cache.  Someone should try using
-        // partial inlining for the cache hits.
+        /* TODO(rnk): This function uses a cache.  Someone should try using
+           partial inlining for the cache hits. */
 	descr = _PyType_Lookup(tp, name);
 
 	Py_XINCREF(descr);

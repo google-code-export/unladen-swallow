@@ -77,7 +77,7 @@ typedef struct _frame {
     PyObject *f_localsplus[1];	/* locals+stack, dynamically sized */
 } PyFrameObject;
 
-enum _PyFrameBailReason {
+typedef enum _PyFrameBailReason {
     _PYFRAME_NO_BAIL,
     _PYFRAME_TRACE_ON_ENTRY,
     _PYFRAME_LINE_TRACE,
@@ -86,7 +86,7 @@ enum _PyFrameBailReason {
     /* Fatal guard failures invalidate the machine code. */
     _PYFRAME_FATAL_GUARD_FAIL,
     _PYFRAME_GUARD_FAIL,
-};
+} _PyFrameBailReason;
 
 /* Standard object interface */
 

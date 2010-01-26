@@ -24,13 +24,13 @@ static int TXNObj_Convert(PyObject *, TXNObject *);
 static PyObject *TXNFontMenuObj_New(TXNFontMenuObject);
 static int TXNFontMenuObj_Convert(PyObject *, TXNFontMenuObject *);
 
-// ADD declarations
+/* ADD declarations */
 #ifdef NOTYET_USE_TOOLBOX_OBJECT_GLUE
-//extern PyObject *_CFTypeRefObj_New(CFTypeRef);
-//extern int _CFTypeRefObj_Convert(PyObject *, CFTypeRef *);
+/* extern PyObject *_CFTypeRefObj_New(CFTypeRef); */
+/* extern int _CFTypeRefObj_Convert(PyObject *, CFTypeRef *); */
 
-//#define CFTypeRefObj_New _CFTypeRefObj_New
-//#define CFTypeRefObj_Convert _CFTypeRefObj_Convert
+/* #define CFTypeRefObj_New _CFTypeRefObj_New */
+/* #define CFTypeRefObj_Convert _CFTypeRefObj_Convert */
 #endif
 
 /*
@@ -1658,7 +1658,7 @@ void init_Mlte(void)
 
 
 
-	//      PyMac_INIT_TOOLBOX_OBJECT_NEW(xxxx);
+	/*      PyMac_INIT_TOOLBOX_OBJECT_NEW(xxxx); */
 
 #endif /* __LP64__ */
 
