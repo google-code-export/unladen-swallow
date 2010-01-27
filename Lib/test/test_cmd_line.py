@@ -65,7 +65,7 @@ class CmdLineTest(unittest.TestCase):
         self.verify_valid_flag('-O1')
         self.verify_valid_flag('-OO')  # Oh oh. Same as -O2
         self.verify_valid_flag('-O2')
-        self.verify_valid_flag('-O3')
+        self.verify_invalid_flag('-O3')  # Used to be valid, no more.
         self.verify_invalid_flag('-O128')
 
     def test_q(self):

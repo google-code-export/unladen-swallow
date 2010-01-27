@@ -41,7 +41,7 @@ public:
     PyGlobalLlvmData();
     ~PyGlobalLlvmData();
 
-    // Optimize f to a particular level. Currently, levels from 0 to 3
+    // Optimize f to a particular level. Currently, levels from 0 to 2
     // are valid.
     //
     // Returns 0 on success or -1 on failure (if level is out of

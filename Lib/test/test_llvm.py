@@ -45,7 +45,7 @@ def set_jit_control(new_level):
 
 def at_each_optimization_level(func):
     """Decorator for test functions, to run them at each optimization level."""
-    levels = [None, -1, 0, 1, 2, 3]
+    levels = [None, -1, 0, 1, 2]
     if DEFAULT_OPT_LEVEL != -1:
         levels = [level for level in levels if level >= DEFAULT_OPT_LEVEL]
     @functools.wraps(func)
