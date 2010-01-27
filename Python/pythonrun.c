@@ -198,6 +198,7 @@ Py_InitializeEx(int install_sigs)
 	char ibuf[128];
 	char buf[128];
 #endif
+	Py_JitOpts old_jit_control;
 	extern void _Py_ReadyTypes(void);
 
 	if (initialized)
@@ -302,6 +303,10 @@ Py_InitializeEx(int install_sigs)
 		Py_XDECREF(warnings_module);
 	}
 
+	/* We disable JIT compilation during startup to improve startup time. */
+ 	old_jit_control = Py_JitControl;
+	Py_JitControl = PY_JIT_NEVER;
+
 	initmain(); /* Module __main__ */
 	if (!Py_NoSiteFlag)
 		initsite(); /* Module site */
@@ -361,6 +366,9 @@ Py_InitializeEx(int install_sigs)
 		}
 	}
 #endif
+
+	/* Restore JIT compilation now that we've got site and encodings. */
+	Py_JitControl = old_jit_control;
 
 #ifdef MS_WINDOWS
 	if (!overridden) {

@@ -70,6 +70,11 @@ There several classes of functions we're trying to catch with this model:
 - Loop-heavy main functions (few invocations, high running time).
 - Long-running generators (few invocations, long lifetime).
 
+Miscellaneous notes:
+- JIT compilation is always disabled during startup by temporarily forcing `-j
+  never`. This improves startup time by disabling compilation and feedback
+  collection.
+
 Previous models:
 - Simple call count-based model (10000 calls == hot). This was implemented as
   an obviously-deficient baseline to be improved upon.
