@@ -90,6 +90,13 @@ private:
     // we may want.
     void InstallInitialModule();
 
+    // The ExecutionEngine can find the addresses of external and
+    // available_externally symbols with dlsym().  From those, we can find
+    // addresses of other internal objects whose pointers have escaped.  We set
+    // their addresses into the ExecutionEngine too to avoid having to codegen
+    // them.
+    void GatherAddresses();
+
     void InitializeOptimizations();
 
     // We have a single global module that holds all compiled code.

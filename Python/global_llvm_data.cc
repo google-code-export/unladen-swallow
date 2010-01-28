@@ -1,4 +1,5 @@
 /* Note: this file is not compiled if configured with --without-llvm. */
+#define DEBUG_TYPE "pygloballlvmdata"
 #include "Python.h"
 
 #include "osdefs.h"
@@ -6,6 +7,7 @@
 #include "Python/global_llvm_data.h"
 #include "Util/ConstantMirror.h"
 #include "Util/DeadGlobalElim.h"
+#include "Util/DiffConstants.h"
 #include "Util/PyAliasAnalysis.h"
 #include "Util/SingleFunctionInliner.h"
 #include "Util/Stats.h"
@@ -33,9 +35,15 @@
 #include "llvm/Target/TargetSelect.h"
 #include "llvm/Transforms/Scalar.h"
 
+using llvm::Constant;
+using llvm::DebugFlag;
+using llvm::ExecutionEngine;
 using llvm::FunctionPassManager;
+using llvm::GlobalVariable;
 using llvm::Module;
 using llvm::StringRef;
+using llvm::dyn_cast;
+using llvm::isCurrentDebugType;
 
 PyGlobalLlvmData *
 PyGlobalLlvmData_New()
@@ -112,7 +120,12 @@ PyGlobalLlvmData::PyGlobalLlvmData()
     if (this->module_provider_ == NULL) {
       Py_FatalError(error.c_str());
     }
-    this->module_ = this->module_provider_->getModule();
+    // TODO(jyasskin): Change this to getModule once we avoid the crash
+    // in JIT::runJITOnFunctionUnlocked.  http://llvm.org/PR5735
+    this->module_ = this->module_provider_->materializeModule(&error);
+    if (this->module_ == NULL) {
+        Py_FatalError(error.c_str());
+    }
 
     if (Py_GenerateDebugInfoFlag) {
       this->debug_info_.reset(new llvm::DIFactory(*module_));
@@ -171,15 +184,120 @@ PyGlobalLlvmData::InstallInitialModule()
 
     for (llvm::Module::iterator it = this->module_->begin();
          it != this->module_->end(); ++it) {
-        if (it->getName().find("_PyLlvm_Fast") == 0) {
+        if (it->getName().startswith("_PyLlvm_Fast")) {
             it->setCallingConv(llvm::CallingConv::Fast);
         }
     }
 
+    this->GatherAddresses();
+}
+
+// The idea here is a bit subtle. When we have an available_externally
+// GlobalVariable (GV1), we have both its initialization, and the address of
+// that initialization available through dlsym().  If the initializer contains
+// any pointers, GV1.getInitializer() will hold a symbolic reference to another
+// GlobalValue (GV2), but the matching memory will hold a real pointer to an
+// ABI-compatible address inside the main executable.  If we add a
+// global-mapping to the ExecutionEngine, then it won't need to emit GV2 itself,
+// saving both memory and time.  If GV2 is an initialized GlobalVariable, we can
+// repeat the above process on its initializer.
+//
+// This could break if someone changes the in-memory pointer before
+// GatherAddresses has a chance to match it to the right @global.  To avoid
+// that, we run this to completion just after startup, before user-defined code
+// has a chance to run.  We could do this more lazily by checking the
+// PyAliasAnalysis about whether each pointer was constant, and only match up
+// constant pointers.
+void
+PyGlobalLlvmData::GatherAddresses()
+{
+    std::vector<const GlobalVariable*> worklist;
+    llvm::SmallPtrSet<const GlobalVariable*, 32> visited;
     // Fill the ExecutionEngine with the addresses of known global variables.
     for (Module::global_iterator it = this->module_->global_begin();
          it != this->module_->global_end(); ++it) {
-        this->engine_->getOrEmitGlobalVariable(it);
+        if (it->hasExternalLinkage() && it->isDeclaration()) {
+            void *addr = this->engine_->getOrEmitGlobalVariable(it);
+            (void)addr;
+            DEBUG(llvm::errs() << "Mapped declaration of " << it->getName()
+                  << " to " << addr << "\n");
+        } else if (it->hasAvailableExternallyLinkage()) {
+            void *addr = this->engine_->getOrEmitGlobalVariable(it);
+            (void)addr;
+            worklist.push_back(it);
+            DEBUG(llvm::errs() << "Mapped available_externally "
+                  << it->getName() << " to " << addr << "\n");
+        }
+    }
+
+    while (!worklist.empty()) {
+        const GlobalVariable *known_global = worklist.back();
+        worklist.pop_back();
+        if (!visited.insert(known_global))
+            continue;
+        void *addr = this->engine_->getPointerToGlobalIfAvailable(known_global);
+        DEBUG(llvm::errs() << "Visiting " << known_global->getName() << " at "
+              << addr << "\n");
+        assert(addr != NULL &&
+               "Objects should only be on worklist after they get a value.");
+        assert(known_global->hasInitializer() &&
+               "Anything on the worklist must have an initializer");
+        Constant *known_initializer = known_global->getInitializer();
+        Constant *memory_value = this->constant_mirror_->ConstantFromMemory(
+            known_initializer->getType(), addr);
+
+        struct AddressExtractor : public PyDiffVisitor {
+            AddressExtractor(std::vector<const GlobalVariable*> &worklist,
+                             ExecutionEngine &engine)
+                : worklist_(worklist), engine_(engine) {}
+            void *ReadAddress(const llvm::Constant *C) {
+                if (const llvm::ConstantExpr *CE =
+                    dyn_cast<llvm::ConstantExpr>(C)) {
+                    if (CE->getOpcode() == llvm::Instruction::IntToPtr) {
+                        if (const llvm::ConstantInt *val =
+                            dyn_cast<llvm::ConstantInt>(CE->getOperand(0))) {
+                            const llvm::APInt &ival = val->getValue();
+                            if (ival.getActiveBits() > sizeof(void*) * 8)
+                                return NULL;
+                            return (void*)ival.getZExtValue();
+                        }
+                    }
+                }
+                return NULL;
+            }
+            virtual void Visit(const llvm::Constant *C1,
+                               const llvm::Constant *C2) {
+                if (void *addr = ReadAddress(C1)) {
+                    if (const llvm::GlobalValue *GVal =
+                        dyn_cast<llvm::GlobalValue>(C2)) {
+                        if (void *known_addr =
+                            this->engine_.getPointerToGlobalIfAvailable(GVal)) {
+                            assert(addr == known_addr &&
+                                   "Found inconsistent addresses for"
+                                   " same global");
+                        } else {
+                            this->engine_.addGlobalMapping(GVal, addr);
+                            DEBUG(llvm::errs() << "Mapped " << GVal->getName()
+                                  << " to " << addr);
+                            if (const GlobalVariable *GVar =
+                                dyn_cast<GlobalVariable>(GVal)) {
+                                if (GVar->hasInitializer()) {
+                                    this->worklist_.push_back(GVar);
+                                    DEBUG(llvm::errs()
+                                          << " and added to worklist");
+                                }
+                            }
+                            DEBUG(llvm::errs() << "\n");
+                        }
+                    }
+                }
+            }
+            std::vector<const GlobalVariable*> &worklist_;
+            ExecutionEngine &engine_;
+        };
+
+        AddressExtractor extractor(worklist, *this->engine_);
+        PyDiffConstants(memory_value, known_initializer, extractor);
     }
 }
 

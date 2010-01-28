@@ -104,6 +104,24 @@ parallels the backoff used for the ordinary cycle detector to avoid taking
 quadratic time for runs with lots of long-lived objects.
 
 
+Codegen less: Avoid JITting stdlib objects exposed through pointers.
+-------------------------------------------------------------------------------
+
+See http://llvm.org/PR5746 and
+Python/global_llvm_data.cc:PyGlobalLlvmData::GatherAddresses() for details.  The
+idea is that when we have an available_externally GlobalVariable (GV1) (an
+object in the Python standard library that's also defined in LLVM IR), we have
+both its initial value (represented symbolically in LLVM IR), and the address of
+memory containing that initial value (available through dlsym()).  If the
+initial value contains any pointers, GV1.getInitializer() will hold a symbolic
+reference to another GlobalValue (GV2), but the matching memory will hold a real
+pointer to an ABI-compatible address (Addr2) inside the main executable.  If we
+tell the LLVM JIT that GV2 is mapped to Addr2 with
+ExecutionEngine::addGlobalMapping(), then the JIT won't need to emit GV2 itself,
+saving both memory and time.  If GV2 is an initialized GlobalVariable, we can
+repeat the above process on its initializer.
+
+
 Optimization: LOAD_GLOBAL compile-time caching
 ----------------------------------------------
 
