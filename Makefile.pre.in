@@ -335,7 +335,6 @@ ifneq (@BUILD_LLVM@, disabled)
 		Python/llvm_compile.o \
 		Util/ConstantMirror.o \
 		Util/DeadGlobalElim.o \
-		Util/DiffConstants.o \
 		Util/EventTimer.o \
 		Util/PyAliasAnalysis.o \
 		Util/PyBytecodeIterator.o \
@@ -445,7 +444,7 @@ coverage:
 ifeq (@BUILD_LLVM@, 1)
 llvm: pyconfig.h
 	-rm -f llvm
-	$(MAKE) -C Util/llvm tools-only ONLY_TOOLS="clang opt llvm-link llvm-dis llvm-as llvm-config"
+	$(MAKE) -C Util/llvm tools-only ONLY_TOOLS="clang opt llvm-link llvm-dis llvm-config"
 else
 llvm: pyconfig.h
 	-touch llvm
@@ -454,8 +453,7 @@ endif
 # Declare some of LLVM's build outputs to depend on LLVM.  We only
 # declare the ones that other files need to depend on.
 $(LLVM_BIN_DIR)/clang $(LLVM_BIN_DIR)/opt $(LLVM_BIN_DIR)/llvm-link \
-	$(LLVM_BIN_DIR)/llvm-dis $(LLVM_BIN_DIR)/llvm-as $(LLVM_CONFIG) \
-	$(LLVM_LIB_PATHS) \
+	$(LLVM_BIN_DIR)/llvm-dis $(LLVM_CONFIG) $(LLVM_LIB_PATHS) \
 	$(LLVM_INC_DIR)/llvm/Intrinsics.gen: llvm
 
 sysconfig: llvm
@@ -756,7 +754,6 @@ PYTHON_HEADERS= \
 		Include/llvm_compile.h \
 		Util/ConstantMirror.h \
 		Util/DeadGlobalElim.h \
-		Util/DiffConstants.h \
 		Util/EventTimer.h \
 		Util/PyBytecodeIterator.h \
 		Util/PyTypeBuilder.h \
@@ -774,24 +771,13 @@ $(LIBRARY_OBJS) $(MODOBJS) Modules/python.o: $(PYTHON_HEADERS)
 
 # LLVM-related generated files
 
-BCLIBRARY_OBJS := Python/llvm_inline_functions.bc \
-	$(OBJECT_OBJS:.o=.bc)
-
-Python/llvm_inline_functions.bc : Python/llvm_inline_functions.c $(PYTHON_HEADERS) $(LLVM_BIN_DIR)/clang
-	$(LLVM_BIN_DIR)/clang -O3 -emit-llvm -c $(CPPFLAGS) $(CFLAGSFORSHARED) -DPy_BUILD_CORE $< -o $@
-	@# Don\'t mark these functions as available, since this is the only place
-	@# we compile them.
+BCLIBRARY_OBJS := Python/llvm_inline_functions.bc
 
 $(BCLIBRARY:.bc=.unopt.bc): $(BCLIBRARY_OBJS) $(LLVM_BIN_DIR)/llvm-link
 	$(LLVM_BIN_DIR)/llvm-link -o $@ $(filter %.bc, $^)
 $(BCLIBRARY): $(BCLIBRARY:.bc=.unopt.bc) $(LLVM_BIN_DIR)/opt
 	$(LLVM_BIN_DIR)/opt -o $@ -O3 $<
 
-
-Util/External2Available: $(srcdir)/Util/External2Available.cc $(LLVM_BIN_DIR)/llvm-config
-	$(CXX) -o $@ $< \
-		`$(LLVM_BIN_DIR)/llvm-config --cxxflags --ldflags --libs \
-		asmparser bitreader bitwriter`
 
 ######################################################################
 
@@ -1261,15 +1247,10 @@ else
 	$(CXX) -c $(LLVM_CXXFLAGS) $(PY_CXXFLAGS) -o $@ $<
 endif
 
-%.bc : %.c $(PYTHON_HEADERS) $(LLVM_BIN_DIR)/clang  Util/External2Available
-	$(LLVM_BIN_DIR)/clang -O3 -emit-llvm -c $(CPPFLAGS) $(CFLAGSFORSHARED) -DPy_BUILD_CORE $< -o $@
-	@# By default, mark all external definitions as available in the library.
-	@# llvm_inline_functions.bc replaces this.
-	Util/External2Available $@ -o $@
 
-# Hack to let us "build" C++ files into bitcode.
-%.bc : %.cc $(LLVM_BIN_DIR)/llvm-as
-	$(LLVM_BIN_DIR)/llvm-as < /dev/null > $@
+%.bc : %.c $(PYTHON_HEADERS) $(LLVM_BIN_DIR)/clang
+	$(LLVM_BIN_DIR)/clang -O3 -emit-llvm -c $(CPPFLAGS) $(CFLAGSFORSHARED) -DPy_BUILD_CORE $< -o $@
+
 
 %.ll : %.bc $(LLVM_BIN_DIR)/llvm-dis
 	$(LLVM_BIN_DIR)/llvm-dis $< -o $@

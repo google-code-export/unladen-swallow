@@ -3643,10 +3643,7 @@ LlvmFunctionBuilder::STORE_MAP()
     Value *dict_type = this->builder_.CreateLoad(
         ObjectTy::ob_type(this->builder_, dict));
     Value *is_exact_dict = this->builder_.CreateICmpEQ(
-        dict_type,
-        this->builder_.CreateBitCast(
-            this->GetGlobalVariableFor((PyObject*)&PyDict_Type),
-            dict_type->getType()));
+        dict_type, this->GetGlobalVariableFor((PyObject*)&PyDict_Type));
     this->Assert(is_exact_dict,
                  "dict argument to STORE_MAP is not exactly a PyDict");
     Function *setitem = this->GetGlobalFunction<
@@ -4120,9 +4117,7 @@ LlvmFunctionBuilder::GetGlobalVariable(void *var_address,
 Constant *
 LlvmFunctionBuilder::GetGlobalVariableFor(PyObject *obj)
 {
-    return ConstantExpr::getBitCast(
-        this->llvm_data_->constant_mirror().GetGlobalVariableFor(obj),
-        PyTypeBuilder<PyObject*>::get(this->context_));
+    return this->llvm_data_->constant_mirror().GetGlobalVariableFor(obj);
 }
 
 // For llvm::Functions, copy callee's calling convention and attributes to

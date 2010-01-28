@@ -84,14 +84,6 @@ public:
     llvm::Constant *GetGlobalForFunctionPointer(void *func_ptr,
                                                 const llvm::StringRef &name);
 
-    // Given an address and its type, returns a Constant representing
-    // the contents of that memory.  Will use the ExecutionEngine to
-    // convert pointers to GlobalValue references, but if a matching
-    // GlobalValue doesn't exist yet will represent the pointer with
-    // inttoptr.
-    llvm::Constant *ConstantFromMemory(const llvm::Type *type,
-                                       const void *memory) const;
-
 private:
     friend struct PyGlobalLlvmData;
 
@@ -99,6 +91,9 @@ private:
     // 'ptr' alive until the GlobalVariable is destoryed.
     template<typename T>
     llvm::Constant *GetGlobalVariableForOwned(T *ptr, PyObject *owner);
+
+    llvm::Constant *ConstantFromMemory(const llvm::Type *type,
+                                       const void *memory) const;
 
     llvm::StructType *ResizeVarObjectType(const llvm::StructType *type,
                                           unsigned dynamic_size) const;
