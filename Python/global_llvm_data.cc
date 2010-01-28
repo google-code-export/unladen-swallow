@@ -36,14 +36,12 @@
 #include "llvm/Transforms/Scalar.h"
 
 using llvm::Constant;
-using llvm::DebugFlag;
 using llvm::ExecutionEngine;
 using llvm::FunctionPassManager;
 using llvm::GlobalVariable;
 using llvm::Module;
 using llvm::StringRef;
 using llvm::dyn_cast;
-using llvm::isCurrentDebugType;
 
 PyGlobalLlvmData *
 PyGlobalLlvmData_New()
@@ -272,6 +270,7 @@ PyGlobalLlvmData::GatherAddresses()
                         dyn_cast<llvm::GlobalValue>(C2)) {
                         if (void *known_addr =
                             this->engine_.getPointerToGlobalIfAvailable(GVal)) {
+                            (void)known_addr;
                             assert(addr == known_addr &&
                                    "Found inconsistent addresses for"
                                    " same global");
