@@ -2919,10 +2919,15 @@ def foo(trigger):
 
     def test_inlining_mult_div_on_ints_and_floats(self):
         # Test our ability to optimize certain binary ops by inlining them
+        # TODO(collinwinter): reduce duplication here.
         foo_float = compile_for_llvm('foo', 'def foo(a, b, c): return (a*b)/c',
                                optimization_level=None)
         foo_int = compile_for_llvm('foo', 'def foo(a, b, c): return (a*b)/c',
                                optimization_level=None)
+        mul_float_int = compile_for_llvm('foo', 'def foo(a, b): return a * b',
+                            optimization_level=None)
+        div_float_int = compile_for_llvm('foo', 'def foo(a, b): return a / b',
+                            optimization_level=None)
 
         self.assertEqual(foo_float(1.0, 2.0, 2.0), 1.0)
         self.assertEqual(foo_int(1, 2, 2), 1)
@@ -2930,33 +2935,59 @@ def foo(trigger):
         # Specialize foo_float and foo_int on their respective types.
         spin_until_hot(foo_float, [1.0, 2.0, 2.0])
         spin_until_hot(foo_int, [1, 2, 2])
+        spin_until_hot(mul_float_int, [1.0, 2])
+        spin_until_hot(div_float_int, [1.0, 2])
         self.assertTrue(foo_float.__code__.__use_llvm__)
         self.assertTrue(foo_int.__code__.__use_llvm__)
-        self.assertFalse("PyNumber_Multiply" in str(foo_int.__code__.co_llvm))
+        self.assertTrue(mul_float_int.__code__.__use_llvm__)
+        self.assertTrue(div_float_int.__code__.__use_llvm__)
+        for func in [foo_float, foo_int, mul_float_int, div_float_int]:
+            self.assertFalse("PyNumber_Multiply" in str(func.__code__.co_llvm))
+            self.assertFalse("PyNumber_Divide" in str(func.__code__.co_llvm))
 
         # Test bailing
+        self.assertRaises(RuntimeError, foo_float, 1, 1.0, 1.0)
+        self.assertRaises(RuntimeError, foo_float, 1.0, 1, 1.0)
         self.assertRaises(RuntimeError, foo_float, 1.0, 1.0, 1)
+        self.assertRaises(RuntimeError, foo_int, 1.0, 1, 1)
+        self.assertRaises(RuntimeError, foo_int, 1, 1.0, 1)
         self.assertRaises(RuntimeError, foo_int, 1, 1, 1.0)
+        self.assertRaises(RuntimeError, mul_float_int, 2.0, 1.0)
+        self.assertRaises(RuntimeError, mul_float_int, 2, 1.0)
+        self.assertRaises(RuntimeError, div_float_int, 2.0, 1.0)
+        self.assertRaises(RuntimeError, div_float_int, 2, 1.0)
 
         # Test bailing, ZeroDivision
         self.assertRaises(RuntimeError, foo_float, 1.0, 1.0, 0.0)
         self.assertRaises(RuntimeError, foo_int, 1, 1, 0)
+        self.assertRaises(RuntimeError, div_float_int, 1.0, 0)
 
-        # Test PyIntType overflow
+        # Test int overflow
         self.assertRaises(RuntimeError, foo_int, sys.maxint, sys.maxint, 1)
+
+        # Floats do not overflow like ints do; this should not bail.
+        self.assertEqual(mul_float_int(float(sys.maxint), sys.maxint),
+                         float(sys.maxint) * sys.maxint)
 
         # Test if bailing still gives a correct result
         sys.setbailerror(False)
 
         self.assertEqual(foo_float(1.0, 1.0, 1), 1.0)
         self.assertEqual(foo_int(1, 1, 1.0), 1.0)
+        self.assertEqual(mul_float_int(2.0, 1), 2.0)
+        self.assertEqual(mul_float_int(2, 1.0), 2.0)
+        self.assertEqual(div_float_int(2.0, 1), 2.0)
+        self.assertEqual(div_float_int(2, 1.0), 2.0)
 
         self.assertRaises(ZeroDivisionError, foo_float, 1.0, 1.0, 0.0)
         self.assertRaises(ZeroDivisionError, foo_int, 1, 1, 0)
+        self.assertRaises(ZeroDivisionError, div_float_int, 1.0, 0)
 
-        # Test if PyIntType overflow gives a correct result
+        # Test if overflow gives a correct result
         self.assertEqual(foo_int(sys.maxint, sys.maxint, 1),
-                        long(sys.maxint)*long(sys.maxint))
+                        long(sys.maxint) * long(sys.maxint))
+        self.assertEqual(mul_float_int(float(sys.maxint), sys.maxint),
+                         float(sys.maxint) * sys.maxint)
 
     def test_inlining_list_getitem(self):
         # Test BINARY_SUBSCR specialization for indexing a list with an int.

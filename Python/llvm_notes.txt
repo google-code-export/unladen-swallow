@@ -317,6 +317,7 @@ Supported operators:
 - List subscription with an integer index.
 - Int/int addition, subtraction, multiplication, division and modulus.
 - Float/float addition, subtraction, multiplication, division and modulus.
+- Float/int multiplication and division.
 
 Instrumentation:
 - The --with-instrumentation build includes measurements for binary operator

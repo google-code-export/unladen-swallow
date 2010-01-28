@@ -511,6 +511,46 @@ _PyLlvm_BinDiv_Float(PyObject *v, PyObject *w)
     return PyFloat_FromDouble(i);
 }
 
+PyObject * __attribute__((always_inline))
+_PyLlvm_BinMul_FloatInt(PyObject *v, PyObject *w)
+{
+    double a, b, i;
+    if (!(PyFloat_CheckExact(v) && PyInt_CheckExact(w))) {
+        return NULL;
+    }
+
+
+    a = PyFloat_AS_DOUBLE(v);
+    b = (double)PyInt_AS_LONG(w);
+    PyFPE_START_PROTECT("multiply", return 0)
+    i = a * b;
+    PyFPE_END_PROTECT(i)
+    return PyFloat_FromDouble(i);
+}
+
+PyObject * __attribute__((always_inline))
+_PyLlvm_BinDiv_FloatInt(PyObject *v, PyObject *w)
+{
+    double a, b, i;
+    if (!(PyFloat_CheckExact(v) && PyInt_CheckExact(w))) {
+        return NULL;
+    }
+    
+    a = PyFloat_AS_DOUBLE(v);
+    b = (double)PyInt_AS_LONG(w);
+
+#ifdef Py_NAN
+    if (b == 0.0) {
+        return NULL;
+    }
+#endif
+    
+    PyFPE_START_PROTECT("divide", return 0)
+    i = a / b;
+    PyFPE_END_PROTECT(i)
+    return PyFloat_FromDouble(i);
+}
+
 /* Work directly on the list data structure */
 PyObject * __attribute__((always_inline))
 _PyLlvm_BinSubscr_List(PyObject *v, PyObject *w)

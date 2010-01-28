@@ -3250,6 +3250,12 @@ public:
                     _PyLlvm_BinMult_Float);
     INLINABLE_BINOP(PyNumber_Divide, PyFloat_Type, PyFloat_Type,
                     _PyLlvm_BinDiv_Float);
+    
+    // Int combined with float
+    INLINABLE_BINOP(PyNumber_Multiply, PyFloat_Type, PyInt_Type,
+                    _PyLlvm_BinMul_FloatInt);
+    INLINABLE_BINOP(PyNumber_Divide, PyFloat_Type, PyInt_Type,
+                    _PyLlvm_BinDiv_FloatInt);
 
     // List specializations
     INLINABLE_BINOP(PyObject_GetItem, PyList_Type, PyInt_Type,
