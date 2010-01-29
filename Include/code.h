@@ -72,7 +72,8 @@ typedef struct PyCodeObject {
 /* The threshold for co_hotness before the code object is considered "hot". */
 #define PY_HOTNESS_THRESHOLD 100000
 
-/* Masks for co_flags above */
+/* Masks for co_flags above.  If you update these, consider updating the
+ * fast_function fast path in eval.cc.  */
 #define CO_OPTIMIZED    (1 << 0)
 #define CO_NEWLOCALS    (1 << 1)
 #define CO_VARARGS      (1 << 2)

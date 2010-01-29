@@ -4493,11 +4493,19 @@ fast_function(PyObject *func, PyObject ***pp_stack, int n, int na, int nk)
 	PyObject *argdefs = PyFunction_GET_DEFAULTS(func);
 	PyObject **d = NULL;
 	int nd = 0;
+	int flags_required, flags_forbidden, flags_mask;
 
 	PCALL(PCALL_FUNCTION);
 	PCALL(PCALL_FAST_FUNCTION);
-	if (argdefs == NULL && co->co_argcount == n && nk==0 &&
-	    co->co_flags == (CO_OPTIMIZED | CO_NEWLOCALS | CO_NOFREE)) {
+
+	/* A code object must have all required flags set.  Any forbidden flag
+	 * set disqualifies the object from using the fast path.  */
+	flags_required = (CO_OPTIMIZED | CO_NEWLOCALS | CO_NOFREE);
+	flags_forbidden = (CO_VARKEYWORDS | CO_VARARGS | CO_GENERATOR);
+	flags_mask = flags_required | flags_forbidden;
+
+	if (argdefs == NULL && co->co_argcount == n && nk == 0 &&
+	    (co->co_flags & flags_mask) == flags_required) {
 		PyFrameObject *f;
 		PyObject *retval = NULL;
 		PyThreadState *tstate = PyThreadState_GET();
