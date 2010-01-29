@@ -3199,9 +3199,6 @@ LlvmFunctionBuilder::DELETE_SUBSCR()
 void
 LlvmFunctionBuilder::GenericBinOp(const char *apifunc)
 {
-    BINOP_INC_STATS(total);
-    BINOP_INC_STATS(omitted);
-
     Value *rhs = this->Pop();
     Value *lhs = this->Pop();
     Function *op =
@@ -3250,7 +3247,7 @@ public:
                     _PyLlvm_BinMult_Float);
     INLINABLE_BINOP(PyNumber_Divide, PyFloat_Type, PyFloat_Type,
                     _PyLlvm_BinDiv_Float);
-    
+
     // Int combined with float
     INLINABLE_BINOP(PyNumber_Multiply, PyFloat_Type, PyInt_Type,
                     _PyLlvm_BinMul_FloatInt);
@@ -3280,8 +3277,6 @@ static llvm::ManagedStatic<OptimizedBinOps> optimized_binops;
 void
 LlvmFunctionBuilder::OptimizedBinOp(const char *apifunc)
 {
-    BINOP_INC_STATS(total);
-
     const PyTypeObject *lhs_type = this->GetTypeFeedback(0);
     const PyTypeObject *rhs_type = this->GetTypeFeedback(1);
     if (lhs_type == NULL || rhs_type == NULL) {
@@ -3312,7 +3307,7 @@ LlvmFunctionBuilder::OptimizedBinOp(const char *apifunc)
     // This strategy of bailing may duplicate the work (once in the inlined
     // version, once again in the eval loop). This is generally (in a Halting
     // Problem kind of way) unsafe, but works since we're dealing with a known
-    // subset of all possible types where we control the semantics of __add__, 
+    // subset of all possible types where we control the semantics of __add__,
     // etc.
     Function *op =
         this->GetGlobalFunction<PyObject*(PyObject*, PyObject*)>(iter->second);
@@ -3330,17 +3325,20 @@ LlvmFunctionBuilder::OptimizedBinOp(const char *apifunc)
     this->Push(result);
 }
 
-#define BINOP_METH(OPCODE, APIFUNC) 	\
-void						            \
-LlvmFunctionBuilder::OPCODE()			\
-{	                                    \
-    this->GenericBinOp(#APIFUNC);		\
+#define BINOP_METH(OPCODE, APIFUNC)     \
+void                                    \
+LlvmFunctionBuilder::OPCODE()           \
+{                                       \
+    BINOP_INC_STATS(total);             \
+    BINOP_INC_STATS(omitted);           \
+    this->GenericBinOp(#APIFUNC);       \
 }
 
 #define BINOP_OPT(OPCODE, APIFUNC)      \
 void                                    \
 LlvmFunctionBuilder::OPCODE()           \
 {                                       \
+    BINOP_INC_STATS(total);             \
     this->OptimizedBinOp(#APIFUNC);     \
 }
 
