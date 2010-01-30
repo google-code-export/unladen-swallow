@@ -314,7 +314,7 @@ indirection/runtime overhead:
 
 
 Supported operators:
-- List subscription with an integer index.
+- List and tuple subscription with an integer index.
 - Int/int addition, subtraction, multiplication, division and modulus.
 - Float/float addition, subtraction, multiplication, division and modulus.
 - Float/int multiplication and division.

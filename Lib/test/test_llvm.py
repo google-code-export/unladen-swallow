@@ -2989,11 +2989,11 @@ def foo(trigger):
         self.assertEqual(mul_float_int(float(sys.maxint), sys.maxint),
                          float(sys.maxint) * sys.maxint)
 
-    def test_inlining_list_getitem(self):
-        # Test BINARY_SUBSCR specialization for indexing a list with an int.
+    def getitem_inlining_test(self, getitem_type):
+        # Test BINARY_SUBSCR specialization for indexing a sequence with an int.
         foo = compile_for_llvm('foo', 'def foo(a, b): return a[b]',
                                optimization_level=None)
-        a = [1]
+        a = getitem_type([1])
         spin_until_hot(foo, [a, 0])
         self.assertTrue(foo.__code__.__use_llvm__)
         self.assertEqual(foo(a, 0), 1)
@@ -3019,6 +3019,12 @@ def foo(trigger):
         self.assertRaises(IndexError, foo, a, True)
         self.assertRaises(IndexError, foo, a, -10)
         self.assertRaises(IndexError, foo, a, 10)
+
+    def test_inlining_list_getitem(self):
+        self.getitem_inlining_test(list)
+
+    def test_inlining_tuple_getitem(self):
+        self.getitem_inlining_test(tuple)
 
     def test_inlining_list_setitem(self):
         # Test STORE_SUBSCR specialization for indexing a list with an int.

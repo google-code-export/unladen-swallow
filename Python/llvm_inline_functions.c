@@ -551,6 +551,29 @@ _PyLlvm_BinDiv_FloatInt(PyObject *v, PyObject *w)
     return PyFloat_FromDouble(i);
 }
 
+/* Work directly on the tuple data structure */
+PyObject * __attribute__((always_inline))
+_PyLlvm_BinSubscr_Tuple(PyObject *v, PyObject *w)
+{
+    Py_ssize_t i;
+    if (!(PyTuple_CheckExact(v) && PyInt_CheckExact(w)))
+        return NULL;
+
+    i = PyInt_AsSsize_t(w);
+
+    if (i < 0) {
+        Py_ssize_t l = Py_SIZE(v);
+        if (l < 0)
+            return NULL;
+        i += l;
+    }
+    if (i < 0 || i >= Py_SIZE(v)) {
+        return NULL;
+    }
+    Py_INCREF(PyTuple_GET_ITEM(v, i));
+    return PyTuple_GET_ITEM(v, i);
+}
+
 /* Work directly on the list data structure */
 PyObject * __attribute__((always_inline))
 _PyLlvm_BinSubscr_List(PyObject *v, PyObject *w)
@@ -570,8 +593,8 @@ _PyLlvm_BinSubscr_List(PyObject *v, PyObject *w)
     if (i < 0 || i >= Py_SIZE(v)) {
         return NULL;
     }
-    Py_INCREF(((PyListObject *)v)->ob_item[i]);
-    return ((PyListObject *)v)->ob_item[i];
+    Py_INCREF(PyList_GET_ITEM(v, i));
+    return PyList_GET_ITEM(v, i);
 }
 
 int __attribute__((always_inline))

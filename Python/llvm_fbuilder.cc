@@ -3257,6 +3257,10 @@ public:
     // List specializations
     INLINABLE_BINOP(PyObject_GetItem, PyList_Type, PyInt_Type,
                     _PyLlvm_BinSubscr_List);
+
+    // Tuple specializations
+    INLINABLE_BINOP(PyObject_GetItem, PyTuple_Type, PyInt_Type,
+                    _PyLlvm_BinSubscr_Tuple);
 #undef INLINABLE_BINOP
     }
 
