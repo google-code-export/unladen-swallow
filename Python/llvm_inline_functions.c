@@ -535,7 +535,7 @@ _PyLlvm_BinDiv_FloatInt(PyObject *v, PyObject *w)
     if (!(PyFloat_CheckExact(v) && PyInt_CheckExact(w))) {
         return NULL;
     }
-    
+
     a = PyFloat_AS_DOUBLE(v);
     b = (double)PyInt_AS_LONG(w);
 
@@ -544,7 +544,7 @@ _PyLlvm_BinDiv_FloatInt(PyObject *v, PyObject *w)
         return NULL;
     }
 #endif
-    
+
     PyFPE_START_PROTECT("divide", return 0)
     i = a / b;
     PyFPE_END_PROTECT(i)
