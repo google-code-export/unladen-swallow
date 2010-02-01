@@ -77,10 +77,9 @@ compare_hotness(const PyCodeObject *first, const PyCodeObject *second)
 
 HotnessTracker::~HotnessTracker()
 {
-	errs() << "\nCode objects deemed hot (n=" << this->hot_code_.size()
-	       << ")\n";
-
-	errs() << "Function -> hotness metric:\n";
+	errs() << "\nCode objects deemed hot:\n";
+	errs() << "N: " << this->hot_code_.size() << "\n";
+	errs() << "Function -> hotness score:\n";
 	std::vector<PyCodeObject*> to_sort(this->hot_code_.begin(),
 					   this->hot_code_.end());
 	std::sort(to_sort.begin(), to_sort.end(), compare_hotness);
@@ -173,7 +172,7 @@ public:
 
 	~BailCountStats() {
 		errs() << "\nBailed to the interpreter " << this->total_
-		       << " times\n";
+		       << " times:\n";
 		errs() << "TRACE_ON_ENTRY: " << this->trace_on_entry_ << "\n";
 		errs() << "LINE_TRACE: " << this->line_trace_ << "\n";
 		errs() << "BACKEDGE_TRACE:" << this->backedge_trace_ << "\n";
