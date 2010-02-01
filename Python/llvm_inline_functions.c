@@ -645,9 +645,12 @@ PyLongObject *_dummy_LongObject;
 PyFloatObject *_dummy_FloatObject;
 /* PyComplexObject, */
 PyComplexObject *_dummy_ComplexObject;
+/* PyFunctionObject, */
+PyFunctionObject *_dummy_PyFunctionObject;
+/* PyMethodObject, */
+PyMethodObject *_dummy_PyMethodObject;
 /* and PyVarObject. */
 PyVarObject *_dummy_PyVarObject;
-
 
 /* Expose PyEllipsis to ConstantMirror. */
 PyObject* objectEllipsis() { return Py_Ellipsis; }

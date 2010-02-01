@@ -413,6 +413,44 @@ public:
     DEFINE_FIELD(PyCodeObject, co_assumed_builtins)
 };
 
+template<> class TypeBuilder<PyFunctionObject, false> {
+public:
+    static const StructType *get(llvm::LLVMContext &context) {
+        return cast<StructType>(
+            PyGlobalLlvmData::Get()->module()->getTypeByName(
+                // Clang's name for the PyFunctionObject struct.
+                "struct.PyFunctionObject"));
+    }
+
+    DEFINE_OBJECT_HEAD_FIELDS(PyFunctionObject)
+    DEFINE_FIELD(PyFunctionObject, func_code)
+    DEFINE_FIELD(PyFunctionObject, func_globals)
+    DEFINE_FIELD(PyFunctionObject, func_defaults)
+    DEFINE_FIELD(PyFunctionObject, func_closure)
+    DEFINE_FIELD(PyFunctionObject, func_doc)
+    DEFINE_FIELD(PyFunctionObject, func_name)
+    DEFINE_FIELD(PyFunctionObject, func_dict)
+    DEFINE_FIELD(PyFunctionObject, func_weakreflist)
+    DEFINE_FIELD(PyFunctionObject, func_module)
+};
+
+template<> class TypeBuilder<PyMethodObject, false> {
+public:
+    static const StructType *get(llvm::LLVMContext &context) {
+        return cast<StructType>(
+            PyGlobalLlvmData::Get()->module()->getTypeByName(
+                // Clang's name for the PyFunctionObject struct.
+                "struct.PyMethodObject"));
+    }
+
+    DEFINE_OBJECT_HEAD_FIELDS(PyMethodObject)
+    DEFINE_FIELD(PyMethodObject, im_func)
+    DEFINE_FIELD(PyMethodObject, im_self)
+    DEFINE_FIELD(PyMethodObject, im_class)
+    DEFINE_FIELD(PyMethodObject, im_weakreflist)
+};
+
+
 template<> class TypeBuilder<PyTryBlock, false> {
 public:
     static const StructType *get(llvm::LLVMContext &context) {
@@ -598,6 +636,8 @@ typedef PyTypeBuilder<PyTupleObject> TupleTy;
 typedef PyTypeBuilder<PyListObject> ListTy;
 typedef PyTypeBuilder<PyTypeObject> TypeTy;
 typedef PyTypeBuilder<PyCodeObject> CodeTy;
+typedef PyTypeBuilder<PyFunctionObject> FunctionTy;
+typedef PyTypeBuilder<PyMethodObject> MethodTy;
 typedef PyTypeBuilder<PyFrameObject> FrameTy;
 typedef PyTypeBuilder<PyThreadState> ThreadStateTy;
 typedef PyTypeBuilder<PyCFunctionObject> CFunctionTy;
