@@ -318,6 +318,7 @@ Supported operators:
 - Int/int addition, subtraction, multiplication, division and modulus.
 - Float/float addition, subtraction, multiplication, division and modulus.
 - Float/int multiplication and division.
+- String and unicode formatting.
 
 Instrumentation:
 - The --with-instrumentation build includes measurements for binary operator

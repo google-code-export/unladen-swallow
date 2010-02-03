@@ -2827,6 +2827,33 @@ def foo(trigger):
         # same function, just with a different invocant.
         self.assertEqual(foo("b"), "cbd")
 
+    def _string_formatting_specialization_test(self, good_type, bail_type):
+        # If we specialize on 8-bit strings, Unicode will bail, and vice-versa.
+        good_string = good_type("ab%sd")
+        bail_string = bail_type("ab%sd")
+
+        foo = compile_for_llvm("foo", "def foo(a, b): return a % b",
+                               optimization_level=None)
+        spin_until_hot(foo, [good_string, 5])
+        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertEquals(foo(good_string, 5), "ab5d")
+        self.assertEquals(type(foo(good_string, 5)), good_type)
+
+        # Test guard conditions.
+        self.assertRaises(RuntimeError, foo, 5, 2)
+        self.assertRaises(RuntimeError, foo, bail_string, "c")
+
+        sys.setbailerror(False)
+        self.assertEquals(foo(5, 2), 1)
+        self.assertEquals(foo(bail_string, "c"), bail_type("abcd"))
+        self.assertEquals(type(foo(bail_string, "c")), bail_type)
+
+    def test_str_formatting_specialization(self):
+        self._string_formatting_specialization_test(str, unicode)
+
+    def test_unicode_formatting_specialization(self):
+        self._string_formatting_specialization_test(unicode, str)
+
     def test_inconsistent_binop_training(self):
         # Force some polymorphism into this function, then make sure we don't
         # do any inlining of multiplication.

@@ -551,6 +551,22 @@ _PyLlvm_BinDiv_FloatInt(PyObject *v, PyObject *w)
     return PyFloat_FromDouble(i);
 }
 
+PyObject * __attribute__((always_inline))
+_PyLlvm_BinMod_Str(PyObject *format, PyObject *args)
+{
+    if (!PyString_Check(format))
+        return NULL;
+    return PyString_Format(format, args);
+}
+
+PyObject * __attribute__((always_inline))
+_PyLlvm_BinMod_Unicode(PyObject *format, PyObject *args)
+{
+    if (!PyUnicode_Check(format))
+        return NULL;
+    return PyUnicode_Format(format, args);
+}
+
 /* Work directly on the tuple data structure */
 PyObject * __attribute__((always_inline))
 _PyLlvm_BinSubscr_Tuple(PyObject *v, PyObject *w)

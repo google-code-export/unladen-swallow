@@ -202,6 +202,9 @@ struct InlineOperatorEntry {
     const PyTypeObject *rhs_type;
 };
 
+// Indicate that we don't care about the specialization argument's type.
+static const PyTypeObject *Wildcard = NULL;
+
 }  // anonymous namespace
 
 
@@ -3216,7 +3219,6 @@ class OptimizedBinOps {
 public:
     // Map default binary operations and type information to optimized versions.
     typedef llvm::DenseMap<InlineOperatorEntry, const char*> InlinableBinopMap;
-    typedef InlinableBinopMap::const_iterator const_iterator;
 
     OptimizedBinOps() {
 #define INLINABLE_BINOP(OP, LHS, RHS, OPT) { \
@@ -3261,19 +3263,31 @@ public:
     // Tuple specializations
     INLINABLE_BINOP(PyObject_GetItem, PyTuple_Type, PyInt_Type,
                     _PyLlvm_BinSubscr_Tuple);
+
+    // String specializations
+    INLINABLE_BINOP(PyNumber_Remainder, PyString_Type, *Wildcard,
+                    _PyLlvm_BinMod_Str);
+    INLINABLE_BINOP(PyNumber_Remainder, PyUnicode_Type, *Wildcard,
+                    _PyLlvm_BinMod_Unicode);
 #undef INLINABLE_BINOP
     }
 
-    const_iterator find(InlinableBinopMap::key_type key) const {
-        return this->optimized_operations_.find(key);
-    }
+    const char *Find(const char *binop, const PyTypeObject *lhs,
+                     const PyTypeObject *rhs) const {
+        InlineOperatorEntry key;
+        key.binop = binop;
+        key.lhs_type = lhs;
+        key.rhs_type = rhs;
 
-    const_iterator end() const {
-        return this->optimized_operations_.end();
+        const_iterator iter = this->optimized_operations_.find(key);
+        if (iter == this->optimized_operations_.end())
+            return NULL;
+        return iter->second;
     }
 
 private:
     InlinableBinopMap optimized_operations_;
+    typedef InlinableBinopMap::const_iterator const_iterator;
 };
 
 static llvm::ManagedStatic<OptimizedBinOps> optimized_binops;
@@ -3289,16 +3303,16 @@ LlvmFunctionBuilder::OptimizedBinOp(const char *apifunc)
         return;
     }
 
-    InlineOperatorEntry e;
-    e.binop = apifunc;
-    e.lhs_type = lhs_type;
-    e.rhs_type = rhs_type;
-
-    OptimizedBinOps::const_iterator iter = optimized_binops->find(e);
-    if (iter == optimized_binops->end()) {
-        BINOP_INC_STATS(unpredictable);
-        this->GenericBinOp(apifunc);
-        return;
+    // We're always specializing the receiver, so don't check the lhs for
+    // wildcards.
+    const char *name = optimized_binops->Find(apifunc, lhs_type, rhs_type);
+    if (name == NULL) {
+        name = optimized_binops->Find(apifunc, lhs_type, Wildcard);
+        if (name == NULL) {
+            BINOP_INC_STATS(unpredictable);
+            this->GenericBinOp(apifunc);
+            return;
+        }
     }
 
     BINOP_INC_STATS(optimized);
@@ -3314,7 +3328,7 @@ LlvmFunctionBuilder::OptimizedBinOp(const char *apifunc)
     // subset of all possible types where we control the semantics of __add__,
     // etc.
     Function *op =
-        this->GetGlobalFunction<PyObject*(PyObject*, PyObject*)>(iter->second);
+        this->GetGlobalFunction<PyObject*(PyObject*, PyObject*)>(name);
     Value *result = this->CreateCall(op, lhs, rhs, "binop_result");
     this->builder_.CreateCondBr(this->IsNull(result), bailpoint, success);
 
