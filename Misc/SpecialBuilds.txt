@@ -25,6 +25,7 @@ collected:
 - Stats on how well LLVM was able to optimize conditional branches.
 - Stats on how long LLVM-global gc took and how many globals it collected.
 - Stats on how well the JIT was able to specialize/inline binary operators.
+- How many feedback maps were created.
 
 This data will be printed to stderr at interpreter-shutdown.
 

@@ -54,6 +54,24 @@ _PyObject_Call(PyObject *func, PyObject *arg, PyObject *kw)
 
 
 #ifdef Py_WITH_INSTRUMENTATION
+class FeedbackMapCounter {
+public:
+	~FeedbackMapCounter() {
+		errs() << "\nFeedback maps created:\n";
+		errs() << "N: " << this->counter_ << "\n";
+	}
+
+	void IncCounter() {
+		this->counter_++;
+	}
+
+private:
+	unsigned counter_;
+};
+
+static llvm::ManagedStatic<FeedbackMapCounter> feedback_map_counter;
+
+
 class HotnessTracker {
 	// llvm::DenseSet or llvm::SmallPtrSet may be better, but as of this
 	// writing, they don't seem to work with std::vector.
@@ -1099,6 +1117,9 @@ PyEval_EvalFrame(PyFrameObject *f)
 	// we will not accidentally try to record feedback without initializing
 	// co_runtime_feedback.
 	if (rec_feedback && co->co_runtime_feedback == NULL) {
+#if Py_WITH_INSTRUMENTATION
+		feedback_map_counter->IncCounter();
+#endif
 		co->co_runtime_feedback = PyFeedbackMap_New();
 	}
 #endif  /* WITH_LLVM */

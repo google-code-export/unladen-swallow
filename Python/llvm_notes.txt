@@ -50,6 +50,10 @@ tracing: if they detect that tracing has been turned on, they immediately
 bail to the interpreter. Once tracing is disabled, though, it's perfectly safe
 to start using the machine code again.
 
+Instrumentation:
+- If configured with --with-instrumentation, the system will keep track of how
+  many feedback maps were created. This is useful for tracking memory usage.
+
 
 Hotness model: finding critical functions
 -----------------------------------------
