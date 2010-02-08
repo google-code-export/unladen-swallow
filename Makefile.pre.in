@@ -794,8 +794,12 @@ AllUnitTests: $(srcdir)/Unittests/*Test.cc $(srcdir)/Unittests/pytest_main.cc \
 	$(CXX) $(CPPFLAGS) -I$(srcdir)/Util/googletest/include -o $@ $^ \
 		-L. $(LDFLAGS) `$(RUNSHARED) ./$(BUILDPYTHON) ./python-config --cxxflags --ldflags --libs`
 
+ifneq (@BUILD_LLVM@, disabled)
 unittest: AllUnitTests
 	$(RUNSHARED) ./AllUnitTests
+else
+unittest:
+endif
 
 # Test the interpreter (twice, once without .pyc files, once with)
 # In the past, we've had problems where bugs in the marshalling or
