@@ -63,7 +63,6 @@ Options and arguments (and corresponding environment variables):\n\
 -c cmd : program passed in as string (terminates option list)\n\
 -d     : debug output from parser; also PYTHONDEBUG=x\n\
 -E     : ignore PYTHON* environment variables (such as PYTHONPATH)\n\
--g#    : how much debugging info to generate; also PYTHONDEBUGINFO=x\n\
 -h     : print this help message and exit (also --help)\n\
 -i     : inspect interactively after running script; forces a prompt even\n\
 -j arg : control JIT compilation: -j whenhot (default), -j never, -j always.\n\
@@ -323,23 +322,6 @@ Py_Main(int argc, char **argv)
 			Py_FatalError("-R requires a debug build of Python");
 #endif
 			break;
-
-		case 'g': {
-			char *first_invalid;
-			if (_PyOS_optarg[0] == '\0') {
-				/* \0 indicates no argument was found. */
-				Py_GenerateDebugInfoFlag = 1;
-				break;
-			}
-			Py_GenerateDebugInfoFlag =
-				strtol(_PyOS_optarg, &first_invalid, 10);
-			if (*first_invalid == '\0')
-				break;
-			fprintf(stderr,
-				"-g option should be an integer\n");
-			return usage(2, argv[0]);
-			/* NOTREACHED */
-		}
 
 		case 'Q':
 			if (strcmp(_PyOS_optarg, "old") == 0) {

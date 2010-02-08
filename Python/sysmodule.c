@@ -1243,7 +1243,6 @@ static PyStructSequence_Field flags_fields[] = {
 	{"inspect",		"-i"},
 	{"interactive",		"-i"},
 	{"optimize",		"-O or -OO"},
-	{"generate_debug_info",	"-g"},
 	{"dont_write_bytecode",	"-B"},
 	{"no_user_site",	"-s"},
 	{"no_site",		"-S"},
@@ -1266,9 +1265,9 @@ static PyStructSequence_Desc flags_desc = {
 	flags__doc__,	/* doc */
 	flags_fields,	/* fields */
 #ifdef RISCOS
-	18
-#else
 	17
+#else
+	16
 #endif
 };
 
@@ -1293,7 +1292,6 @@ make_flags(void)
 	SetFlag(Py_InspectFlag);
 	SetFlag(Py_InteractiveFlag);
 	SetFlag(Py_OptimizeFlag);
-	SetFlag(Py_GenerateDebugInfoFlag);
 	SetFlag(Py_DontWriteBytecodeFlag);
 	SetFlag(Py_NoUserSiteDirectory);
 	SetFlag(Py_NoSiteFlag);

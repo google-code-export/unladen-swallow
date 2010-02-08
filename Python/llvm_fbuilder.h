@@ -695,7 +695,7 @@ private:
     llvm::Function *const function_;
     BuilderT builder_;
     const bool is_generator_;
-    llvm::DIFactory *const debug_info_;
+    llvm::DIFactory &debug_info_;
     const llvm::DICompileUnit debug_compile_unit_;
     const llvm::DISubprogram debug_subprogram_;
 

@@ -114,9 +114,7 @@ PyGlobalLlvmData::PyGlobalLlvmData()
     }
     this->module_ = this->module_provider_->getModule();
 
-    if (Py_GenerateDebugInfoFlag) {
-      this->debug_info_.reset(new llvm::DIFactory(*module_));
-    }
+    this->debug_info_.reset(new llvm::DIFactory(*module_));
 
     llvm::InitializeNativeTarget();
     engine_ = llvm::ExecutionEngine::create(

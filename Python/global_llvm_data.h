@@ -61,8 +61,8 @@ public:
 
     PyConstantMirror &constant_mirror() { return *this->constant_mirror_; }
 
-    /// This will be NULL if debug info generation is turned off.
-    llvm::DIFactory *DebugInfo() { return this->debug_info_.get(); }
+    /// Can be used to add debug info to LLVM functions.
+    llvm::DIFactory &DebugInfo() { return *this->debug_info_; }
 
     // Runs globaldce to remove unreferenced global variables.
     // Globals still used in machine code must be referenced from IR or this

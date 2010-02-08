@@ -320,8 +320,7 @@ LlvmFunctionBuilder::LlvmFunctionBuilder(
                    llvm_data_->getExecutionEngine()->getTargetData())),
       is_generator_(code_object->co_flags & CO_GENERATOR),
       debug_info_(llvm_data->DebugInfo()),
-      debug_compile_unit_(this->debug_info_ == NULL ? llvm::DICompileUnit() :
-                          this->debug_info_->CreateCompileUnit(
+      debug_compile_unit_(this->debug_info_.CreateCompileUnit(
                               DW_LANG_Python,
                               PyString_AS_STRING(code_object->co_filename),
                               "",  // Directory
@@ -329,8 +328,7 @@ LlvmFunctionBuilder::LlvmFunctionBuilder(
                               false, // Not main.
                               false, // Not optimized
                               "")),
-      debug_subprogram_(this->debug_info_ == NULL ? llvm::DISubprogram() :
-                        this->debug_info_->CreateSubprogram(
+      debug_subprogram_(this->debug_info_.CreateSubprogram(
                             debug_compile_unit_,
                             PyString_AS_STRING(code_object->co_name),
                             PyString_AS_STRING(code_object->co_name),
@@ -1248,12 +1246,10 @@ LlvmFunctionBuilder::PropagateException()
 void
 LlvmFunctionBuilder::SetDebugStopPoint(int line_number)
 {
-    if (this->debug_info_ != NULL) {
-        this->builder_.SetCurrentDebugLocation(
-            this->debug_info_->CreateLocation(line_number, 0,
-                                              this->debug_subprogram_,
-                                              llvm::DILocation(NULL)).getNode());
-    }
+    this->builder_.SetCurrentDebugLocation(
+        this->debug_info_.CreateLocation(line_number, 0,
+                                         this->debug_subprogram_,
+                                         llvm::DILocation(NULL)).getNode());
 }
 
 const PyTypeObject *
