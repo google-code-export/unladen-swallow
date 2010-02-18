@@ -180,15 +180,33 @@ public:
 
 static llvm::ManagedStatic<AccessAttrStats> access_attr_stats;
 
+class ImportNameStats {
+public:
+    ~ImportNameStats() {
+        errs() << "\nIMPORT_NAME opcodes:\n";
+        errs() << "Total: " << this->total << "\n";
+        errs() << "Optimized: " << this->optimized << "\n";
+    }
+
+    // Total number of IMPORT_NAME opcodes compiled.
+    unsigned total;
+    // Number of imports successfully optimized.
+    unsigned optimized;
+};
+
+static llvm::ManagedStatic<ImportNameStats> import_name_stats;
+
 #define CF_INC_STATS(field) call_function_stats->field++
 #define COND_BRANCH_INC_STATS(field) cond_branch_stats->field++
 #define BINOP_INC_STATS(field) binary_operator_stats->field++
 #define ACCESS_ATTR_INC_STATS(field) access_attr_stats->field++
+#define IMPORT_NAME_STATS(field) import_name_stats->field++
 #else
 #define CF_INC_STATS(field)
 #define COND_BRANCH_INC_STATS(field)
 #define BINOP_INC_STATS(field)
 #define ACCESS_ATTR_INC_STATS(field)
+#define IMPORT_NAME_STATS(field)
 #endif  /* Py_WITH_INSTRUMENTATION */
 
 namespace {
@@ -2395,6 +2413,8 @@ LlvmFunctionBuilder::CALL_FUNCTION_VAR_KW(int oparg)
 void
 LlvmFunctionBuilder::IMPORT_NAME()
 {
+    IMPORT_NAME_STATS(total);
+
     Value *mod_name = this->Pop();
     Value *names = this->Pop();
     Value *level = this->Pop();
