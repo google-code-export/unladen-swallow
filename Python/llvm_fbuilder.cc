@@ -342,7 +342,7 @@ LlvmFunctionBuilder::LlvmFunctionBuilder(
                               DW_LANG_Python,
                               PyString_AS_STRING(code_object->co_filename),
                               "",  // Directory
-                              "Unladen Swallow 2.6.1",
+                              "Unladen Swallow " PY_VERSION,
                               false, // Not main.
                               false, // Not optimized
                               "")),
