@@ -65,10 +65,10 @@ Options and arguments (and corresponding environment variables):\n\
 -E     : ignore PYTHON* environment variables (such as PYTHONPATH)\n\
 -h     : print this help message and exit (also --help)\n\
 -i     : inspect interactively after running script; forces a prompt even\n\
--j arg : control JIT compilation: -j whenhot (default), -j never, -j always.\n\
+         if stdin does not appear to be a terminal; also PYTHONINSPECT=x\n\
 ";
 static char *usage_2 = "\
-         if stdin does not appear to be a terminal; also PYTHONINSPECT=x\n\
+-j arg : control JIT compilation: -j whenhot (default), -j never, -j always.\n\
 -m mod : run library module as a script (terminates option list)\n\
 -O#    : optimize generated code; also PYTHONOPTIMIZE=x\n\
 -Q arg : division options: -Qold (default), -Qwarn, -Qwarnall, -Qnew\n\
