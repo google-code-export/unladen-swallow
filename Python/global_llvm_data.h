@@ -42,7 +42,7 @@ public:
     PyGlobalLlvmData();
     ~PyGlobalLlvmData();
 
-    // Optimize f to a particular level. Currently, levels from 0 to 3
+    // Optimize f to a particular level. Currently, levels from 0 to 2
     // are valid.
     //
     // Returns 0 on success or -1 on failure (if level is out of
@@ -62,8 +62,8 @@ public:
 
     PyConstantMirror &constant_mirror() { return *this->constant_mirror_; }
 
-    /// This will be NULL if debug info generation is turned off.
-    llvm::DIFactory *DebugInfo() { return this->debug_info_.get(); }
+    /// Can be used to add debug info to LLVM functions.
+    llvm::DIFactory &DebugInfo() { return *this->debug_info_; }
 
     // Runs globaldce to remove unreferenced global variables.
     // Globals still used in machine code must be referenced from IR or this

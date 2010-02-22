@@ -92,7 +92,6 @@ int Py_IgnoreEnvironmentFlag; /* e.g. PYTHONPATH, PYTHONHOME */
 int _Py_QnewFlag = 0;
 int Py_NoUserSiteDirectory = 0; /* for -s and site.py */
 int Py_ShowRefcountFlag = 0; /* For -R */
-int Py_GenerateDebugInfoFlag = 0; /* For -g */
 #ifdef WITH_LLVM
 Py_JitOpts Py_JitControl = PY_JIT_WHENHOT; /* For -j */
 #else
@@ -199,6 +198,7 @@ Py_InitializeEx(int install_sigs)
 	char ibuf[128];
 	char buf[128];
 #endif
+	Py_JitOpts old_jit_control;
 	extern void _Py_ReadyTypes(void);
 
 	if (initialized)
@@ -207,9 +207,6 @@ Py_InitializeEx(int install_sigs)
 
 	if ((p = Py_GETENV("PYTHONDEBUG")) && *p != '\0')
 		Py_DebugFlag = add_flag(Py_DebugFlag, p);
-	if ((p = Py_GETENV("PYTHONDEBUGINFO")) && *p != '\0')
-		Py_GenerateDebugInfoFlag =
-			add_flag(Py_GenerateDebugInfoFlag, p);
 	if ((p = Py_GETENV("PYTHONVERBOSE")) && *p != '\0')
 		Py_VerboseFlag = add_flag(Py_VerboseFlag, p);
 	if ((p = Py_GETENV("PYTHONOPTIMIZE")) && *p != '\0')
@@ -304,6 +301,10 @@ Py_InitializeEx(int install_sigs)
 		Py_XDECREF(warnings_module);
 	}
 
+	/* We disable JIT compilation during startup to improve startup time. */
+ 	old_jit_control = Py_JitControl;
+	Py_JitControl = PY_JIT_NEVER;
+
 	initmain(); /* Module __main__ */
 	if (!Py_NoSiteFlag)
 		initsite(); /* Module site */
@@ -363,6 +364,9 @@ Py_InitializeEx(int install_sigs)
 		}
 	}
 #endif
+
+	/* Restore JIT compilation now that we've got site and encodings. */
+	Py_JitControl = old_jit_control;
 
 #ifdef MS_WINDOWS
 	if (!overridden) {

@@ -34,7 +34,7 @@ class PyTypeBuilder : public llvm::TypeBuilder<T, false> {};
 //       PyTypeBuilder<PySomethingType>::get(context),
 //       offsetof(PySomethingType, field));
 // It will only work if PySomethingType is a POD type.
-PyAPI_FUNC(unsigned int)
+unsigned int
 _PyTypeBuilder_GetFieldIndexFromOffset(
     const llvm::StructType *type, size_t offset);
 
@@ -413,6 +413,44 @@ public:
     DEFINE_FIELD(PyCodeObject, co_assumed_builtins)
 };
 
+template<> class TypeBuilder<PyFunctionObject, false> {
+public:
+    static const StructType *get(llvm::LLVMContext &context) {
+        return cast<StructType>(
+            PyGlobalLlvmData::Get()->module()->getTypeByName(
+                // Clang's name for the PyFunctionObject struct.
+                "struct.PyFunctionObject"));
+    }
+
+    DEFINE_OBJECT_HEAD_FIELDS(PyFunctionObject)
+    DEFINE_FIELD(PyFunctionObject, func_code)
+    DEFINE_FIELD(PyFunctionObject, func_globals)
+    DEFINE_FIELD(PyFunctionObject, func_defaults)
+    DEFINE_FIELD(PyFunctionObject, func_closure)
+    DEFINE_FIELD(PyFunctionObject, func_doc)
+    DEFINE_FIELD(PyFunctionObject, func_name)
+    DEFINE_FIELD(PyFunctionObject, func_dict)
+    DEFINE_FIELD(PyFunctionObject, func_weakreflist)
+    DEFINE_FIELD(PyFunctionObject, func_module)
+};
+
+template<> class TypeBuilder<PyMethodObject, false> {
+public:
+    static const StructType *get(llvm::LLVMContext &context) {
+        return cast<StructType>(
+            PyGlobalLlvmData::Get()->module()->getTypeByName(
+                // Clang's name for the PyFunctionObject struct.
+                "struct.PyMethodObject"));
+    }
+
+    DEFINE_OBJECT_HEAD_FIELDS(PyMethodObject)
+    DEFINE_FIELD(PyMethodObject, im_func)
+    DEFINE_FIELD(PyMethodObject, im_self)
+    DEFINE_FIELD(PyMethodObject, im_class)
+    DEFINE_FIELD(PyMethodObject, im_weakreflist)
+};
+
+
 template<> class TypeBuilder<PyTryBlock, false> {
 public:
     static const StructType *get(llvm::LLVMContext &context) {
@@ -455,6 +493,7 @@ public:
     DEFINE_FIELD(PyFrameObject, f_throwflag)
     DEFINE_FIELD(PyFrameObject, f_iblock)
     DEFINE_FIELD(PyFrameObject, f_bailed_from_llvm)
+    DEFINE_FIELD(PyFrameObject, f_guard_type)
     DEFINE_FIELD(PyFrameObject, f_blockstack)
     DEFINE_FIELD(PyFrameObject, f_localsplus)
 };
@@ -597,6 +636,8 @@ typedef PyTypeBuilder<PyTupleObject> TupleTy;
 typedef PyTypeBuilder<PyListObject> ListTy;
 typedef PyTypeBuilder<PyTypeObject> TypeTy;
 typedef PyTypeBuilder<PyCodeObject> CodeTy;
+typedef PyTypeBuilder<PyFunctionObject> FunctionTy;
+typedef PyTypeBuilder<PyMethodObject> MethodTy;
 typedef PyTypeBuilder<PyFrameObject> FrameTy;
 typedef PyTypeBuilder<PyThreadState> ThreadStateTy;
 typedef PyTypeBuilder<PyCFunctionObject> CFunctionTy;

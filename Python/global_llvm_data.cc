@@ -96,7 +96,7 @@ find_stdlib_bc()
 }
 
 PyGlobalLlvmData::PyGlobalLlvmData()
-    : optimizations_(4, (FunctionPassManager*)NULL),
+    : optimizations_(3, (FunctionPassManager*)NULL),
       compile_thread_(this), num_globals_after_last_gc_(0)
 {
     std::string error;
@@ -108,9 +108,7 @@ PyGlobalLlvmData::PyGlobalLlvmData()
     }
     this->module_ = this->module_provider_->getModule();
 
-    if (Py_GenerateDebugInfoFlag) {
-      this->debug_info_.reset(new llvm::DIFactory(*module_));
-    }
+    this->debug_info_.reset(new llvm::DIFactory(*module_));
 
     llvm::InitializeNativeTarget();
     engine_ = llvm::ExecutionEngine::create(
@@ -190,8 +188,7 @@ PyGlobalLlvmData::InitializeOptimizations()
     quick->add(llvm::createCFGSimplificationPass());
     quick->add(llvm::createVerifierPass());
 
-    // This is the default optimization used by the JIT. Higher levels
-    // are for experimentation.
+    // This is the default optimization used by the JIT.
     FunctionPassManager *O2 =
         new FunctionPassManager(this->module_provider_);
     optimizations_[2] = O2;
@@ -212,74 +209,6 @@ PyGlobalLlvmData::InitializeOptimizations()
     O2->add(llvm::createAggressiveDCEPass());
     O2->add(llvm::createCFGSimplificationPass());
     O2->add(llvm::createVerifierPass());
-
-
-    // This is the list used by LLVM's opt tool's -O3 option.
-    FunctionPassManager *optO3 =
-        new FunctionPassManager(this->module_provider_);
-    optimizations_[3] = optO3;
-    optO3->add(new llvm::TargetData(*engine_->getTargetData()));
-
-    using namespace llvm;
-    // Commented lines are SCC or ModulePasses, which means they can't
-    // be added to our FunctionPassManager.  TODO: Figure out how to
-    // run them on a function at a time anyway.
-    optO3->add(createCFGSimplificationPass());
-    optO3->add(createScalarReplAggregatesPass());
-    optO3->add(createInstructionCombiningPass());
-    //optO3->add(createRaiseAllocationsPass());   // call %malloc -> malloc inst
-    optO3->add(createCFGSimplificationPass());       // Clean up disgusting code
-    optO3->add(createPromoteMemoryToRegisterPass()); // Kill useless allocas
-    //optO3->add(createGlobalOptimizerPass());       // OptLevel out global vars
-    //optO3->add(createGlobalDCEPass());          // Remove unused fns and globs
-    //optO3->add(createIPConstantPropagationPass()); // IP Constant Propagation
-    //optO3->add(createDeadArgEliminationPass());   // Dead argument elimination
-    optO3->add(createInstructionCombiningPass());   // Clean up after IPCP & DAE
-    optO3->add(createCFGSimplificationPass());      // Clean up after IPCP & DAE
-    //optO3->add(createPruneEHPass());               // Remove dead EH info
-    //optO3->add(createFunctionAttrsPass());         // Deduce function attrs
-    optO3->add(PyCreateSingleFunctionInliningPass(this->module_provider_));
-    //optO3->add(createFunctionInliningPass());      // Inline small functions
-    //optO3->add(createArgumentPromotionPass());  // Scalarize uninlined fn args
-    optO3->add(createSimplifyLibCallsPass());    // Library Call Optimizations
-    optO3->add(createInstructionCombiningPass());  // Cleanup for scalarrepl.
-    optO3->add(createJumpThreadingPass());         // Thread jumps.
-    optO3->add(createCFGSimplificationPass());     // Merge & remove BBs
-    optO3->add(createScalarReplAggregatesPass());  // Break up aggregate allocas
-    optO3->add(createInstructionCombiningPass());  // Combine silly seq's
-    optO3->add(createTailCallEliminationPass());   // Eliminate tail calls
-    optO3->add(createCFGSimplificationPass());     // Merge & remove BBs
-    optO3->add(createReassociatePass());           // Reassociate expressions
-    optO3->add(createLoopRotatePass());            // Rotate Loop
-    optO3->add(CreatePyAliasAnalysis(*this));
-    optO3->add(createLICMPass());                  // Hoist loop invariants
-    optO3->add(createLoopUnswitchPass());
-    optO3->add(createLoopIndexSplitPass());        // Split loop index
-    optO3->add(createInstructionCombiningPass());
-    optO3->add(createIndVarSimplifyPass());        // Canonicalize indvars
-    optO3->add(createLoopDeletionPass());          // Delete dead loops
-    optO3->add(createLoopUnrollPass());          // Unroll small loops
-    optO3->add(createInstructionCombiningPass()); // Clean up after the unroller
-    optO3->add(CreatePyAliasAnalysis(*this));
-    optO3->add(createGVNPass());                   // Remove redundancies
-    optO3->add(CreatePyAliasAnalysis(*this));
-    optO3->add(createMemCpyOptPass());            // Remove memcpy / form memset
-    optO3->add(createSCCPPass());                  // Constant prop with SCCP
-
-    // Run instcombine after redundancy elimination to exploit opportunities
-    // opened up by them.
-    optO3->add(createInstructionCombiningPass());
-    optO3->add(createJumpThreadingPass());         // Thread jumps.
-    optO3->add(CreatePyAliasAnalysis(*this));
-    optO3->add(createDeadStoreEliminationPass());  // Delete dead stores
-    optO3->add(createAggressiveDCEPass());   // Delete dead instructions
-    optO3->add(createCFGSimplificationPass());     // Merge & remove BBs
-
-    //optO3->add(createStripDeadPrototypesPass()); // Get rid of dead prototypes
-    //optO3->add(createDeadTypeEliminationPass());   // Eliminate dead types
-
-    //optO3->add(createConstantMergePass());       // Merge dup global constants
-    optO3->add(llvm::createVerifierPass());
 }
 
 PyGlobalLlvmData::~PyGlobalLlvmData()

@@ -6,6 +6,9 @@
    XXX document it!
    */
 
+/* Note: this file will be compiled as C ifndef WITH_LLVM, so try to keep it
+   generally C. */
+
 /* enable more aggressive intra-module optimizations, where available */
 #define PY_LOCAL_AGGRESSIVE
 
@@ -19,6 +22,7 @@
 #include "structmember.h"
 
 #include "Util/EventTimer.h"
+#include <ctype.h>
 
 #ifdef WITH_LLVM
 #include "global_llvm_data.h"
@@ -28,31 +32,46 @@
 #include "llvm/Support/raw_ostream.h"
 #include "Util/RuntimeFeedback.h"
 #include "Util/Stats.h"
-#endif
 
-#include <ctype.h>
 #include <set>
 
-#ifdef WITH_LLVM
 using llvm::errs;
 #endif
 
 
-// Make a call to stop the call overhead timer before going through to
-// PyObject_Call.
+/* Make a call to stop the call overhead timer before going through to
+   PyObject_Call. */
 static inline PyObject *
 _PyObject_Call(PyObject *func, PyObject *arg, PyObject *kw)
 {
-	// If we're calling a compiled C function with *args or **kwargs, then
-	// this enum should be CALL_ENTER_C.  However, most calls to C
-	// functions are simple and are fast-tracked through the CALL_FUNCTION
-	// opcode.
+	/* If we're calling a compiled C function with *args or **kwargs, then
+	 * this enum should be CALL_ENTER_C.  However, most calls to C
+	 * functions are simple and are fast-tracked through the CALL_FUNCTION
+	 * opcode. */
 	PY_LOG_TSC_EVENT(CALL_ENTER_PYOBJ_CALL);
 	return PyObject_Call(func, arg, kw);
 }
 
 
 #ifdef Py_WITH_INSTRUMENTATION
+class FeedbackMapCounter {
+public:
+	~FeedbackMapCounter() {
+		errs() << "\nFeedback maps created:\n";
+		errs() << "N: " << this->counter_ << "\n";
+	}
+
+	void IncCounter() {
+		this->counter_++;
+	}
+
+private:
+	unsigned counter_;
+};
+
+static llvm::ManagedStatic<FeedbackMapCounter> feedback_map_counter;
+
+
 class HotnessTracker {
 	// llvm::DenseSet or llvm::SmallPtrSet may be better, but as of this
 	// writing, they don't seem to work with std::vector.
@@ -76,10 +95,9 @@ compare_hotness(const PyCodeObject *first, const PyCodeObject *second)
 
 HotnessTracker::~HotnessTracker()
 {
-	errs() << "\nCode objects deemed hot (n=" << this->hot_code_.size()
-	       << ")\n";
-
-	errs() << "Function -> hotness metric:\n";
+	errs() << "\nCode objects deemed hot:\n";
+	errs() << "N: " << this->hot_code_.size() << "\n";
+	errs() << "Function -> hotness score:\n";
 	std::vector<PyCodeObject*> to_sort(this->hot_code_.begin(),
 					   this->hot_code_.end());
 	std::sort(to_sort.begin(), to_sort.end(), compare_hotness);
@@ -172,7 +190,7 @@ public:
 
 	~BailCountStats() {
 		errs() << "\nBailed to the interpreter " << this->total_
-		       << " times\n";
+		       << " times:\n";
 		errs() << "TRACE_ON_ENTRY: " << this->trace_on_entry_ << "\n";
 		errs() << "LINE_TRACE: " << this->line_trace_ << "\n";
 		errs() << "BACKEDGE_TRACE:" << this->backedge_trace_ << "\n";
@@ -188,6 +206,15 @@ public:
 			errs() << "    " << i->getKey() << " bailed "
 			       << i->getValue() << " times\n";
 		}
+
+		errs() << "\n" << this->guard_bail_site_freq_.size()
+		       << " guard bail sites:\n";
+		for (BailData::iterator i = this->guard_bail_site_freq_.begin(),
+		     end = this->guard_bail_site_freq_.end(); i != end; ++i) {
+			errs() << "    " << i->getKey() << " bailed "
+			       << i->getValue() << " times\n";
+		}
+
 	}
 
 	void RecordBail(PyFrameObject *frame, _PyFrameBailReason bail_reason) {
@@ -223,11 +250,40 @@ public:
 				abort();   // Unknown bail reason.
 		}
 #undef BAIL_CASE
+
+		if (bail_reason != _PYFRAME_GUARD_FAIL)
+			return;
+
+		wrapper << ":";
+
+#define GUARD_CASE(name) \
+	case name: \
+		wrapper << #name; \
+		break;
+
+		switch (frame->f_guard_type) {
+			GUARD_CASE(_PYGUARD_DEFAULT)
+			GUARD_CASE(_PYGUARD_BINOP)
+			GUARD_CASE(_PYGUARD_ATTR)
+			GUARD_CASE(_PYGUARD_CFUNC)
+			GUARD_CASE(_PYGUARD_BRANCH)
+			GUARD_CASE(_PYGUARD_STORE_SUBSCR)
+			default:
+				wrapper << ((int)frame->f_guard_type);
+		}
+#undef GUARD_CASE
+
+		wrapper.flush();
+
+		BailData::value_type &g_entry =
+			this->guard_bail_site_freq_.GetOrCreateValue(record, 0);
+		g_entry.setValue(g_entry.getValue() + 1);
 	}
 
 private:
 	typedef llvm::StringMap<unsigned> BailData;
 	BailData bail_site_freq_;
+	BailData guard_bail_site_freq_;
 
 	long total_;
 	long trace_on_entry_;
@@ -263,7 +319,8 @@ static PyObject * update_star_args(int, int, PyObject *, PyObject ***);
 static PyObject * load_args(PyObject ***, int);
 
 #ifdef WITH_LLVM
-static int mark_called_and_maybe_compile(PyCodeObject *co, PyFrameObject *f);
+static inline void mark_called(PyCodeObject *co);
+static inline int maybe_compile(PyCodeObject *co, PyFrameObject *f);
 
 /* Record data for use in generating optimized machine code. */
 static void record_type(PyCodeObject *, int, int, int, PyObject *);
@@ -667,7 +724,11 @@ _Py_CheckRecursiveCall(char *where)
 	return 0;
 }
 
+#ifdef __cplusplus
 extern "C" void
+#else
+extern void
+#endif
 _PyEval_RaiseForUnboundLocal(PyFrameObject *frame, int var_index)
 {
 	format_exc_check_arg(
@@ -740,6 +801,10 @@ PyEval_EvalFrame(PyFrameObject *f)
 	PyObject *retval = NULL;	/* Return value */
 	PyThreadState *tstate = PyThreadState_GET();
 	PyCodeObject *co;
+#ifdef WITH_LLVM
+	/* We only collect feedback if it will be useful. */
+	int rec_feedback = (Py_JitControl == PY_JIT_WHENHOT);
+#endif
 
 	/* when tracing we set things up so that
 
@@ -886,17 +951,17 @@ PyEval_EvalFrame(PyFrameObject *f)
 /* Feedback-gathering macros */
 #ifdef WITH_LLVM
 #define RECORD_TYPE(arg_index, obj) \
-	record_type(co, opcode, f->f_lasti, arg_index, obj)
+	if(rec_feedback){record_type(co, opcode, f->f_lasti, arg_index, obj);}
 #define RECORD_OBJECT(arg_index, obj) \
-	record_object(co, opcode, f->f_lasti, arg_index, obj)
+	if(rec_feedback){record_object(co, opcode, f->f_lasti, arg_index, obj);}
 #define RECORD_FUNC(obj) \
-	record_func(co, opcode, f->f_lasti, 0, obj)
+	if(rec_feedback){record_func(co, opcode, f->f_lasti, 0, obj);}
 #define RECORD_TRUE() \
-	inc_feedback_counter(co, opcode, f->f_lasti, PY_FDO_JUMP_TRUE)
+	if(rec_feedback){inc_feedback_counter(co, opcode, f->f_lasti, PY_FDO_JUMP_TRUE);}
 #define RECORD_FALSE() \
-	inc_feedback_counter(co, opcode, f->f_lasti, PY_FDO_JUMP_FALSE)
+	if(rec_feedback){inc_feedback_counter(co, opcode, f->f_lasti, PY_FDO_JUMP_FALSE);}
 #define RECORD_NONBOOLEAN() \
-	inc_feedback_counter(co, opcode, f->f_lasti, PY_FDO_JUMP_NON_BOOLEAN)
+	if(rec_feedback){inc_feedback_counter(co, opcode, f->f_lasti, PY_FDO_JUMP_NON_BOOLEAN);}
 #define UPDATE_HOTNESS_JABS() \
 	do { if (oparg <= f->f_lasti) ++co->co_hotness; } while (0)
 #else
@@ -1026,8 +1091,13 @@ PyEval_EvalFrame(PyFrameObject *f)
 	tstate->frame = f;
 
 #ifdef WITH_LLVM
-	if (f->f_use_llvm && co->co_native_function != NULL) {
+	maybe_compile(co, f);
+
+	if (f->f_use_llvm) {
 		assert(bail_reason == _PYFRAME_NO_BAIL);
+		assert(co->co_native_function != NULL &&
+		       "maybe_compile was supposed to ensure"
+		       " that co_native_function exists");
 		if (!co->co_use_llvm) {
 			// A frame cannot use_llvm if the underlying code object
 			// can't use_llvm. This comes up when a generator is
@@ -1050,6 +1120,19 @@ PyEval_EvalFrame(PyFrameObject *f)
 	        	                "bailed to the interpreter");
 			goto exit_eval_frame;
 		}
+	}
+
+	// Create co_runtime_feedback now that we're about to use it.  You
+	// might think this would cause a problem if the user flips
+	// Py_JitControl from "never" to "whenhot", but since the value of
+	// rec_feedback is constant for the duration of this frame's execution,
+	// we will not accidentally try to record feedback without initializing
+	// co_runtime_feedback.
+	if (rec_feedback && co->co_runtime_feedback == NULL) {
+#if Py_WITH_INSTRUMENTATION
+		feedback_map_counter->IncCounter();
+#endif
+		co->co_runtime_feedback = PyFeedbackMap_New();
 	}
 #endif  /* WITH_LLVM */
 
@@ -1120,9 +1203,9 @@ PyEval_EvalFrame(PyFrameObject *f)
 	why = UNWIND_NOUNWIND;
 	w = NULL;
 
-	// Note that this goes after the LLVM handling code so we don't log
-	// this event when calling LLVM functions. Do this before the throwflag
-	// check below to avoid mismatched enter/exit events in the log.
+	/* Note that this goes after the LLVM handling code so we don't log
+	 * this event when calling LLVM functions. Do this before the throwflag
+	 * check below to avoid mismatched enter/exit events in the log. */
 	PY_LOG_TSC_EVENT(CALL_ENTER_EVAL);
 
 	if (f->f_throwflag) { /* support for generator.throw() */
@@ -1945,7 +2028,7 @@ PyEval_EvalFrame(PyFrameObject *f)
 			RECORD_TYPE(0, u);
 			RECORD_TYPE(1, v);
 			RECORD_TYPE(2, w);
-			// Don't bother recording the assigned object.
+			/* Don't bother recording the assigned object. */
 			err = _PyEval_AssignSlice(u, v, w, t); /* u[v:w] = t */
 			Py_DECREF(t);
 			Py_DECREF(u);
@@ -1997,7 +2080,7 @@ PyEval_EvalFrame(PyFrameObject *f)
 			/* v[w] = u */
 			RECORD_TYPE(0, v);
 			RECORD_TYPE(1, w);
-			// Don't bother recording the assigned object.
+			/* Don't bother recording the assigned object. */
 			err = PyObject_SetItem(v, w, u);
 			Py_DECREF(u);
 			Py_DECREF(v);
@@ -2728,20 +2811,22 @@ PyEval_EvalFrame(PyFrameObject *f)
 			num_args = oparg & 0xff;
 			num_kwargs = (oparg>>8) & 0xff;
 #ifdef WITH_LLVM
-			// We'll focus on these simple calls with only positional args for
-			// now (since they're easy to implement).
+			/* We'll focus on these simple calls with only
+			 * positional args for now (since they're easy to
+			 * implement). */
 			if (num_kwargs == 0) {
-				// Duplicate this bit of logic from
-				// _PyEval_CallFunction().
+				/* Duplicate this bit of logic from
+				 * _PyEval_CallFunction(). */
 				PyObject **func = stack_pointer - num_args - 1;
 				RECORD_FUNC(*func);
 			}
 #endif
 			x = _PyEval_CallFunction(stack_pointer,
 						 num_args, num_kwargs);
-			// +1 for the actual function object.
+			/* +1 for the actual function object. */
 			num_stack_slots = num_args + 2 * num_kwargs + 1;
-			// Clear the stack of the function object and arguments.
+			/* Clear the stack of the function object and
+			 * arguments. */
 			stack_pointer -= num_stack_slots;
 			PUSH(x);
 			if (x == NULL) {
@@ -2758,7 +2843,7 @@ PyEval_EvalFrame(PyFrameObject *f)
 		{
 			int num_args, num_kwargs, num_stack_slots, flags;
 			PY_LOG_TSC_EVENT(CALL_START_EVAL);
-			// TODO(jyasskin): Add feedback gathering.
+			/* TODO(jyasskin): Add feedback gathering. */
 			num_args = oparg & 0xff;
 			num_kwargs = (oparg>>8) & 0xff;
 			num_stack_slots = num_args + 2 * num_kwargs + 1;
@@ -3120,10 +3205,7 @@ PyEval_EvalCodeEx(PyCodeObject *co, PyObject *globals, PyObject *locals,
 	/* This is where a code object is considered "called". Doing it here
 	 * instead of PyEval_EvalFrame() makes support for generators somewhat
 	 * cleaner. */
-	if (mark_called_and_maybe_compile(co, f) == -1) {
-		Py_DECREF(f);
-		return NULL;
-	}
+	mark_called(co);
 #endif
 
 	fastlocals = f->f_localsplus;
@@ -3848,7 +3930,7 @@ _PyEval_TraceLeaveFunction(PyThreadState *tstate, PyFrameObject *f,
 			if (_PyEval_CallTrace(tstate->c_tracefunc,
 					      tstate->c_traceobj, f,
 					      PyTrace_RETURN, retval)) {
-				is_exception = true;
+				is_exception = 1;
 				err = -1;
 			}
 		}
@@ -4148,10 +4230,22 @@ err_args(PyObject *func, int flags, int min_arity, int max_arity, int nargs)
 }
 
 #ifdef WITH_LLVM
-// Increments co's hotness level and, if it has passed the hotness
-// threshold, compiles the bytecode to native code.  If the code
-// object was marked as needing to be run through LLVM, also compiles
-// the bytecode to native code, even if the code object isn't hot yet.
+static inline void
+mark_called(PyCodeObject *co)
+{
+	co->co_hotness += 10;
+}
+
+// Decide whether to compile a code object's bytecode to native code based on
+// the current Py_JitControl setting and the code's hotness.  We do the
+// compilation if any of the following conditions are true:
+//
+// - We are running under PY_JIT_WHENHOT and co's hotness has passed the
+//   hotness threshold.
+// - The code object was marked as needing to be run through LLVM
+//   (co_use_llvm is true).
+// - We are running under PY_JIT_ALWAYS.
+//
 // Returns 0 on success or -1 on failure.
 //
 // If this code object has had too many fatal guard failures (see
@@ -4161,15 +4255,15 @@ err_args(PyObject *func, int flags, int min_arity, int max_arity, int nargs)
 // you should keep a close eye on the benchmarks, particularly call_simple.
 // In the past, seemingly-insignificant changes have produced 10-15% swings
 // in the macrobenchmarks. You've been warned.
-static int
-mark_called_and_maybe_compile(PyCodeObject *co, PyFrameObject *f)
+static inline int
+maybe_compile(PyCodeObject *co, PyFrameObject *f)
 {
-	co->co_hotness += 10;
-
-	// f->f_use_llvm is initialized to 0 in PyFrame_New, and we rely on it
-	// being that way so that we can return early to indicate that this
-	// frame should not use native code.
-	assert(f->f_use_llvm == 0 && "f_use_llvm was not false on entry!");
+	if (f->f_bailed_from_llvm != _PYFRAME_NO_BAIL) {
+		// Don't consider compiling code objects that we've already
+		// bailed from.  This avoids re-entering code that we just
+		// bailed from.
+		return 0;
+	}
 
 	if (co->co_fatalbailcount >= PY_MAX_FATALBAILCOUNT) {
 		co->co_use_llvm = 0;
@@ -4260,7 +4354,8 @@ mark_called_and_maybe_compile(PyCodeObject *co, PyFrameObject *f)
 #endif
 	}
 
-	f->f_use_llvm = co->co_use_llvm;
+	/* We can't use the native code if it's still being compiled. */
+	f->f_use_llvm = (co->co_use_llvm && co->co_native_function != NULL);
 	return 0;
 }
 #endif  /* WITH_LLVM */
@@ -4449,11 +4544,19 @@ fast_function(PyObject *func, PyObject ***pp_stack, int n, int na, int nk)
 	PyObject *argdefs = PyFunction_GET_DEFAULTS(func);
 	PyObject **d = NULL;
 	int nd = 0;
+	int flags_required, flags_forbidden, flags_mask;
 
 	PCALL(PCALL_FUNCTION);
 	PCALL(PCALL_FAST_FUNCTION);
-	if (argdefs == NULL && co->co_argcount == n && nk==0 &&
-	    co->co_flags == (CO_OPTIMIZED | CO_NEWLOCALS | CO_NOFREE)) {
+
+	/* A code object must have all required flags set.  Any forbidden flag
+	 * set disqualifies the object from using the fast path.  */
+	flags_required = (CO_OPTIMIZED | CO_NEWLOCALS | CO_NOFREE);
+	flags_forbidden = (CO_VARKEYWORDS | CO_VARARGS | CO_GENERATOR);
+	flags_mask = flags_required | flags_forbidden;
+
+	if (argdefs == NULL && co->co_argcount == n && nk == 0 &&
+	    (co->co_flags & flags_mask) == flags_required) {
 		PyFrameObject *f;
 		PyObject *retval = NULL;
 		PyThreadState *tstate = PyThreadState_GET();
@@ -4472,10 +4575,7 @@ fast_function(PyObject *func, PyObject ***pp_stack, int n, int na, int nk)
 		if (f == NULL)
 			return NULL;
 #ifdef WITH_LLVM
-		if (mark_called_and_maybe_compile(co, f) == -1) {
-			Py_DECREF(f);
-			return NULL;
-		}
+		mark_called(co);
 #endif
 
 		fastlocals = f->f_localsplus;
@@ -5014,7 +5114,11 @@ _PyEval_ImportName(PyObject *level, PyObject *names, PyObject *module_name)
    Return -1 with an appropriate exception set on failure,
    1 if the given exception matches one or more of the given type(s),
    0 otherwise. */
+#ifdef __cplusplus
 extern "C" int
+#else
+extern int
+#endif
 _PyEval_CheckedExceptionMatches(PyObject *exc, PyObject *exc_type)
 {
 	int ret_val;

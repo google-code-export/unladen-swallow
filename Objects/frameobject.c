@@ -722,6 +722,7 @@ PyFrame_New(PyThreadState *tstate, PyCodeObject *code, PyObject *globals,
 	   object is compiled and the checks pass.  */
 	f->f_use_llvm = 0;
 	f->f_bailed_from_llvm = _PYFRAME_NO_BAIL;
+	f->f_guard_type = _PYGUARD_DEFAULT;
 #endif
 
 	_PyObject_GC_TRACK(f);

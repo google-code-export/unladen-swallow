@@ -909,12 +909,12 @@ compiler_addop(struct compiler *c, int opcode)
 	return 1;
 }
 
-// Adds 'o' to the mapping stored in 'dict' (if it wasn't already
-// there) so it can be looked up by opcodes like LOAD_CONST and
-// LOAD_NAME.  This function derives a tuple from o to avoid pairs of
-// values like 0.0 and -0.0 or 0 and 0.0 that compare equal but need
-// to be kept separate.  'o' is mapped to a small integer, and its
-// mapping is returned.
+/* Adds 'o' to the mapping stored in 'dict' (if it wasn't already
+ * there) so it can be looked up by opcodes like LOAD_CONST and
+ * LOAD_NAME.  This function derives a tuple from o to avoid pairs of
+ * values like 0.0 and -0.0 or 0 and 0.0 that compare equal but need
+ * to be kept separate.  'o' is mapped to a small integer, and its
+ * mapping is returned. */
 static int
 compiler_add_o(struct compiler *c, PyObject *dict, PyObject *o)
 {

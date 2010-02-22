@@ -18,8 +18,8 @@ PyCFunction_NewEx(PyMethodDef *ml, PyObject *self, PyObject *module)
 {
 	PyCFunctionObject *op;
 
-	// Sanity check early, to avoid having to clean up from the mixed
-	// free list/allocation scheme below.
+	/* Sanity check early, to avoid having to clean up from the mixed
+	   free list/allocation scheme below. */
 	if (ml->ml_flags & METH_ARG_RANGE) {
 		if (ml->ml_min_arity < 0 || ml->ml_min_arity > PY_MAX_ARITY ||
 		    ml->ml_max_arity < 0 || ml->ml_max_arity > PY_MAX_ARITY ||

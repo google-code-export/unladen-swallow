@@ -27,7 +27,8 @@ typedef struct {
     PyObject	  *in_weakreflist; /* List of weak references */
 } PyInstanceObject;
 
-typedef struct {
+/* If you change this, update Util/PyTypeBuilder.h accordingly. */
+typedef struct PyMethodObject {
     PyObject_HEAD
     PyObject *im_func;   /* The callable object implementing the method */
     PyObject *im_self;   /* The instance it is bound to, or NULL */

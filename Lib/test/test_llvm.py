@@ -47,7 +47,7 @@ def set_jit_control(new_level):
 
 def at_each_optimization_level(func):
     """Decorator for test functions, to run them at each optimization level."""
-    levels = [None, -1, 0, 1, 2, 3]
+    levels = [None, -1, 0, 1, 2]
     if DEFAULT_OPT_LEVEL != -1:
         levels = [level for level in levels if level >= DEFAULT_OPT_LEVEL]
     @functools.wraps(func)
@@ -1451,22 +1451,16 @@ def generator(obj):
             # Toggling between native code and the interpreter between yields
             # used to cause crashes because f_lasti doesn't get translated
             # between the scheme used for LLVM and the scheme used for the
-            # interpreter. For now these assignments are no-ops for the lifetime
-            # of the generator object, but do take effect when a new generator
-            # instance is created.
-            def generator(obj):
+            # interpreter.  Currently, due to our generator pseudo
+            # on-stack-replacement, these assignments take effect on generator
+            # reentry.
+            def generator():
                 yield 1
                 generator.func_code.__use_llvm__ = True
                 yield 2
-                # We iterate over the generator while the first instance is
-                # still running. This is to test that the modification to the
-                # shared code object above takes effect. We don't have any way
-                # of checking whether LLVM is really being used, but the
-                # important thing is that it doesn't crash.
-                list(obj)
                 generator.func_code.__use_llvm__ = False
                 yield 3
-            self.assertEqual(list(generator(generator([]))), [1, 2, 3])
+            self.assertEqual(list(generator()), [1, 2, 3])
 
     @at_each_optimization_level
     def test_closure(self, level):
@@ -2615,6 +2609,23 @@ def foo():
         self.assertEqual(foo.__code__.__use_llvm__, True)
         self.assertEqual(foo.__code__.co_optimization, JIT_OPT_LEVEL)
 
+    def test_generator_hotness_osr(self):
+        foo = compile_for_llvm("foo", """
+def foo(iterations):
+    for i in xrange(iterations):
+        yield i
+""", optimization_level=None)
+        iterations = JIT_SPIN_COUNT * HOTNESS_CALL / HOTNESS_LOOP
+        for _ in foo(iterations):
+            _llvm.wait_for_jit()  # We want it to get compiled synchronously.
+        # We don't currently increment the hotness counter on loop backedges in
+        # the compiled code, so the hotness stops growing when it passes the
+        # threshold.  When using background compilation, we use the interpreter
+        # for an extra iteration, getting a hotness of 100002
+        self.assertTrue(foo.__code__.co_hotness in (100001, 100002))
+        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertEqual(foo.__code__.co_optimization, JIT_OPT_LEVEL)
+
     def test_fast_load_global(self):
         # Make sure that hot functions use the optimized LOAD_GLOBAL
         # implementation. We do this by asserting that if their assumptions
@@ -2858,6 +2869,33 @@ def foo(trigger):
         # same function, just with a different invocant.
         self.assertEqual(foo("b"), "cbd")
 
+    def _string_formatting_specialization_test(self, good_type, bail_type):
+        # If we specialize on 8-bit strings, Unicode will bail, and vice-versa.
+        good_string = good_type("ab%sd")
+        bail_string = bail_type("ab%sd")
+
+        foo = compile_for_llvm("foo", "def foo(a, b): return a % b",
+                               optimization_level=None)
+        spin_until_hot(foo, [good_string, 5])
+        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertEquals(foo(good_string, 5), "ab5d")
+        self.assertEquals(type(foo(good_string, 5)), good_type)
+
+        # Test guard conditions.
+        self.assertRaises(RuntimeError, foo, 5, 2)
+        self.assertRaises(RuntimeError, foo, bail_string, "c")
+
+        sys.setbailerror(False)
+        self.assertEquals(foo(5, 2), 1)
+        self.assertEquals(foo(bail_string, "c"), bail_type("abcd"))
+        self.assertEquals(type(foo(bail_string, "c")), bail_type)
+
+    def test_str_formatting_specialization(self):
+        self._string_formatting_specialization_test(str, unicode)
+
+    def test_unicode_formatting_specialization(self):
+        self._string_formatting_specialization_test(unicode, str)
+
     def test_inconsistent_binop_training(self):
         # Force some polymorphism into this function, then make sure we don't
         # do any inlining of multiplication.
@@ -2950,10 +2988,15 @@ def foo(trigger):
 
     def test_inlining_mult_div_on_ints_and_floats(self):
         # Test our ability to optimize certain binary ops by inlining them
+        # TODO(collinwinter): reduce duplication here.
         foo_float = compile_for_llvm('foo', 'def foo(a, b, c): return (a*b)/c',
                                optimization_level=None)
         foo_int = compile_for_llvm('foo', 'def foo(a, b, c): return (a*b)/c',
                                optimization_level=None)
+        mul_float_int = compile_for_llvm('foo', 'def foo(a, b): return a * b',
+                            optimization_level=None)
+        div_float_int = compile_for_llvm('foo', 'def foo(a, b): return a / b',
+                            optimization_level=None)
 
         self.assertEqual(foo_float(1.0, 2.0, 2.0), 1.0)
         self.assertEqual(foo_int(1, 2, 2), 1)
@@ -2961,39 +3004,65 @@ def foo(trigger):
         # Specialize foo_float and foo_int on their respective types.
         spin_until_hot(foo_float, [1.0, 2.0, 2.0])
         spin_until_hot(foo_int, [1, 2, 2])
+        spin_until_hot(mul_float_int, [1.0, 2])
+        spin_until_hot(div_float_int, [1.0, 2])
         self.assertTrue(foo_float.__code__.__use_llvm__)
         self.assertTrue(foo_int.__code__.__use_llvm__)
-        self.assertFalse("PyNumber_Multiply" in str(foo_int.__code__.co_llvm))
+        self.assertTrue(mul_float_int.__code__.__use_llvm__)
+        self.assertTrue(div_float_int.__code__.__use_llvm__)
+        for func in [foo_float, foo_int, mul_float_int, div_float_int]:
+            self.assertFalse("PyNumber_Multiply" in str(func.__code__.co_llvm))
+            self.assertFalse("PyNumber_Divide" in str(func.__code__.co_llvm))
 
         # Test bailing
+        self.assertRaises(RuntimeError, foo_float, 1, 1.0, 1.0)
+        self.assertRaises(RuntimeError, foo_float, 1.0, 1, 1.0)
         self.assertRaises(RuntimeError, foo_float, 1.0, 1.0, 1)
+        self.assertRaises(RuntimeError, foo_int, 1.0, 1, 1)
+        self.assertRaises(RuntimeError, foo_int, 1, 1.0, 1)
         self.assertRaises(RuntimeError, foo_int, 1, 1, 1.0)
+        self.assertRaises(RuntimeError, mul_float_int, 2.0, 1.0)
+        self.assertRaises(RuntimeError, mul_float_int, 2, 1.0)
+        self.assertRaises(RuntimeError, div_float_int, 2.0, 1.0)
+        self.assertRaises(RuntimeError, div_float_int, 2, 1.0)
 
         # Test bailing, ZeroDivision
         self.assertRaises(RuntimeError, foo_float, 1.0, 1.0, 0.0)
         self.assertRaises(RuntimeError, foo_int, 1, 1, 0)
+        self.assertRaises(RuntimeError, div_float_int, 1.0, 0)
 
-        # Test PyIntType overflow
+        # Test int overflow
         self.assertRaises(RuntimeError, foo_int, sys.maxint, sys.maxint, 1)
+
+        # Floats do not overflow like ints do; this should not bail.
+        self.assertEqual(mul_float_int(float(sys.maxint), sys.maxint),
+                         float(sys.maxint) * sys.maxint)
 
         # Test if bailing still gives a correct result
         sys.setbailerror(False)
 
         self.assertEqual(foo_float(1.0, 1.0, 1), 1.0)
         self.assertEqual(foo_int(1, 1, 1.0), 1.0)
+        self.assertEqual(mul_float_int(2.0, 1), 2.0)
+        self.assertEqual(mul_float_int(2, 1.0), 2.0)
+        self.assertEqual(div_float_int(2.0, 1), 2.0)
+        self.assertEqual(div_float_int(2, 1.0), 2.0)
 
         self.assertRaises(ZeroDivisionError, foo_float, 1.0, 1.0, 0.0)
         self.assertRaises(ZeroDivisionError, foo_int, 1, 1, 0)
+        self.assertRaises(ZeroDivisionError, div_float_int, 1.0, 0)
 
-        # Test if PyIntType overflow gives a correct result
+        # Test if overflow gives a correct result
         self.assertEqual(foo_int(sys.maxint, sys.maxint, 1),
-                        long(sys.maxint)*long(sys.maxint))
+                        long(sys.maxint) * long(sys.maxint))
+        self.assertEqual(mul_float_int(float(sys.maxint), sys.maxint),
+                         float(sys.maxint) * sys.maxint)
 
-    def test_inlining_list_getitem(self):
-        # Test BINARY_SUBSCR specialization for indexing a list with an int.
+    def getitem_inlining_test(self, getitem_type):
+        # Test BINARY_SUBSCR specialization for indexing a sequence with an int.
         foo = compile_for_llvm('foo', 'def foo(a, b): return a[b]',
                                optimization_level=None)
-        a = [1]
+        a = getitem_type([1])
         spin_until_hot(foo, [a, 0])
         self.assertTrue(foo.__code__.__use_llvm__)
         self.assertEqual(foo(a, 0), 1)
@@ -3019,6 +3088,12 @@ def foo(trigger):
         self.assertRaises(IndexError, foo, a, True)
         self.assertRaises(IndexError, foo, a, -10)
         self.assertRaises(IndexError, foo, a, 10)
+
+    def test_inlining_list_getitem(self):
+        self.getitem_inlining_test(list)
+
+    def test_inlining_tuple_getitem(self):
+        self.getitem_inlining_test(tuple)
 
     def test_inlining_list_setitem(self):
         # Test STORE_SUBSCR specialization for indexing a list with an int.

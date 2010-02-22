@@ -34,6 +34,7 @@ LINKCC=		@LINKCC@
 AR=		@AR@
 RANLIB=		@RANLIB@
 SVNVERSION=	@SVNVERSION@
+FORCE_C=	@FORCE_C@
 
 # Shell used by make (some versions default to the login shell, which is bad)
 SHELL=		/bin/sh
@@ -587,7 +588,11 @@ Modules/getpath.o: $(srcdir)/Modules/getpath.c Makefile
 		-o $@ $(srcdir)/Modules/getpath.c
 
 Modules/python.o: $(srcdir)/Modules/python.c
+ifeq (@BUILD_LLVM@, disabled)
+	$(CC) -c $(PY_CFLAGS) -o $@ $(srcdir)/Modules/python.c
+else
 	$(CXX) -c $(PY_CFLAGS) -o $@ $(srcdir)/Modules/python.c
+endif
 
 
 $(GRAMMAR_H) $(GRAMMAR_C): $(PGEN) $(GRAMMAR_INPUT)
@@ -649,7 +654,13 @@ Objects/stringobject.o: $(srcdir)/Objects/stringobject.c \
 $(OPCODETARGETS_H): $(OPCODETARGETGEN_FILES)
 	$(OPCODETARGETGEN) $(OPCODETARGETS_H)
 
-Python/eval.o: $(OPCODETARGETS_H)
+Python/eval.o: Python/eval.cc $(OPCODETARGETS_H)
+ifeq (@BUILD_LLVM@, disabled)
+	$(CC) $(FORCE_C) -c $(PY_CFLAGS) -o $@ $<
+else
+	$(CXX) -c $(LLVM_CXXFLAGS) $(PY_CXXFLAGS) -o $@ $<
+endif
+
 
 Python/formatter_unicode.o: $(srcdir)/Python/formatter_unicode.c \
 				$(STRINGLIB_HEADERS)
@@ -787,8 +798,12 @@ AllUnitTests: $(srcdir)/Unittests/*Test.cc $(srcdir)/Unittests/pytest_main.cc \
 	$(CXX) $(CPPFLAGS) -I$(srcdir)/Util/googletest/include -o $@ $^ \
 		-L. $(LDFLAGS) `$(RUNSHARED) ./$(BUILDPYTHON) ./python-config --cxxflags --ldflags --libs`
 
+ifneq (@BUILD_LLVM@, disabled)
 unittest: AllUnitTests
 	$(RUNSHARED) ./AllUnitTests
+else
+unittest:
+endif
 
 # Test the interpreter (twice, once without .pyc files, once with)
 # In the past, we've had problems where bugs in the marshalling or
@@ -1231,14 +1246,23 @@ config.status:	$(srcdir)/configure
 .c.o:
 	$(CC) -c $(PY_CFLAGS) -o $@ $<
 
+
+# Configuring --without-llvm should completely cut out any dependency on C++.
 %.o: %.cc $(LLVM_INC_DIR)/llvm/Intrinsics.gen $(LLVM_CONFIG)
+ifeq (@BUILD_LLVM@, disabled)
+	$(error Should not be building C++ files under --without-llvm)
+else
 	$(CXX) -c $(LLVM_CXXFLAGS) $(PY_CXXFLAGS) -o $@ $<
+endif
+
 
 %.bc : %.c $(PYTHON_HEADERS) $(LLVM_BIN_DIR)/clang
 	$(LLVM_BIN_DIR)/clang -O3 -emit-llvm -c $(CPPFLAGS) $(CFLAGSFORSHARED) -DPy_BUILD_CORE $< -o $@
 
+
 %.ll : %.bc $(LLVM_BIN_DIR)/llvm-dis
 	$(LLVM_BIN_DIR)/llvm-dis $< -o $@
+
 
 # Run reindent on the library
 reindent:
@@ -1283,6 +1307,9 @@ clean: pycremoval
 	rm -f sysconfig llvm  # Our empty targets.
 	rm -f $(BCLIBRARY)
 	-rm -f Lib/lib2to3/*Grammar*.pickle
+ifeq (@BUILD_LLVM@, 1)
+	(cd @LLVM_PATH@/.. ; $(MAKE) clean)
+endif
 
 profile-removal:
 	find . -name '*.gc??' -exec rm -f {} ';'

@@ -181,15 +181,33 @@ public:
 
 static llvm::ManagedStatic<AccessAttrStats> access_attr_stats;
 
+class ImportNameStats {
+public:
+    ~ImportNameStats() {
+        errs() << "\nIMPORT_NAME opcodes:\n";
+        errs() << "Total: " << this->total << "\n";
+        errs() << "Optimized: " << this->optimized << "\n";
+    }
+
+    // Total number of IMPORT_NAME opcodes compiled.
+    unsigned total;
+    // Number of imports successfully optimized.
+    unsigned optimized;
+};
+
+static llvm::ManagedStatic<ImportNameStats> import_name_stats;
+
 #define CF_INC_STATS(field) call_function_stats->field++
 #define COND_BRANCH_INC_STATS(field) cond_branch_stats->field++
 #define BINOP_INC_STATS(field) binary_operator_stats->field++
 #define ACCESS_ATTR_INC_STATS(field) access_attr_stats->field++
+#define IMPORT_NAME_STATS(field) import_name_stats->field++
 #else
 #define CF_INC_STATS(field)
 #define COND_BRANCH_INC_STATS(field)
 #define BINOP_INC_STATS(field)
 #define ACCESS_ATTR_INC_STATS(field)
+#define IMPORT_NAME_STATS(field)
 #endif  /* Py_WITH_INSTRUMENTATION */
 
 namespace {
@@ -202,6 +220,9 @@ struct InlineOperatorEntry {
     const PyTypeObject *lhs_type;
     const PyTypeObject *rhs_type;
 };
+
+// Indicate that we don't care about the specialization argument's type.
+static const PyTypeObject *Wildcard = NULL;
 
 }  // anonymous namespace
 
@@ -318,17 +339,15 @@ LlvmFunctionBuilder::LlvmFunctionBuilder(
                    llvm_data_->getExecutionEngine()->getTargetData())),
       is_generator_(code_object->co_flags & CO_GENERATOR),
       debug_info_(llvm_data->DebugInfo()),
-      debug_compile_unit_(this->debug_info_ == NULL ? llvm::DICompileUnit() :
-                          this->debug_info_->CreateCompileUnit(
+      debug_compile_unit_(this->debug_info_.CreateCompileUnit(
                               DW_LANG_Python,
                               PyString_AS_STRING(code_object->co_filename),
                               "",  // Directory
-                              "Unladen Swallow 2.6.1",
+                              "Unladen Swallow " PY_VERSION,
                               false, // Not main.
                               false, // Not optimized
                               "")),
-      debug_subprogram_(this->debug_info_ == NULL ? llvm::DISubprogram() :
-                        this->debug_info_->CreateSubprogram(
+      debug_subprogram_(this->debug_info_.CreateSubprogram(
                             debug_compile_unit_,
                             PyString_AS_STRING(code_object->co_name),
                             PyString_AS_STRING(code_object->co_name),
@@ -1246,12 +1265,10 @@ LlvmFunctionBuilder::PropagateException()
 void
 LlvmFunctionBuilder::SetDebugStopPoint(int line_number)
 {
-    if (this->debug_info_ != NULL) {
-        this->builder_.SetCurrentDebugLocation(
-            this->debug_info_->CreateLocation(line_number, 0,
-                                              this->debug_subprogram_,
-                                              llvm::DILocation(NULL)).getNode());
-    }
+    this->builder_.SetCurrentDebugLocation(
+        this->debug_info_.CreateLocation(line_number, 0,
+                                         this->debug_subprogram_,
+                                         llvm::DILocation(NULL)).getNode());
 }
 
 const PyTypeObject *
@@ -1791,7 +1808,7 @@ LlvmFunctionBuilder::AttributeAccessor::GuardAttributeAccess(
     // Fill in the bail bb.
     builder.SetInsertPoint(bail_block);
     fbuilder->Push(obj_v);
-    fbuilder->CreateBailPoint(_PYFRAME_GUARD_FAIL);
+    fbuilder->CreateGuardBailPoint(_PYGUARD_ATTR);
 }
 
 void
@@ -2210,7 +2227,7 @@ LlvmFunctionBuilder::CALL_FUNCTION_fast(int oparg,
     // Handle bailing back to the interpreter if the assumptions below don't
     // hold.
     this->builder_.SetInsertPoint(invalid_assumptions);
-    this->CreateBailPoint(_PYFRAME_GUARD_FAIL);
+    this->CreateGuardBailPoint(_PYGUARD_CFUNC);
 
     this->builder_.SetInsertPoint(not_profiling);
 #ifdef WITH_TSC
@@ -2422,6 +2439,8 @@ LlvmFunctionBuilder::CALL_FUNCTION_VAR_KW(int oparg)
 void
 LlvmFunctionBuilder::IMPORT_NAME()
 {
+    IMPORT_NAME_STATS(total);
+
     Value *mod_name = this->Pop();
     Value *names = this->Pop();
     Value *level = this->Pop();
@@ -2580,7 +2599,7 @@ LlvmFunctionBuilder::FillPyCondBranchBailBlock(BasicBlock *bail_to,
     BasicBlock *current = this->builder_.GetInsertBlock();
 
     this->builder_.SetInsertPoint(bail_to);
-    this->CreateBailPoint(bail_idx, _PYFRAME_GUARD_FAIL);
+    this->CreateGuardBailPoint(bail_idx, _PYGUARD_BRANCH);
 
     this->builder_.SetInsertPoint(current);
 }
@@ -2696,6 +2715,17 @@ LlvmFunctionBuilder::CreateBailPoint(unsigned bail_idx, char reason)
         ConstantInt::get(PyTypeBuilder<char>::get(this->context_), reason),
         FrameTy::f_bailed_from_llvm(this->builder_, this->frame_));
     this->builder_.CreateBr(this->GetBailBlock());
+}
+
+void
+LlvmFunctionBuilder::CreateGuardBailPoint(unsigned bail_idx, char reason)
+{
+#ifdef Py_WITH_INSTRUMENTATION
+    this->builder_.CreateStore(
+        ConstantInt::get(PyTypeBuilder<char>::get(this->context_), reason),
+        FrameTy::f_guard_type(this->builder_, this->frame_));
+#endif
+    this->CreateBailPoint(bail_idx, _PYFRAME_GUARD_FAIL);
 }
 
 void
@@ -3149,7 +3179,7 @@ LlvmFunctionBuilder::STORE_SUBSCR_list_int()
     this->Push(value);
     this->Push(obj);
     this->Push(key);
-    this->CreateBailPoint(_PYFRAME_GUARD_FAIL);
+    this->CreateGuardBailPoint(_PYGUARD_STORE_SUBSCR);
 
     this->builder_.SetInsertPoint(success);
     this->DecRef(value);
@@ -3214,9 +3244,6 @@ LlvmFunctionBuilder::DELETE_SUBSCR()
 void
 LlvmFunctionBuilder::GenericBinOp(const char *apifunc)
 {
-    BINOP_INC_STATS(total);
-    BINOP_INC_STATS(omitted);
-
     Value *rhs = this->Pop();
     Value *lhs = this->Pop();
     Function *op =
@@ -3234,7 +3261,6 @@ class OptimizedBinOps {
 public:
     // Map default binary operations and type information to optimized versions.
     typedef llvm::DenseMap<InlineOperatorEntry, const char*> InlinableBinopMap;
-    typedef InlinableBinopMap::const_iterator const_iterator;
 
     OptimizedBinOps() {
 #define INLINABLE_BINOP(OP, LHS, RHS, OPT) { \
@@ -3266,22 +3292,44 @@ public:
     INLINABLE_BINOP(PyNumber_Divide, PyFloat_Type, PyFloat_Type,
                     _PyLlvm_BinDiv_Float);
 
+    // Int combined with float
+    INLINABLE_BINOP(PyNumber_Multiply, PyFloat_Type, PyInt_Type,
+                    _PyLlvm_BinMul_FloatInt);
+    INLINABLE_BINOP(PyNumber_Divide, PyFloat_Type, PyInt_Type,
+                    _PyLlvm_BinDiv_FloatInt);
+
     // List specializations
     INLINABLE_BINOP(PyObject_GetItem, PyList_Type, PyInt_Type,
                     _PyLlvm_BinSubscr_List);
+
+    // Tuple specializations
+    INLINABLE_BINOP(PyObject_GetItem, PyTuple_Type, PyInt_Type,
+                    _PyLlvm_BinSubscr_Tuple);
+
+    // String specializations
+    INLINABLE_BINOP(PyNumber_Remainder, PyString_Type, *Wildcard,
+                    _PyLlvm_BinMod_Str);
+    INLINABLE_BINOP(PyNumber_Remainder, PyUnicode_Type, *Wildcard,
+                    _PyLlvm_BinMod_Unicode);
 #undef INLINABLE_BINOP
     }
 
-    const_iterator find(InlinableBinopMap::key_type key) const {
-        return this->optimized_operations_.find(key);
-    }
+    const char *Find(const char *binop, const PyTypeObject *lhs,
+                     const PyTypeObject *rhs) const {
+        InlineOperatorEntry key;
+        key.binop = binop;
+        key.lhs_type = lhs;
+        key.rhs_type = rhs;
 
-    const_iterator end() const {
-        return this->optimized_operations_.end();
+        const_iterator iter = this->optimized_operations_.find(key);
+        if (iter == this->optimized_operations_.end())
+            return NULL;
+        return iter->second;
     }
 
 private:
     InlinableBinopMap optimized_operations_;
+    typedef InlinableBinopMap::const_iterator const_iterator;
 };
 
 static llvm::ManagedStatic<OptimizedBinOps> optimized_binops;
@@ -3289,8 +3337,6 @@ static llvm::ManagedStatic<OptimizedBinOps> optimized_binops;
 void
 LlvmFunctionBuilder::OptimizedBinOp(const char *apifunc)
 {
-    BINOP_INC_STATS(total);
-
     const PyTypeObject *lhs_type = this->GetTypeFeedback(0);
     const PyTypeObject *rhs_type = this->GetTypeFeedback(1);
     if (lhs_type == NULL || rhs_type == NULL) {
@@ -3299,16 +3345,16 @@ LlvmFunctionBuilder::OptimizedBinOp(const char *apifunc)
         return;
     }
 
-    InlineOperatorEntry e;
-    e.binop = apifunc;
-    e.lhs_type = lhs_type;
-    e.rhs_type = rhs_type;
-
-    OptimizedBinOps::const_iterator iter = optimized_binops->find(e);
-    if (iter == optimized_binops->end()) {
-        BINOP_INC_STATS(unpredictable);
-        this->GenericBinOp(apifunc);
-        return;
+    // We're always specializing the receiver, so don't check the lhs for
+    // wildcards.
+    const char *name = optimized_binops->Find(apifunc, lhs_type, rhs_type);
+    if (name == NULL) {
+        name = optimized_binops->Find(apifunc, lhs_type, Wildcard);
+        if (name == NULL) {
+            BINOP_INC_STATS(unpredictable);
+            this->GenericBinOp(apifunc);
+            return;
+        }
     }
 
     BINOP_INC_STATS(optimized);
@@ -3321,17 +3367,17 @@ LlvmFunctionBuilder::OptimizedBinOp(const char *apifunc)
     // This strategy of bailing may duplicate the work (once in the inlined
     // version, once again in the eval loop). This is generally (in a Halting
     // Problem kind of way) unsafe, but works since we're dealing with a known
-    // subset of all possible types where we control the semantics of __add__, 
+    // subset of all possible types where we control the semantics of __add__,
     // etc.
     Function *op =
-        this->GetGlobalFunction<PyObject*(PyObject*, PyObject*)>(iter->second);
+        this->GetGlobalFunction<PyObject*(PyObject*, PyObject*)>(name);
     Value *result = this->CreateCall(op, lhs, rhs, "binop_result");
     this->builder_.CreateCondBr(this->IsNull(result), bailpoint, success);
 
     this->builder_.SetInsertPoint(bailpoint);
     this->Push(lhs);
     this->Push(rhs);
-    this->CreateBailPoint(_PYFRAME_GUARD_FAIL);
+    this->CreateGuardBailPoint(_PYGUARD_BINOP);
 
     this->builder_.SetInsertPoint(success);
     this->DecRef(lhs);
@@ -3339,17 +3385,20 @@ LlvmFunctionBuilder::OptimizedBinOp(const char *apifunc)
     this->Push(result);
 }
 
-#define BINOP_METH(OPCODE, APIFUNC) 	\
-void						            \
-LlvmFunctionBuilder::OPCODE()			\
-{	                                    \
-    this->GenericBinOp(#APIFUNC);		\
+#define BINOP_METH(OPCODE, APIFUNC)     \
+void                                    \
+LlvmFunctionBuilder::OPCODE()           \
+{                                       \
+    BINOP_INC_STATS(total);             \
+    BINOP_INC_STATS(omitted);           \
+    this->GenericBinOp(#APIFUNC);       \
 }
 
 #define BINOP_OPT(OPCODE, APIFUNC)      \
 void                                    \
 LlvmFunctionBuilder::OPCODE()           \
 {                                       \
+    BINOP_INC_STATS(total);             \
     this->OptimizedBinOp(#APIFUNC);     \
 }
 

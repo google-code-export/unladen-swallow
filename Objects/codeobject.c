@@ -105,12 +105,14 @@ PyCode_New(int argcount, int nlocals, int stacksize, int flags,
 		co->co_firstlineno = firstlineno;
 		Py_INCREF(lnotab);
 		co->co_lnotab = lnotab;
-                co->co_zombieframe = NULL;
-                co->co_weakreflist = NULL;
+		co->co_zombieframe = NULL;
+		co->co_weakreflist = NULL;
 #ifdef WITH_LLVM
 		co->co_llvm_function = NULL;
 		co->co_native_function = NULL;
-		co->co_runtime_feedback = PyFeedbackMap_New();
+		// co_runtime_feedback is lazily initialized on first run to
+		// save memory for code that is never executed.
+		co->co_runtime_feedback = NULL;
 		co->co_being_compiled = 0;
 		co->co_use_llvm = 0;
 		co->co_optimization = -1;

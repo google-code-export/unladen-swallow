@@ -511,6 +511,85 @@ _PyLlvm_BinDiv_Float(PyObject *v, PyObject *w)
     return PyFloat_FromDouble(i);
 }
 
+PyObject * __attribute__((always_inline))
+_PyLlvm_BinMul_FloatInt(PyObject *v, PyObject *w)
+{
+    double a, b, i;
+    if (!(PyFloat_CheckExact(v) && PyInt_CheckExact(w))) {
+        return NULL;
+    }
+
+
+    a = PyFloat_AS_DOUBLE(v);
+    b = (double)PyInt_AS_LONG(w);
+    PyFPE_START_PROTECT("multiply", return 0)
+    i = a * b;
+    PyFPE_END_PROTECT(i)
+    return PyFloat_FromDouble(i);
+}
+
+PyObject * __attribute__((always_inline))
+_PyLlvm_BinDiv_FloatInt(PyObject *v, PyObject *w)
+{
+    double a, b, i;
+    if (!(PyFloat_CheckExact(v) && PyInt_CheckExact(w))) {
+        return NULL;
+    }
+
+    a = PyFloat_AS_DOUBLE(v);
+    b = (double)PyInt_AS_LONG(w);
+
+#ifdef Py_NAN
+    if (b == 0.0) {
+        return NULL;
+    }
+#endif
+
+    PyFPE_START_PROTECT("divide", return 0)
+    i = a / b;
+    PyFPE_END_PROTECT(i)
+    return PyFloat_FromDouble(i);
+}
+
+PyObject * __attribute__((always_inline))
+_PyLlvm_BinMod_Str(PyObject *format, PyObject *args)
+{
+    if (!PyString_Check(format))
+        return NULL;
+    return PyString_Format(format, args);
+}
+
+PyObject * __attribute__((always_inline))
+_PyLlvm_BinMod_Unicode(PyObject *format, PyObject *args)
+{
+    if (!PyUnicode_Check(format))
+        return NULL;
+    return PyUnicode_Format(format, args);
+}
+
+/* Work directly on the tuple data structure */
+PyObject * __attribute__((always_inline))
+_PyLlvm_BinSubscr_Tuple(PyObject *v, PyObject *w)
+{
+    Py_ssize_t i;
+    if (!(PyTuple_CheckExact(v) && PyInt_CheckExact(w)))
+        return NULL;
+
+    i = PyInt_AsSsize_t(w);
+
+    if (i < 0) {
+        Py_ssize_t l = Py_SIZE(v);
+        if (l < 0)
+            return NULL;
+        i += l;
+    }
+    if (i < 0 || i >= Py_SIZE(v)) {
+        return NULL;
+    }
+    Py_INCREF(PyTuple_GET_ITEM(v, i));
+    return PyTuple_GET_ITEM(v, i);
+}
+
 /* Work directly on the list data structure */
 PyObject * __attribute__((always_inline))
 _PyLlvm_BinSubscr_List(PyObject *v, PyObject *w)
@@ -530,8 +609,8 @@ _PyLlvm_BinSubscr_List(PyObject *v, PyObject *w)
     if (i < 0 || i >= Py_SIZE(v)) {
         return NULL;
     }
-    Py_INCREF(((PyListObject *)v)->ob_item[i]);
-    return ((PyListObject *)v)->ob_item[i];
+    Py_INCREF(PyList_GET_ITEM(v, i));
+    return PyList_GET_ITEM(v, i);
 }
 
 int __attribute__((always_inline))
@@ -582,9 +661,12 @@ PyLongObject *_dummy_LongObject;
 PyFloatObject *_dummy_FloatObject;
 /* PyComplexObject, */
 PyComplexObject *_dummy_ComplexObject;
+/* PyFunctionObject, */
+PyFunctionObject *_dummy_PyFunctionObject;
+/* PyMethodObject, */
+PyMethodObject *_dummy_PyMethodObject;
 /* and PyVarObject. */
 PyVarObject *_dummy_PyVarObject;
-
 
 /* Expose PyEllipsis to ConstantMirror. */
 PyObject* objectEllipsis() { return Py_Ellipsis; }

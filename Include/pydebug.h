@@ -46,9 +46,6 @@ PyAPI_DATA(Py_JitOpts) Py_JitControl;
 PyAPI_FUNC(int) Py_JitControlStrToEnum(const char *str, Py_JitOpts *flag);
 PyAPI_FUNC(const char *) Py_JitControlEnumToStr(Py_JitOpts flag);
 
-/* How much debugging info to generate for JITted code. */
-PyAPI_DATA(int) Py_GenerateDebugInfoFlag;
-
 /* this is a wrapper around getenv() that pays attention to
    Py_IgnoreEnvironmentFlag.  It should be used for getting variables like
    PYTHONPATH and PYTHONHOME from the environment */

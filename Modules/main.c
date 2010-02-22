@@ -63,13 +63,12 @@ Options and arguments (and corresponding environment variables):\n\
 -c cmd : program passed in as string (terminates option list)\n\
 -d     : debug output from parser; also PYTHONDEBUG=x\n\
 -E     : ignore PYTHON* environment variables (such as PYTHONPATH)\n\
--g#    : how much debugging info to generate; also PYTHONDEBUGINFO=x\n\
 -h     : print this help message and exit (also --help)\n\
 -i     : inspect interactively after running script; forces a prompt even\n\
--j arg : control JIT compilation: -j whenhot (default), -j never, -j always.\n\
+         if stdin does not appear to be a terminal; also PYTHONINSPECT=x\n\
 ";
 static char *usage_2 = "\
-         if stdin does not appear to be a terminal; also PYTHONINSPECT=x\n\
+-j arg : control JIT compilation: -j whenhot (default), -j never, -j always.\n\
 -m mod : run library module as a script (terminates option list)\n\
 -O#    : optimize generated code; also PYTHONOPTIMIZE=x\n\
 -Q arg : division options: -Qold (default), -Qwarn, -Qwarnall, -Qnew\n\
@@ -324,23 +323,6 @@ Py_Main(int argc, char **argv)
 #endif
 			break;
 
-		case 'g': {
-			char *first_invalid;
-			if (_PyOS_optarg[0] == '\0') {
-				/* \0 indicates no argument was found. */
-				Py_GenerateDebugInfoFlag = 1;
-				break;
-			}
-			Py_GenerateDebugInfoFlag =
-				strtol(_PyOS_optarg, &first_invalid, 10);
-			if (*first_invalid == '\0')
-				break;
-			fprintf(stderr,
-				"-g option should be an integer\n");
-			return usage(2, argv[0]);
-			/* NOTREACHED */
-		}
-
 		case 'Q':
 			if (strcmp(_PyOS_optarg, "old") == 0) {
 				Py_DivisionWarningFlag = 0;
@@ -411,13 +393,9 @@ Py_Main(int argc, char **argv)
 					Py_OptimizeFlag = 2;
 					break;
 				}
-				if (_PyOS_optarg[0] == '3') {
-					Py_OptimizeFlag = 3;
-					break;
-				}
 			}
 			fprintf(stderr,
-				"-O argument should be 0, 1, 2, or 3\n");
+				"-O argument should be 0, 1, or 2\n");
 			return usage(2, argv[0]);
 			/* NOTREACHED */
 

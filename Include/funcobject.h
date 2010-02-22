@@ -18,7 +18,8 @@ extern "C" {
  * executed so far.
  */
 
-typedef struct {
+/* If you change this, update Util/PyTypeBuilder.h accordingly. */
+typedef struct PyFunctionObject {
     PyObject_HEAD
     PyObject *func_code;	/* A code object */
     PyObject *func_globals;	/* A dictionary (other mappings won't do) */

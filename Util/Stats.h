@@ -52,9 +52,10 @@ public:
         if (data.size() == 0)
             return;
 
-        llvm::errs() << "\n" << this->name_ << " (n=" << data.size() << "):\n";
+        llvm::errs() << "\n" << this->name_ << ":\n";
         std::sort(data.begin(), data.end());
         ValueTy sum = std::accumulate(data.begin(), data.end(), 0);
+        llvm::errs() << "N: " << data.size() << "\n";
         llvm::errs() << "Min: " << data[0] << "\n";
         llvm::errs() << "Median: " << Median(data) << "\n";
         llvm::errs() << "Mean: " << sum / data.size() << "\n";

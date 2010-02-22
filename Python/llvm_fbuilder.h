@@ -440,7 +440,13 @@ private:
     // Set up a block preceding the bail-to-interpreter block.
     void CreateBailPoint(unsigned bail_idx, char reason);
     void CreateBailPoint(char reason) {
-        CreateBailPoint(f_lasti_, reason);
+        CreateBailPoint(this->f_lasti_, reason);
+    }
+
+    // Set up a block preceding the bail-to-interpreter block.
+    void CreateGuardBailPoint(unsigned bail_idx, char reason);
+    void CreateGuardBailPoint(char reason) {
+        CreateGuardBailPoint(this->f_lasti_, reason);
     }
 
     // Only for use in the constructor: Fills in the block that
@@ -694,7 +700,7 @@ private:
     llvm::Function *const function_;
     BuilderT builder_;
     const bool is_generator_;
-    llvm::DIFactory *const debug_info_;
+    llvm::DIFactory &debug_info_;
     const llvm::DICompileUnit debug_compile_unit_;
     const llvm::DISubprogram debug_subprogram_;
 

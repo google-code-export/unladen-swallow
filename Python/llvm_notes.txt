@@ -25,6 +25,9 @@ Feedback-directed optimization
 - TODO: Explain data gathering (r778)
 - TODO: Bailing back to the interpreter
 
+If run with `-j never` or `-j always`, Unladen Swallow will not gather any data
+at runtime.
+
 Whenever we encode assumptions about the world into the generated machine code,
 we need a way to detect that those assumptions are no longer valid and recover
 gracefully. These assumptions are protected by cheap-to-execute tests called
@@ -47,6 +50,10 @@ tracing: if they detect that tracing has been turned on, they immediately
 bail to the interpreter. Once tracing is disabled, though, it's perfectly safe
 to start using the machine code again.
 
+Instrumentation:
+- If configured with --with-instrumentation, the system will keep track of how
+  many feedback maps were created. This is useful for tracking memory usage.
+
 
 Hotness model: finding critical functions
 -----------------------------------------
@@ -59,16 +66,24 @@ application's performance. This model is as follows:
     - For each loop backedge, add 1 to the hotness level.
 - If the hotness level exceeds a given threshold (see eval.cc),
   compile the code object to machine code via LLVM. This check is done on
-  function-entry.
+  function-entry and generator re-entry.
 
 There several classes of functions we're trying to catch with this model:
 
 - Straight-line utility functions (lots of invocations, low running time).
 - Loop-heavy main functions (few invocations, high running time).
+- Long-running generators (few invocations, long lifetime).
+
+Miscellaneous notes:
+- JIT compilation is always disabled during startup by temporarily forcing `-j
+  never`. This improves startup time by disabling compilation and feedback
+  collection.
 
 Previous models:
 - Simple call count-based model (10000 calls == hot). This was implemented as
   an obviously-deficient baseline to be improved upon.
+- Previously, we didn't check code hotness on generator re-entry, which we
+  changed to catch long-running generators that are called once.
 
 Instrumentation:
 - Passing --with-instrumentation to ./configure will cause Python to print,
@@ -303,9 +318,11 @@ indirection/runtime overhead:
 
 
 Supported operators:
-- List subscription with an integer index.
+- List and tuple subscription with an integer index.
 - Int/int addition, subtraction, multiplication, division and modulus.
 - Float/float addition, subtraction, multiplication, division and modulus.
+- Float/int multiplication and division.
+- String and unicode formatting.
 
 Instrumentation:
 - The --with-instrumentation build includes measurements for binary operator

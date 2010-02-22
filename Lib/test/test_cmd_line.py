@@ -65,7 +65,7 @@ class CmdLineTest(unittest.TestCase):
         self.verify_valid_flag('-O1')
         self.verify_valid_flag('-OO')  # Oh oh. Same as -O2
         self.verify_valid_flag('-O2')
-        self.verify_valid_flag('-O3')
+        self.verify_invalid_flag('-O3')  # Used to be valid, no more.
         self.verify_invalid_flag('-O128')
 
     def test_q(self):
@@ -79,13 +79,6 @@ class CmdLineTest(unittest.TestCase):
             self.verify_valid_flag('-j', 'never')
             self.verify_valid_flag('-j', 'whenhot')
             self.verify_valid_flag('-j', 'always')
-
-    def test_debug_info_flag(self):
-        self.verify_valid_flag('-g')
-        self.verify_valid_flag('-g0')
-        self.verify_valid_flag('-g1')
-        self.verify_valid_flag('-g73')
-        self.verify_invalid_flag('-ggdb')
 
     def test_site_flag(self):
         self.verify_valid_flag('-S')
