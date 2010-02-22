@@ -10,6 +10,21 @@ implemented?".
 
 TODO(collinwinter): move the CodeLifecycle wiki page into this file.
 
+Important files
+---------------
+
+Here are the primary files that you'll be working on as part of Unladen Swallow:
+
+- Python/llvm_fbuilder.{h,cc} - The heart of the compiler. These files take care
+  of converting CPython bytecode to LLVM IR.
+- Python/llvm_inline_functions.c - Special-cased C functions to be inlined.
+- Lib/test/test_llvm.py - Tests for the JIT compiler. All code generation and
+  optimization changes need tests. Tests should include both positive and
+  negative cases.
+- Python/eval.cc - The interpreter loop. If you need to collect new types of
+  runtime feedback for an optimization, you'll be modifying this file.
+
+
 Invariants
 ----------
 
@@ -54,6 +69,11 @@ Instrumentation:
 - If configured with --with-instrumentation, the system will keep track of how
   many feedback maps were created. This is useful for tracking memory usage.
 
+Relevant Files:
+- Python/eval.cc - where data is actually gathered.
+- Util/RuntimeFeedback.{h,cc} - structures for recording data.
+- Unittests/RuntimeFeedbackTest.cc - tests for data gathering infrastructure.
+
 
 Hotness model: finding critical functions
 -----------------------------------------
@@ -91,21 +111,28 @@ Instrumentation:
   Misc/diff_hotness.py can then be used to highlight the differences between
   two of these tables, showing the effects of changes to the model.
 
+Relevant Files:
+- Python/eval.cc - definition, use of the hotness model.
+
 
 Memory use: Destroying unused LLVM globals
 ------------------------------------------
 
 When a user compiles a PyCodeObject to an llvm::Function, that Function holds
 references to lots of other llvm::GlobalValues produced by the PyConstantMirror
-(Util/ConstantMirror.h), each of which holds a reference to the PyObject it's
-mirroring.  If the PyCodeObject is destroyed, we want to free all the now-unused
-GlobalVariables and decref their PyObjects.  We do this by running LLVM's
-globaldce pass periodically.  Just before compiling a new PyCodeObject to IR in
+, each of which holds a reference to the PyObject it's mirroring.  If the
+PyCodeObject is destroyed, we want to free all the now-unused GlobalVariables
+and decref their PyObjects.  We do this by running LLVM's globaldce pass
+periodically.  Just before compiling a new PyCodeObject to IR in
 Python/llvm_compile.cc:_PyCode_ToLlvmIr(), we call
 PyGlobalLlvmData::MaybeCollectUnusedGlobals().  If the number of GlobalValues is
 at least 25% more than after the last collection, we run globaldce.  This
 parallels the backoff used for the ordinary cycle detector to avoid taking
 quadratic time for runs with lots of long-lived objects.
+
+Relevant Files:
+- Util/ConstantMirror.{h,cc} - utilities for mirroring Python objects into
+  constant LLVM IR types.
 
 
 Optimization: LOAD_GLOBAL compile-time caching
@@ -172,6 +199,12 @@ Instrumentation:
   how many machine code functions were disabled per globals/builtins change.
 - sys.setbailerror(True) will cause an exception to be raised if a function
   fails a guard (fatal or non-fatal) and bails back to the interpreter.
+
+Relevant Files:
+- Python/eval.cc: record feedback; link code objects with dicts.
+- Objects/codeobject.c: functions to have code objects watch dicts.
+- Objects/dictobject.c: support for having dicts push notifications to code.
+- Python/llvm_fbuilder.{h,cc}: LOAD_GLOBAL optimization code.
 
 
 Optimization: direct calls to C functions

@@ -204,12 +204,9 @@ llvmfunction_dealloc(PyLlvmFunctionObject *functionobj)
     Py_DECREF(functionobj->code_object);
 }
 
-static PyObject *
-llvmfunction_str(PyLlvmFunctionObject *functionobj)
+static _LlvmFunction *
+recompile(PyLlvmFunctionObject *functionobj)
 {
-    std::string result;
-    llvm::raw_string_ostream wrapper(result);
-
     // We clear out all llvm::Functions after emitting machine code for
     // them. Compile the code object back to IR, then throw that IR away. We
     // assume that people aren't printing out code objects in tight loops.
@@ -241,12 +238,38 @@ llvmfunction_str(PyLlvmFunctionObject *functionobj)
         break;
     }
 
+    return new_function;
+}
+
+static PyObject *
+llvmfunction_str(PyLlvmFunctionObject *function_obj)
+{
+    std::string result;
+    llvm::raw_string_ostream wrapper(result);
+
+    _LlvmFunction *new_function = recompile(function_obj);
+    if (new_function == NULL) {
+        return NULL;
+    }
     llvm::Function *func = (llvm::Function *)new_function->lf_function;
     func->print(wrapper);
     _LlvmFunction_Dealloc(new_function);
 
     wrapper.flush();
     return PyString_FromStringAndSize(result.data(), result.size());
+}
+
+static PyObject *
+func_view_cfg(PyLlvmFunctionObject *function_obj)
+{
+    _LlvmFunction *new_function = recompile(function_obj);
+    if (new_function == NULL) {
+        return NULL;
+    }
+    llvm::Function *func = (llvm::Function *)new_function->lf_function;
+    func->viewCFG();
+    _LlvmFunction_Dealloc(new_function);
+    Py_RETURN_NONE;
 }
 
 static PyObject *
@@ -266,6 +289,12 @@ func_get_module(PyLlvmFunctionObject *op)
     return PyString_FromStringAndSize(result.data(),
                                       result.size());
 }
+
+static PyMethodDef llvmfunction_methods[] = {
+    {"view_cfg",  (PyCFunction)func_view_cfg, METH_NOARGS,
+     "View the CFG for this function."},
+    {NULL, NULL, 0, NULL}        /* Sentinel */
+};
 
 static PyGetSetDef llvmfunction_getsetlist[] = {
     {"module", (getter)func_get_module, NULL},
@@ -301,7 +330,7 @@ PyTypeObject PyLlvmFunction_Type = {
 	0,				/* tp_weaklistoffset */
 	0,				/* tp_iter */
 	0,				/* tp_iternext */
-	0,				/* tp_methods */
+	llvmfunction_methods,		/* tp_methods */
 	0,				/* tp_members */
 	llvmfunction_getsetlist,	/* tp_getset */
 	0,				/* tp_base */
