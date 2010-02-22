@@ -1285,9 +1285,7 @@ tags::
 
 # Create a tags file for GNU Emacs
 TAGS::
-	cd $(srcdir); \
-	etags Include/*.h; \
-	for i in $(SRCDIRS); do etags -a $$i/*.[ch]; done
+	cd $(srcdir); etags `find . -name \*.c -o -name \*.c -o -name \*.cc`
 
 # Sanitation targets -- clean leaves libraries, executables and tags
 # files, which clobber removes as well
