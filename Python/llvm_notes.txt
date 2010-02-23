@@ -363,3 +363,36 @@ Instrumentation:
 
 Relevant revisions:
 - http://code.google.com/p/unladen-swallow/source/detail?r=957
+
+
+Optimization: specialization of builtin functions
+-------------------------------------------------
+
+Some builtin functions, like len(), go through a huge amount of indirection
+before doing some trivial amount of work. We specialize these per type, thus
+avoiding the indirection and inlining the trivial amount of work at the end of
+the chain.
+
+Supported builtins:
+- len() of str, unicode, list, tuple and dict.
+
+
+Instrumentation:
+- The --with-instrumentation build includes data on builtin specialization.
+
+Future work:
+We currently hand-specialize the builtins for a limited number of types. This
+should be replaced by a system where we use Clang to compile builtins and other
+runtime functions to LLVM IR, then use a combination of top-down inlining (ala
+Waddell & Dybvig, 2004) and alias analysis to perform the specialization
+automatically.
+
+The manual specialization solution is suboptimal and will not scale. However, it
+sets a baseline performance level that the future Clang-based builtins
+specialization system will be required to meet or ideally exceed.
+
+Relevant files:
+- Python/llvm_inline_functions.c: definition of the manually-specialized
+  functions.
+- Python/llvm_fbuilder.{h,cc}: special-casing for this kind of inlining during
+  bytecode-to-LLVM IR compilation.

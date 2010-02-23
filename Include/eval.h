@@ -256,6 +256,10 @@ PyAPI_FUNC(int) _PyEval_TraceEnterFunction(PyThreadState *, struct _frame *);
 PyAPI_FUNC(int) _PyEval_TraceLeaveFunction(PyThreadState *, struct _frame *,
                                            PyObject *, char, char);
 
+
+/* Built-in functions which can be inlined by the LLVM code generator. */
+PyAPI_FUNC(PyObject *) _PyBuiltin_Len(PyObject *, PyObject *);
+
 #ifdef __cplusplus
 }
 #endif

@@ -2807,6 +2807,16 @@ PyEval_EvalFrame(PyFrameObject *f)
 				 * _PyEval_CallFunction(). */
 				PyObject **func = stack_pointer - num_args - 1;
 				RECORD_FUNC(*func);
+				/* For C functions, record the types passed, 
+				 * in order to do potential inlining. */
+				if (PyCFunction_Check(*func) &&
+					(PyCFunction_GET_FLAGS(*func) &
+					    METH_ARG_RANGE)) {
+					for(int i = 0; i < num_args; i++) {
+						RECORD_TYPE(i + 1,
+						       stack_pointer[-i-1]);
+					}
+				}
 			}
 #endif
 			x = _PyEval_CallFunction(stack_pointer,

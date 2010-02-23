@@ -548,6 +548,12 @@ private:
     void CALL_FUNCTION_safe(int num_args);
     void CALL_FUNCTION_fast(int num_args, const PyRuntimeFeedback *);
 
+    // Specialized version of CALL_FUNCTION for len() on certain types.
+    void CALL_FUNCTION_fast_len(llvm::Value *actual_func,
+                                llvm::Value *stack_pointer,
+                                llvm::BasicBlock *invalid_assumptions,
+                                const char *function_name);
+
     // LOAD/STORE_ATTR_safe always works, while LOAD/STORE_ATTR_fast is
     // optimized to skip the descriptor/method lookup on the type if the object
     // type matches.  It will return false if it fails.
