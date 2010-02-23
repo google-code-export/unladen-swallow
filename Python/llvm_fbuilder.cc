@@ -135,8 +135,8 @@ public:
         errs() << "\nBinary operator inlining:\n";
         errs() << "Total binops: " << this->total << "\n";
         errs() << "Optimized binops: " << this->optimized << "\n";
-        errs() << "Unpredictable binops: " << this->unpredictable << "\n";
-        errs() << "Omitted binops: " << this->omitted << "\n";
+        errs() << "Unpredictable types: " << this->unpredictable << "\n";
+        errs() << "Binops without inline version: " << this->omitted << "\n";
     }
 
     // Total number of binary opcodes compiled.
@@ -3290,7 +3290,7 @@ LlvmFunctionBuilder::STORE_SUBSCR()
         return;
     }
     else {
-        BINOP_INC_STATS(unpredictable);
+        BINOP_INC_STATS(omitted);
         this->STORE_SUBSCR_safe();
         return;
     }
@@ -3421,7 +3421,7 @@ LlvmFunctionBuilder::OptimizedBinOp(const char *apifunc)
     if (name == NULL) {
         name = optimized_binops->Find(apifunc, lhs_type, Wildcard);
         if (name == NULL) {
-            BINOP_INC_STATS(unpredictable);
+            BINOP_INC_STATS(omitted);
             this->GenericBinOp(apifunc);
             return;
         }
