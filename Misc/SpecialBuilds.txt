@@ -28,6 +28,7 @@ collected:
 - How many feedback maps were created.
 - Stats on how well the JIT was able to optimize import statements.
 - Stats on how well the JIT was able to optimize certain builtins.
+- Data on how long execution blocked for JIT compilation.
 
 This data will be printed to stderr at interpreter-shutdown.
 

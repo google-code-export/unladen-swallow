@@ -51,10 +51,10 @@ public:
         DataType data = this->data_;
         if (data.size() == 0)
             return;
+        ValueTy sum = std::accumulate(data.begin(), data.end(), ValueTy());
+        std::sort(data.begin(), data.end());
 
         llvm::errs() << "\n" << this->name_ << ":\n";
-        std::sort(data.begin(), data.end());
-        ValueTy sum = std::accumulate(data.begin(), data.end(), 0);
         llvm::errs() << "N: " << data.size() << "\n";
         llvm::errs() << "Min: " << data[0] << "\n";
         llvm::errs() << "Median: " << Median(data) << "\n";

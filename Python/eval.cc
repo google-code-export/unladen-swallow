@@ -54,6 +54,35 @@ _PyObject_Call(PyObject *func, PyObject *arg, PyObject *kw)
 
 
 #ifdef Py_WITH_INSTRUMENTATION
+std::string
+_PyEval_GetCodeName(PyCodeObject *code)
+{
+	std::string result;
+	llvm::raw_string_ostream wrapper(result);
+
+	wrapper << PyString_AsString(code->co_filename)
+		<< ":" << code->co_firstlineno << " "
+		<< "(" << PyString_AsString(code->co_name) << ")";
+	wrapper.flush();
+	return result;
+}
+
+// Collect statistics about how long we block for compilation to LLVM IR and to
+// machine code.
+class IrCompilationTimes : public DataVectorStats<int64_t> {
+public:
+	IrCompilationTimes()
+		: DataVectorStats<int64_t>("Time blocked for IR JIT in ns") {}
+};
+class McCompilationTimes : public DataVectorStats<int64_t> {
+public:
+	McCompilationTimes()
+		: DataVectorStats<int64_t>("Time blocked for MC JIT in ns") {}
+};
+
+static llvm::ManagedStatic<IrCompilationTimes> ir_compilation_times;
+static llvm::ManagedStatic<McCompilationTimes> mc_compilation_times;
+
 class FeedbackMapCounter {
 public:
 	~FeedbackMapCounter() {
@@ -103,9 +132,7 @@ HotnessTracker::~HotnessTracker()
 	std::sort(to_sort.begin(), to_sort.end(), compare_hotness);
 	for (std::vector<PyCodeObject*>::iterator co = to_sort.begin();
 	     co != to_sort.end(); ++co) {
-		errs() << PyString_AsString((*co)->co_filename)
-		       << ":" << (*co)->co_firstlineno << " "
-		       << "(" << PyString_AsString((*co)->co_name) << ")"
+		errs() << _PyEval_GetCodeName(*co)
 		       << " -> " << (*co)->co_hotness << "\n";
 	}
 }
@@ -127,10 +154,7 @@ public:
 			PyCodeObject *code = it->first;
 			if (code->co_hotness == it->second)
 				continue;
-			errs() << "\t"
-			       << PyString_AsString(code->co_name) << ":"
-			       << code->co_firstlineno << " "
-			       << "(" << PyString_AsString(code->co_name) << ")"
+			errs() << "\t" << _PyEval_GetCodeName(code)
 			       << "\t" << it->second << " -> "
 			       << code->co_hotness << "\n";
 		}
@@ -4305,6 +4329,9 @@ maybe_compile(PyCodeObject *co, PyFrameObject *f)
 			if (co->co_optimization < target_optimization) {
 				PY_LOG_TSC_EVENT(EVAL_COMPILE_START);
 				int r;
+#if Py_WITH_INSTRUMENTATION
+				Timer timer(*ir_compilation_times);
+#endif
 				PY_LOG_TSC_EVENT(LLVM_COMPILE_START);
 				if (_PyCode_WatchGlobals(co, f->f_globals,
 				                         f->f_builtins)) {
@@ -4323,6 +4350,9 @@ maybe_compile(PyCodeObject *co, PyFrameObject *f)
 		}
 		if (co->co_native_function == NULL) {
 			// Now try to JIT the IR function to machine code.
+#if Py_WITH_INSTRUMENTATION
+			Timer timer(*mc_compilation_times);
+#endif
 			PY_LOG_TSC_EVENT(JIT_START);
 			co->co_native_function =
 				_LlvmFunction_Jit(co->co_llvm_function);
