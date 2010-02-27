@@ -399,7 +399,6 @@ LIBRARY_OBJS=	\
 		$(PYTHON_OBJS) \
 		$(MODULE_OBJS) \
 		$(SIGNAL_OBJS) \
-		$(LLVMJIT_OBJS) \
 		$(MODOBJS)
 
 #########################################################################
@@ -464,7 +463,8 @@ sysconfig: llvm
 	esac
 
 # Build the interpreter
-$(BUILDPYTHON): Modules/python.o $(LIBRARY) $(LDLIBRARY) $(BCLIBRARY) sysconfig $(LLVM_CONFIG)
+$(BUILDPYTHON): Modules/python.o $(LIBRARY) $(LLVMJIT_OBJS) $(LDLIBRARY) \
+	$(BCLIBRARY) sysconfig $(LLVM_CONFIG)
 	$(LINKCC) $(LDFLAGS) -o $@ Modules/python.o $(LINKFORSHARED) $(BLDLIBRARY) \
 		$(LIBS) $(MODLIBS) $(SYSLIBS) $(LDLAST)
 
