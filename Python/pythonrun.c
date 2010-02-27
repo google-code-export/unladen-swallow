@@ -182,6 +182,9 @@ Py_InitializeEx(int install_sigs)
 	PyInterpreterState *interp;
 	PyThreadState *tstate;
 	PyObject *bimod, *sysmod;
+#ifdef WITH_LLVM
+	PyObject *_llvmjit;
+#endif
 	char *p;
 	char *icodeset = NULL; /* On Windows, input codeset may theoretically 
 			          differ from output codeset. */
@@ -216,11 +219,6 @@ Py_InitializeEx(int install_sigs)
                 /* No error checking.  If it's invalid, we ignore it.  */
                 Py_JitControlStrToEnum(p, &Py_JitControl);
 	}
-
-#ifdef WITH_LLVM
-        if (!_PyLlvm_Init())
-		Py_FatalError("Py_Initialize: can't init LLVM support");
-#endif
 
 	interp = PyInterpreterState_New();
 	if (interp == NULL)
@@ -289,6 +287,15 @@ Py_InitializeEx(int install_sigs)
 
 	if (install_sigs)
 		initsigs(); /* Signal handling stuff, including initintr() */
+
+#ifdef WITH_LLVM
+	if ((_llvmjit = PyImport_ImportModule("_llvmjit")) != NULL) {
+		Py_DECREF(_llvmjit);
+	} else {
+		/* LLVM module not found */
+		PyErr_Clear();
+	}
+#endif
 
 	/* Initialize warnings. */
 	_PyWarnings_Init();
@@ -599,7 +606,8 @@ Py_Finalize(void)
 	PyFloat_Fini();
 	PyDict_Fini();
 #ifdef WITH_LLVM
-	_PyLlvm_Fini();
+	if (_PyLlvmFuncs.loaded)
+		_PyLlvmFuncs.llvm_fini();
 #endif
 
 #ifdef Py_USING_UNICODE

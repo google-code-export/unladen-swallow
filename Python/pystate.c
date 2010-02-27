@@ -78,7 +78,7 @@ PyInterpreterState_New(void)
 		interp->codec_search_cache = NULL;
 		interp->codec_error_registry = NULL;
 #ifdef WITH_LLVM
-		interp->global_llvm_data = PyGlobalLlvmData_New();
+		interp->global_llvm_data = NULL;
 #endif
 #ifdef HAVE_DLOPEN
 #ifdef RTLD_NOW
@@ -110,7 +110,8 @@ PyInterpreterState_Clear(PyInterpreterState *interp)
 		PyThreadState_Clear(p);
 	HEAD_UNLOCK();
 #ifdef WITH_LLVM
-	PyGlobalLlvmData_Clear(interp->global_llvm_data);
+	if (_PyLlvmFuncs.loaded)
+		_PyLlvmFuncs.global_data_clear(interp->global_llvm_data);
 #endif
 	Py_CLEAR(interp->codec_search_path);
 	Py_CLEAR(interp->codec_search_cache);
@@ -152,7 +153,8 @@ PyInterpreterState_Delete(PyInterpreterState *interp)
 	*p = interp->next;
 	HEAD_UNLOCK();
 #ifdef WITH_LLVM
-	PyGlobalLlvmData_Free(interp->global_llvm_data);
+	if (_PyLlvmFuncs.loaded)
+		_PyLlvmFuncs.global_data_free(interp->global_llvm_data);
 #endif
 	free(interp);
 }
@@ -653,5 +655,3 @@ PyGILState_Release(PyGILState_STATE oldstate)
 #endif
 
 #endif /* WITH_THREAD */
-
-

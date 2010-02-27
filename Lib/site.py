@@ -125,7 +125,12 @@ def addbuilddir():
         build_dir += '-pydebug'
     build_dir = os.path.join(os.path.dirname(sys.path[-1]), build_dir)
     sys.path.append(build_dir)
-
+    # since the initial import of _llvmjit fails when running out of a build
+    # directory, try again
+    try:
+        import _llvmjit
+    except ImportError:
+        pass
 
 def _init_pathinfo():
     """Return a set containing all existing directory entries from sys.path"""

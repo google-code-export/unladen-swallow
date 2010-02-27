@@ -358,24 +358,6 @@ PyFullFeedback::GetCounter(unsigned counter_id) const
     return this->counters_[counter_id];
 }
 
-PyFeedbackMap *
-PyFeedbackMap_New()
-{
-    return new PyFeedbackMap;
-}
-
-void
-PyFeedbackMap_Del(PyFeedbackMap *map)
-{
-    delete map;
-}
-
-void
-PyFeedbackMap_Clear(PyFeedbackMap *map)
-{
-    map->Clear();
-}
-
 const PyRuntimeFeedback *
 PyFeedbackMap::GetFeedbackEntry(unsigned opcode_index, unsigned arg_index) const
 {
