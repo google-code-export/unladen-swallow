@@ -24,7 +24,6 @@
 #include "llvm/GlobalVariable.h"
 #include "llvm/Module.h"
 #include "llvm/ModuleProvider.h"
-#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -51,8 +50,13 @@ static PyGlobalLlvmData *global_llvm_data = NULL;
 PyGlobalLlvmData *
 PyGlobalLlvmData::Get()
 {
-    assert(global_llvm_data != NULL && "global_llvm_data uninitialized!");
     return global_llvm_data;
+}
+
+void
+PyGlobalLlvmData::Init()
+{
+    global_llvm_data = new PyGlobalLlvmData;
 }
 
 #define STRINGIFY(X) STRINGIFY2(X)
@@ -234,14 +238,6 @@ PyGlobalLlvmData::Optimize(llvm::Function &f, int level)
     return 0;
 }
 
-int
-PyGlobalLlvmData_Optimize(struct PyGlobalLlvmData *global_data,
-                          _LlvmFunction *llvm_function,
-                          int level)
-{
-    return _LlvmFunction_Optimize(global_data, llvm_function, level);
-}
-
 #ifdef Py_WITH_INSTRUMENTATION
 // Collect statistics about the time it takes to collect unused globals.
 class GlobalGCTimes : public DataVectorStats<int64_t> {
@@ -298,12 +294,6 @@ PyGlobalLlvmData::CollectUnusedGlobals()
 #endif
 }
 
-void
-PyGlobalLlvmData_CollectUnusedGlobals()
-{
-    PyGlobalLlvmData::Get()->CollectUnusedGlobals();
-}
-
 llvm::Value *
 PyGlobalLlvmData::GetGlobalStringPtr(const std::string &value)
 {
@@ -334,37 +324,4 @@ PyGlobalLlvmData::GetGlobalStringPtr(const std::string &value)
     };
     return llvm::ConstantExpr::getGetElementPtr(
         llvm::cast<llvm::Constant>(the_string), indices, 2);
-}
-
-int
-_PyLlvm_Init()
-{
-    llvm::cl::ParseEnvironmentOptions("python", "PYTHONLLVMFLAGS", "", true);
-
-    global_llvm_data = new PyGlobalLlvmData();
-
-    if (PyType_Ready(&PyLlvmFunction_Type) < 0)
-        return 0;
-
-    return 1;
-}
-
-void
-_PyLlvm_Fini()
-{
-    delete global_llvm_data;
-    global_llvm_data = NULL;
-    llvm::llvm_shutdown();
-}
-
-int
-PyLlvm_SetDebug(int on)
-{
-#ifdef NDEBUG
-    if (on)
-        return 0;
-#else
-    llvm::DebugFlag = on;
-#endif
-    return 1;
 }

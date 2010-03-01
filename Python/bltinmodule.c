@@ -1601,8 +1601,8 @@ supply its own iterator, or be a sequence.\n\
 In the second form, the callable is called until it returns the sentinel.");
 
 
-static PyObject *
-builtin_len(PyObject *self, PyObject *v)
+PyObject *
+_PyBuiltin_Len(PyObject *self, PyObject *v)
 {
 	Py_ssize_t res;
 
@@ -2967,7 +2967,7 @@ static PyMethodDef builtin_methods[] = {
  	 issubclass_doc, /*min_arity=*/2, /*max_arity=*/2},
  	{"iter",	(PyCFunction)builtin_iter,       METH_ARG_RANGE,
  	 iter_doc, /*min_arity=*/1, /*max_arity=*/2},
- 	{"len",		builtin_len,        METH_O, len_doc},
+ 	{"len",		_PyBuiltin_Len,     METH_O, len_doc},
  	{"locals",	(PyCFunction)builtin_locals,     METH_NOARGS,
  	 locals_doc},
  	{"map",		builtin_map,        METH_VARARGS, map_doc},

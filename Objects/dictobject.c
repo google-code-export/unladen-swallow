@@ -8,6 +8,7 @@
 */
 
 #include "Python.h"
+#include "Python/global_llvm_data_fwd.h"
 
 
 /* Set a key error with the specified argument, wrapping it in a
@@ -2113,8 +2114,10 @@ static void
 notify_watchers_helper(PyDictObject *self)
 {
 	Py_ssize_t i;
-	/* No-op if not configured with --with-instrumentation. */
-	_PyEval_RecordWatcherCount(self->ma_watchers_used);
+#ifdef Py_WITH_INSTRUMENTATION
+	if (_PyLlvmFuncs.loaded)
+		_PyLlvmFuncs.record_watcher_count(self->ma_watchers_used);
+#endif
 
 	/* Assume that we're only updating PyCodeObjects. This may need to be
 	   made more general in the future.

@@ -183,6 +183,9 @@ Py_InitializeEx(int install_sigs)
 	PyInterpreterState *interp;
 	PyThreadState *tstate;
 	PyObject *bimod, *sysmod;
+#ifdef WITH_LLVM
+	PyObject *_llvmjit;
+#endif
 	char *p;
 	char *icodeset = NULL; /* On Windows, input codeset may theoretically 
 			          differ from output codeset. */
@@ -238,12 +241,6 @@ Py_InitializeEx(int install_sigs)
 	if (!PyByteArray_Init())
 		Py_FatalError("Py_Initialize: can't init bytearray");
 
-#ifdef WITH_LLVM
-        if (!_PyLlvm_Init())
-		Py_FatalError("Py_Initialize: can't init LLVM support");
-        PyLlvm_StartCompilation();
-#endif
-
 	_PyFloat_Init();
 
 	interp->modules = PyDict_New();
@@ -291,6 +288,15 @@ Py_InitializeEx(int install_sigs)
 
 	if (install_sigs)
 		initsigs(); /* Signal handling stuff, including initintr() */
+
+#ifdef WITH_LLVM
+	if ((_llvmjit = PyImport_ImportModule("_llvmjit")) != NULL) {
+		Py_DECREF(_llvmjit);
+	} else {
+		/* LLVM module not found */
+		PyErr_Clear();
+	}
+#endif
 
 	/* Initialize warnings. */
 	_PyWarnings_Init();
@@ -527,10 +533,11 @@ Py_Finalize(void)
 #endif
 
 #ifdef WITH_LLVM
-        /* Stop the LLVM compilation background thread.  This must be done
-         * before we finalize the GIL, delete the thread state, or finalize the
-         * modules, because it uses those things.  */
-        PyLlvm_StopCompilation();
+	/* Stop the LLVM compilation background thread.  This must be done
+	 * before we finalize the GIL, delete the thread state, or finalize the
+	 * modules, because it uses those things.  */
+	if (_PyLlvmFuncs.loaded)
+		_PyLlvmFuncs.llvmthread_stop();
 #endif
 
 	/* Destroy all modules */
@@ -608,7 +615,8 @@ Py_Finalize(void)
 	PyFloat_Fini();
 	PyDict_Fini();
 #ifdef WITH_LLVM
-	_PyLlvm_Fini();
+	if (_PyLlvmFuncs.loaded)
+		_PyLlvmFuncs.llvm_fini();
 #endif
 
 #ifdef Py_USING_UNICODE

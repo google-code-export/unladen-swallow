@@ -641,6 +641,58 @@ _PyLlvm_StoreSubscr_List(PyObject *o, PyObject *key, PyObject *value)
     return 0;
 }
 
+// TODO(jyasskin): remove these in favor of Clang-based top-down inlining. These
+// establish a baseline the more sophisticated system will need to meet or
+// exceed.
+PyObject * __attribute__((always_inline))
+_PyLlvm_BuiltinLen_String(PyObject *o)
+{
+    if (!PyString_CheckExact(o))
+        return NULL;
+
+    Py_ssize_t size = Py_SIZE(o);
+    return PyInt_FromSsize_t(size);
+}
+
+PyObject * __attribute__((always_inline))
+_PyLlvm_BuiltinLen_Unicode(PyObject *o)
+{
+    if (!PyUnicode_CheckExact(o))
+        return NULL;
+
+    Py_ssize_t size = ((PyUnicodeObject *)o)->length;
+    return PyInt_FromSsize_t(size);
+}
+
+PyObject * __attribute__((always_inline))
+_PyLlvm_BuiltinLen_List(PyObject *o)
+{
+    if (!PyList_CheckExact(o))
+        return NULL;
+
+    Py_ssize_t size = Py_SIZE(o);
+    return PyInt_FromSsize_t(size);
+}
+
+PyObject * __attribute__((always_inline))
+_PyLlvm_BuiltinLen_Tuple(PyObject *o)
+{
+    if (!PyTuple_CheckExact(o))
+        return NULL;
+
+    Py_ssize_t size = Py_SIZE(o);
+    return PyInt_FromSsize_t(size);
+}
+
+PyObject * __attribute__((always_inline))
+_PyLlvm_BuiltinLen_Dict(PyObject *o)
+{
+    if (!PyDict_CheckExact(o))
+        return NULL;
+
+    Py_ssize_t size = ((PyDictObject *)o)->ma_used;
+    return PyInt_FromSsize_t(size);
+}
 
 /* Define a global using PyTupleObject so we can look it up from
    TypeBuilder<PyTupleObject>. */

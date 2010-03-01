@@ -52,11 +52,10 @@ class DebuggerTests(unittest.TestCase):
                                   "--args",
                                   sys.executable, "-c", """
 import _llvm
+_llvm.set_jit_control("always")
 def foo(): bar()
 def bar(): baz()
 def baz(): print 'Hello, World!'
-for function in (foo, bar, baz):
-    _llvm.compile(function.__code__, 2)
 foo()""")
         # Get the indices of each function in the stack trace.
         foo, bar, baz, output = map(

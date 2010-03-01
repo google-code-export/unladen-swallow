@@ -178,24 +178,6 @@ PyAPI_FUNC(PyObject *) PyEval_EvalCodeEx(PyCodeObject *co,
 
 PyAPI_FUNC(PyObject *) _PyEval_CallTracing(PyObject *func, PyObject *args);
 
-/* Instrumentation functions. */
-
-#ifdef Py_WITH_INSTRUMENTATION
-/* Record that a given code object failed a fatal guard, thus invalidating its
-   machine code function. We use this to analyze how many functions have their
-   machine code invalidated, but continue to be called, which can negatively
-   impact performance. */
-PyAPI_FUNC(void) _PyEval_RecordFatalBail(PyCodeObject *code);
-
-/* Record how many watchers a given dict has. This is used to track how many
-   watchers the globals/builtins dicts are accumulating. */
-PyAPI_FUNC(void) _PyEval_RecordWatcherCount(size_t watcher_count);
-#else
-#define _PyEval_RecordFatalBail(code)
-#define _PyEval_RecordWatcherCount(watcher_count)
-#endif  /* Py_WITH_INSTRUMENTATION */
-
-
 /* Helper functions and objects shared by the bytecode and LLVM
    implementations. */
 
@@ -264,6 +246,10 @@ PyAPI_FUNC(void) _PyEval_CallExcTrace(PyThreadState *, struct _frame *);
 PyAPI_FUNC(int) _PyEval_TraceEnterFunction(PyThreadState *, struct _frame *);
 PyAPI_FUNC(int) _PyEval_TraceLeaveFunction(PyThreadState *, struct _frame *,
                                            PyObject *, char, char);
+
+
+/* Built-in functions which can be inlined by the LLVM code generator. */
+PyAPI_FUNC(PyObject *) _PyBuiltin_Len(PyObject *, PyObject *);
 
 #ifdef __cplusplus
 }

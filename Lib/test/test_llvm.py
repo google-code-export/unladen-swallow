@@ -3134,6 +3134,36 @@ def foo(trigger):
         self.assertRaises(IndexError, foo, a, -10, 10)
         self.assertRaises(IndexError, foo, a, 10, 10)
 
+    def test_inlining_string_len(self):
+        self.len_inlining_test("abcdef", length=6, unexpected_arg=[])
+
+    def test_inlining_unicode_len(self):
+        self.len_inlining_test(u"abcdef", length=6, unexpected_arg=[])
+
+    def test_inlining_list_len(self):
+        self.len_inlining_test([1, 2, 3, 4], length=4, unexpected_arg="")
+
+    def test_inlining_tuple_len(self):
+        self.len_inlining_test((1, 2, 3), length=3, unexpected_arg=[])
+
+    def test_inlining_dict_len(self):
+        self.len_inlining_test({1: 2, 3: 4}, length=2, unexpected_arg=[])
+
+    def len_inlining_test(self, arg, length, unexpected_arg):
+        foo = compile_for_llvm('foo', 'def foo(s): return len(s)',
+                               optimization_level=None)
+        spin_until_hot(foo, [arg])
+        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertEqual(foo(arg), length)
+
+        ir = str(foo.__code__.co_llvm)
+        self.assertContains("PyInt_FromSsize_t", ir)
+        self.assertNotContains("_PyEval_CallFunction", ir)
+        self.assertNotContains("@len", ir)
+
+        # Make sure unexpected types bail to the interpreter
+        self.assertRaises(RuntimeError, foo, unexpected_arg)
+
     @at_each_optimization_level
     def test_access_frame_locals_via_vars(self, level):
         # We need to be able to call vars() inside an LLVM-compiled function
@@ -3232,7 +3262,7 @@ def foo(x):
 def foo(x):
     if x:
         return 7
-    len([])
+    hex(1)
     return 8
 """, optimization_level=None)
 
@@ -3248,7 +3278,7 @@ def foo(x):
         self.assertEqual(foo(False), 8)
 
         # Make sure we didn't actually compile the untaken branch to LLVM IR.
-        self.assertTrue("@len" not in str(foo.__code__.co_llvm))
+        self.assertTrue("@hex" not in str(foo.__code__.co_llvm))
 
     def test_POP_JUMP_IF_FALSE_training_inconsistent(self):
         # If we have runtime feedback, we'd like to be able to omit untaken
@@ -3257,7 +3287,7 @@ def foo(x):
 def foo(x):
     if x:
         return 7
-    len([])
+    hex(1)
     return 8
 """, optimization_level=None)
 
@@ -3268,7 +3298,7 @@ def foo(x):
         self.assertEqual(foo(False), 8)  # Does not raise RuntimeError
 
         # Make sure we compiled both branches to LLVM IR.
-        self.assertContains("@len", str(foo.__code__.co_llvm))
+        self.assertContains("@hex", str(foo.__code__.co_llvm))
 
     def test_POP_JUMP_IF_TRUE_training_consistent(self):
         # If we have runtime feedback, we'd like to be able to omit untaken
@@ -3279,7 +3309,7 @@ def foo(x):
 def foo(x):
     if not x:
         return 7
-    len([])
+    hex(1)
     return 8
 """, optimization_level=None)
 
@@ -3295,7 +3325,7 @@ def foo(x):
         self.assertEqual(foo(True), 8)
 
         # Make sure we didn't actually compile the untaken branch to LLVM IR.
-        self.assertTrue("@len" not in str(foo.__code__.co_llvm))
+        self.assertTrue("@hex" not in str(foo.__code__.co_llvm))
 
     def test_POP_JUMP_IF_TRUE_training_inconsistent(self):
         # If we have runtime feedback, we'd like to be able to omit untaken
@@ -3304,7 +3334,7 @@ def foo(x):
 def foo(x):
     if not x:
         return 7
-    len([])
+    hex(1)
     return 8
 """, optimization_level=None)
 
@@ -3315,7 +3345,7 @@ def foo(x):
         self.assertEqual(foo(True), 8)  # Does not raise RuntimeError
 
         # Make sure we compiled both branches to LLVM IR.
-        self.assertContains("@len", str(foo.__code__.co_llvm))
+        self.assertContains("@hex", str(foo.__code__.co_llvm))
 
     def test_JUMP_IF_FALSE_OR_POP_training_consistent(self):
         # If we have runtime feedback, we'd like to be able to omit untaken
@@ -3324,7 +3354,7 @@ def foo(x):
         # taken/not-taken).
         foo = compile_for_llvm("foo", """
 def foo(x):
-    return x and len([1, 2])
+    return x and hex(1)
 """, optimization_level=None)
 
         spin_until_hot(foo, [False])
@@ -3336,27 +3366,27 @@ def foo(x):
 
         sys.setbailerror(False)
         self.assertTrue(foo.__code__.__use_llvm__)
-        self.assertEqual(foo(True), 2)
+        self.assertEqual(foo(True), '0x1')
 
         # Make sure we didn't actually compile the untaken branch to LLVM IR.
-        self.assertTrue("@len" not in str(foo.__code__.co_llvm))
+        self.assertTrue("@hex" not in str(foo.__code__.co_llvm))
 
     def test_JUMP_IF_FALSE_OR_POP_training_inconsistent(self):
         # If we have runtime feedback, we'd like to be able to omit untaken
         # branches. We can't do this, though, if the branch is inconsistent.
         foo = compile_for_llvm("foo", """
 def foo(x):
-    return x and len([1, 2])
+    return x and hex(1)
 """, optimization_level=None)
 
         spin_until_hot(foo, [True], [False])
 
         self.assertTrue(foo.__code__.__use_llvm__)
         self.assertEqual(foo(False), False)
-        self.assertEqual(foo(True), 2)  # Does not raise RuntimeError
+        self.assertEqual(foo(True), '0x1')  # Does not raise RuntimeError
 
         # Make sure we compiled both branches to LLVM IR.
-        self.assertContains("@len", str(foo.__code__.co_llvm))
+        self.assertContains("@hex", str(foo.__code__.co_llvm))
 
     def test_JUMP_IF_TRUE_OR_POP_training_consistent(self):
         # If we have runtime feedback, we'd like to be able to omit untaken
@@ -3365,7 +3395,7 @@ def foo(x):
         # taken/not-taken).
         foo = compile_for_llvm("foo", """
 def foo(x):
-    return x or len([1, 2])
+    return x or hex(1)
 """, optimization_level=None)
 
         spin_until_hot(foo, [True])
@@ -3377,27 +3407,27 @@ def foo(x):
 
         sys.setbailerror(False)
         self.assertTrue(foo.__code__.__use_llvm__)
-        self.assertEqual(foo(False), 2)
+        self.assertEqual(foo(False), '0x1')
 
         # Make sure we didn't actually compile the untaken branch to LLVM IR.
-        self.assertTrue("@len" not in str(foo.__code__.co_llvm))
+        self.assertTrue("@hex" not in str(foo.__code__.co_llvm))
 
     def test_JUMP_IF_TRUE_OR_POP_training_inconsistent(self):
         # If we have runtime feedback, we'd like to be able to omit untaken
         # branches. We can't do this, though, if the branch is inconsistent.
         foo = compile_for_llvm("foo", """
 def foo(x):
-    return x or len([1, 2])
+    return x or hex(1)
 """, optimization_level=None)
 
         spin_until_hot(foo, [True], [False])
 
         self.assertTrue(foo.__code__.__use_llvm__)
         self.assertEqual(foo(True), True)
-        self.assertEqual(foo(False), 2)  # Does not raise RuntimeError
+        self.assertEqual(foo(False), '0x1')  # Does not raise RuntimeError
 
         # Make sure we compiled both branches to LLVM IR.
-        self.assertContains("@len", str(foo.__code__.co_llvm))
+        self.assertContains("@hex", str(foo.__code__.co_llvm))
 
     def test_import_does_not_bail(self):
         # Regression test: this simple import (which hits sys.modules!) used
@@ -3971,10 +4001,19 @@ class SetJitControlTests(LlvmTestCase):
 
 
 def test_main():
-    tests = [LoopExceptionInteractionTests, GeneralCompilationTests,
-             OperatorTests, LiteralsTests, BailoutTests, InliningTests,
-             LlvmRebindBuiltinsTests, OptimizationTests, SetJitControlTests,
-             BackgroundThreadTests]
+    if __name__ == "__main__" and len(sys.argv) > 1:
+        tests = []
+        for test_name in sys.argv[1:]:
+            test = globals().get(test_name)
+            if not test:
+                print >>sys.stderr, "Error: cannot find test", test_name
+                return
+            tests.append(test)
+    else:
+        tests = [LoopExceptionInteractionTests, GeneralCompilationTests,
+                 OperatorTests, LiteralsTests, BailoutTests, InliningTests,
+                 LlvmRebindBuiltinsTests, OptimizationTests, SetJitControlTests,
+                 BackgroundThreadTests]
     if sys.flags.optimize >= 1:
         print >>sys.stderr, "test_llvm -- skipping some tests due to -O flag."
         sys.stderr.flush()

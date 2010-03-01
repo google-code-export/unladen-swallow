@@ -57,7 +57,7 @@ TEST_F(PyLimitedFeedbackTest, NullObject)
     EXPECT_FALSE(this->feedback_.ObjectsOverflowed());
     this->feedback_.GetSeenObjectsInto(seen);
     ASSERT_EQ(1U, seen.size());
-    EXPECT_EQ(NULL, seen[0]);
+    EXPECT_TRUE(NULL == seen[0]);
 }
 
 TEST_F(PyLimitedFeedbackTest, DuplicateObjects)
@@ -360,7 +360,7 @@ TEST_F(PyFullFeedbackTest, NullObject)
     EXPECT_FALSE(this->feedback_.ObjectsOverflowed());
     this->feedback_.GetSeenObjectsInto(seen);
     EXPECT_EQ(1U, seen.size());
-    EXPECT_EQ(NULL, seen[0]);
+    EXPECT_TRUE(NULL == seen[0]);
 }
 
 TEST_F(PyFullFeedbackTest, FiveObjects)

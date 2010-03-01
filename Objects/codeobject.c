@@ -165,7 +165,14 @@ code_set_optimization(PyCodeObject *code, PyObject *new_opt_level_obj)
 	long new_opt_level = PyInt_AsLong(new_opt_level_obj);
 	if (new_opt_level == -1 && PyErr_Occurred())
 		return -1;
-	retcode = PyLlvm_JitInBackground(code, new_opt_level, PY_BLOCK);
+
+	if (!_PyLlvmFuncs.loaded) {
+		PyErr_SetString(PyExc_RuntimeError,
+				"Cannot compile code objects without the JIT");
+		return -1;
+	}
+
+	retcode = _PyLlvmFuncs.jit_compile(code, NULL, new_opt_level, PY_BLOCK);
 	switch (retcode) {
         default: assert(0 && "invalid enum value");
         case PY_COMPILE_OK:
@@ -186,7 +193,8 @@ code_get_co_llvm(PyCodeObject *code)
 	if (code->co_llvm_function == NULL)
 		Py_RETURN_NONE;
 
-	return _PyLlvmFunction_FromCodeObject((PyObject *)code);
+	/* The JIT must be loaded if co_llvm_function is set. */
+	return _PyLlvmFuncs.llvmfunction_fromcodeobject((PyObject *)code);
 }
 
 
@@ -252,8 +260,10 @@ _PyCode_InvalidateMachineCode(PyCodeObject *code)
 	   recompiled. */
 	code->co_use_llvm = 0;
 	code->co_fatalbailcount++;
-	/* This is a no-op if not configured with --with-instrumentation. */
-	_PyEval_RecordFatalBail(code);
+#ifdef Py_WITH_INSTRUMENTATION
+	if (_PyLlvmFuncs.loaded)
+		_PyLlvmFuncs.record_fatal_bail(code);
+#endif
 }
 #else
 static PyGetSetDef code_getsetlist[] = {
@@ -406,7 +416,8 @@ code_dealloc(PyCodeObject *co)
 #ifdef WITH_LLVM
 	// co_native_function is destroyed by co_llvm_function.
 	if (co->co_llvm_function) {
-		_LlvmFunction_Dealloc(co->co_llvm_function);
+		/* The JIT must be loaded if co_llvm_function is set. */
+		_PyLlvmFuncs.llvmfunction_dealloc(co->co_llvm_function);
 		co->co_llvm_function = NULL;
 	}
 	if (co->co_assumed_globals) {
@@ -415,7 +426,8 @@ code_dealloc(PyCodeObject *co)
 		co->co_assumed_globals = NULL;
 		co->co_assumed_builtins = NULL;
 	}
-	PyFeedbackMap_Del(co->co_runtime_feedback);
+	if (_PyLlvmFuncs.loaded)
+		_PyFeedbackMap.del(co->co_runtime_feedback);
 #endif
 	PyObject_DEL(co);
 }

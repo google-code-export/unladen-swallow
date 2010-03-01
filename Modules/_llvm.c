@@ -25,7 +25,7 @@ llvm_setdebug(PyObject *self, PyObject *on_obj)
     if (on == -1)  /* Error. */
         return NULL;
 
-    if (!PyLlvm_SetDebug(on)) {
+    if (!_PyLlvmFuncs.set_debug(on)) {
         PyErr_SetString(PyExc_ValueError, "llvm debugging not available");
         return NULL;
     }
@@ -56,21 +56,17 @@ llvm_compile(PyObject *self, PyObject *args)
     code = (PyCodeObject *)obj;
 
     if (code->co_llvm_function)
-        _LlvmFunction_Dealloc(code->co_llvm_function);
+        _PyLlvmFuncs.llvmfunction_dealloc(code->co_llvm_function);
     code->co_llvm_function = NULL;
 
     /* JIT the code in the background, blocking until it finishes.  */
-    switch (PyLlvm_JitInBackground(code, opt_level, PY_BLOCK)) {
+    switch (_PyLlvmFuncs.jit_compile(code, NULL, opt_level, PY_BLOCK)) {
     default: assert(0 && "invalid enum value");
     case PY_COMPILE_SHUTDOWN:
     case PY_COMPILE_ERROR:
-        if (code->co_llvm_function) {
-            _LlvmFunction_Dealloc(code->co_llvm_function);
-            code->co_llvm_function = NULL;
-        }
         return NULL;
     case PY_COMPILE_OK:
-        return _PyLlvmFunction_FromCodeObject((PyObject *)code);
+        return _PyLlvmFuncs.llvmfunction_fromcodeobject((PyObject *)code);
     }
 }
 
@@ -106,7 +102,7 @@ llvm_clear_feedback(PyObject *self, PyObject *obj)
     }
 
     if (code->co_runtime_feedback)
-        PyFeedbackMap_Clear(code->co_runtime_feedback);
+        _PyFeedbackMap.clear(code->co_runtime_feedback);
     Py_RETURN_NONE;
 }
 
@@ -173,7 +169,7 @@ done.");
 static PyObject *
 llvm_wait_for_jit(PyObject *self, PyObject *noargs)
 {
-    PyLlvm_WaitForJit();
+    _PyLlvmFuncs.llvmthread_wait_for_jit();
     Py_RETURN_NONE;
 }
 
@@ -188,7 +184,7 @@ running.");
 static PyObject *
 llvm_restart_after_fork(PyObject *self, PyObject *noargs)
 {
-    PyLlvm_StartCompilation();
+    _PyLlvmFuncs.llvmthread_start();
     Py_RETURN_NONE;
 }
 
@@ -201,7 +197,7 @@ Python objects.");
 static PyObject *
 llvm_collect_unused_globals(PyObject *self)
 {
-    PyGlobalLlvmData_CollectUnusedGlobals();
+    _PyLlvmFuncs.global_data_collect_unused_globals(PyGlobalLlvmData_GET());
     Py_RETURN_NONE;
 }
 
@@ -228,14 +224,26 @@ PyMODINIT_FUNC
 init_llvm(void)
 {
     PyObject *module;
+    PyObject *_llvmjit;
+
+    /* Error out if we can't load the _llvmjit module. */
+    _llvmjit = PyImport_ImportModule("_llvmjit");
+    if (_llvmjit == NULL) {
+        PyErr_SetString(PyExc_ImportError,
+                        "Cannot import _llvm without _llvmjit");
+        return;
+    } else {
+        Py_DECREF(_llvmjit);
+    }
+    assert(_PyLlvmFuncs.loaded);
 
     /* Create the module and add the functions */
     module = Py_InitModule3("_llvm", llvm_methods, llvm_module_doc);
     if (module == NULL)
         return;
 
-    Py_INCREF(&PyLlvmFunction_Type);
+    Py_INCREF(_PyLlvmFuncs.llvmfunction_type);
     if (PyModule_AddObject(module, "_function",
-                           (PyObject *)&PyLlvmFunction_Type))
+                           _PyLlvmFuncs.llvmfunction_type))
         return;
 }

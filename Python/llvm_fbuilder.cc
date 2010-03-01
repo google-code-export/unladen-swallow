@@ -60,10 +60,17 @@ using llvm::errs;
 #ifdef Py_WITH_INSTRUMENTATION
 class CallFunctionStats {
 public:
+    CallFunctionStats()
+        : total(0), direct_calls(0), inlined(0),
+          no_opt_kwargs(0), no_opt_params(0),
+          no_opt_no_data(0), no_opt_polymorphic(0) {
+    }
+
     ~CallFunctionStats() {
         errs() << "\nCALL_FUNCTION optimization:\n";
         errs() << "Total opcodes: " << this->total << "\n";
-        errs() << "Optimized opcodes: " << this->optimized << "\n";
+        errs() << "Direct C calls: " << this->direct_calls << "\n";
+        errs() << "Inlined: " << this->inlined << "\n";
         errs() << "No opt: callsite kwargs: " << this->no_opt_kwargs << "\n";
         errs() << "No opt: function params: " << this->no_opt_params << "\n";
         errs() << "No opt: no data: " << this->no_opt_no_data << "\n";
@@ -72,8 +79,11 @@ public:
 
     // How many CALL_FUNCTION opcodes were compiled.
     unsigned total;
-    // How many CALL_FUNCTION opcodes were successfully optimized;
-    unsigned optimized;
+    // How many CALL_FUNCTION opcodes were optimized to direct calls to C
+    // functions.
+    unsigned direct_calls;
+    // How many calls were inlined into the caller.
+    unsigned inlined;
     // We only optimize call sites without keyword, *args or **kwargs arguments.
     unsigned no_opt_kwargs;
     // We only optimize METH_ARG_RANGE functions so far.
@@ -90,6 +100,11 @@ static llvm::ManagedStatic<CallFunctionStats> call_function_stats;
 
 class CondBranchStats {
 public:
+    CondBranchStats()
+        : total(0), optimized(0), not_enough_data(0), unpredictable(0) {
+    }
+
+
     ~CondBranchStats() {
         errs() << "\nConditional branch optimization:\n";
         errs() << "Total cond branches: " << this->total << "\n";
@@ -113,12 +128,16 @@ static llvm::ManagedStatic<CondBranchStats> cond_branch_stats;
 
 class BinaryOpStats {
 public:
+    BinaryOpStats()
+        : total(0), optimized(0), unpredictable(0), omitted(0) {
+    }
+
     ~BinaryOpStats() {
         errs() << "\nBinary operator inlining:\n";
         errs() << "Total binops: " << this->total << "\n";
         errs() << "Optimized binops: " << this->optimized << "\n";
-        errs() << "Unpredictable binops: " << this->unpredictable << "\n";
-        errs() << "Omitted binops: " << this->omitted << "\n";
+        errs() << "Unpredictable types: " << this->unpredictable << "\n";
+        errs() << "Binops without inline version: " << this->omitted << "\n";
     }
 
     // Total number of binary opcodes compiled.
@@ -135,6 +154,12 @@ static llvm::ManagedStatic<BinaryOpStats> binary_operator_stats;
 
 class AccessAttrStats {
 public:
+    AccessAttrStats()
+        : loads(0), stores(0), optimized_loads(0), optimized_stores(0),
+          no_opt_no_data(0), no_opt_no_mcache(0), no_opt_overrode_access(0),
+          no_opt_polymorphic(0), no_opt_nonstring_name(0) {
+    }
+
     ~AccessAttrStats() {
         errs() << "\nLOAD/STORE_ATTR optimization:\n";
         errs() << "Total opcodes: " << (this->loads + this->stores) << "\n";
@@ -183,6 +208,10 @@ static llvm::ManagedStatic<AccessAttrStats> access_attr_stats;
 
 class ImportNameStats {
 public:
+    ImportNameStats()
+        : total(0), optimized(0) {
+    }
+
     ~ImportNameStats() {
         errs() << "\nIMPORT_NAME opcodes:\n";
         errs() << "Total: " << this->total << "\n";
@@ -2271,14 +2300,45 @@ LlvmFunctionBuilder::CALL_FUNCTION_fast(int oparg,
     this->builder_.CreateCondBr(is_same,
         all_assumptions_valid, invalid_assumptions);
 
-    // If all the assumptions are valid, we know we have a C function pointer
+    // Once we get to this point, we know we can make some kind of fast call,
+    // either, a) a specialized inline version, or b) a direct call to a C
+    // function, bypassing the CPython function call machinery. We check them
+    // in that order.
+    this->builder_.SetInsertPoint(all_assumptions_valid);
+
+    // Check if we are calling a built-in function that can be specialized.
+    if (cfunc_ptr == _PyBuiltin_Len) {
+        // Feedback index 0 is the function itself, index 1 is the first
+        // argument.
+        const PyTypeObject *arg1_type = GetTypeFeedback(1);
+        const char *function_name = NULL;
+        if (arg1_type == &PyString_Type)
+            function_name = "_PyLlvm_BuiltinLen_String";
+        else if (arg1_type == &PyUnicode_Type)
+            function_name = "_PyLlvm_BuiltinLen_Unicode";
+        else if (arg1_type == &PyList_Type)
+            function_name = "_PyLlvm_BuiltinLen_List";
+        else if (arg1_type == &PyTuple_Type)
+            function_name = "_PyLlvm_BuiltinLen_Tuple";
+        else if (arg1_type == &PyDict_Type)
+            function_name = "_PyLlvm_BuiltinLen_Dict";
+
+        if (function_name != NULL) {
+            this->CALL_FUNCTION_fast_len(actual_func, stack_pointer,
+                                         invalid_assumptions,
+                                         function_name);
+            CF_INC_STATS(inlined);
+            return;
+        }
+    }
+
+    // If we get here, we know we have a C function pointer
     // that takes some number of arguments: first the invocant, then some
     // PyObject *s. If the underlying function is nullary, we use NULL for the
     // second argument. Because "the invocant" differs between built-in
     // functions like len() and C-level methods like list.append(), we pull the
     // invocant (called m_self) from the PyCFunction object we popped
     // off the stack. Once the function returns, we patch up the stack pointer.
-    this->builder_.SetInsertPoint(all_assumptions_valid);
     Value *self = this->builder_.CreateLoad(
         CFunctionTy::m_self(this->builder_, actual_as_pycfunc),
         "CALL_FUNCTION_actual_self");
@@ -2320,8 +2380,44 @@ LlvmFunctionBuilder::CALL_FUNCTION_fast(int oparg,
 
     // Check signals and maybe switch threads after each function call.
     this->CheckPyTicker();
-    CF_INC_STATS(optimized);
+    CF_INC_STATS(direct_calls);
 }
+
+
+void
+LlvmFunctionBuilder::CALL_FUNCTION_fast_len(Value *actual_func,
+                                            Value *stack_pointer,
+                                            BasicBlock *invalid_assumptions,
+                                            const char *function_name)
+{
+    BasicBlock *success = this->CreateBasicBlock("BUILTIN_LEN_success");
+
+    Value *obj = this->Pop();
+    Function *builtin_len =
+        this->GetGlobalFunction<PyObject *(PyObject *)>(function_name);
+
+    Value *result = this->CreateCall(builtin_len, obj,
+                                     "BUILTIN_LEN_result");
+    this->builder_.CreateCondBr(this->IsNonZero(result),
+                                success, invalid_assumptions);
+
+    this->builder_.SetInsertPoint(success);
+    this->DecRef(actual_func);
+    this->DecRef(obj);
+
+    Value *new_stack_pointer = this->builder_.CreateGEP(
+        stack_pointer,
+        ConstantInt::getSigned(
+            Type::getInt64Ty(this->context_),
+            -2));  // -1 for the function, -1 for the argument.
+    this->builder_.CreateStore(new_stack_pointer, this->stack_pointer_addr_);
+
+    this->Push(result);
+
+    // Check signals and maybe switch threads after each function call.
+    this->CheckPyTicker();
+}
+
 
 void
 LlvmFunctionBuilder::CALL_FUNCTION_safe(int oparg)
@@ -3220,7 +3316,7 @@ LlvmFunctionBuilder::STORE_SUBSCR()
         return;
     }
     else {
-        BINOP_INC_STATS(unpredictable);
+        BINOP_INC_STATS(omitted);
         this->STORE_SUBSCR_safe();
         return;
     }
@@ -3351,7 +3447,7 @@ LlvmFunctionBuilder::OptimizedBinOp(const char *apifunc)
     if (name == NULL) {
         name = optimized_binops->Find(apifunc, lhs_type, Wildcard);
         if (name == NULL) {
-            BINOP_INC_STATS(unpredictable);
+            BINOP_INC_STATS(omitted);
             this->GenericBinOp(apifunc);
             return;
         }

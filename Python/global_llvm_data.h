@@ -39,6 +39,9 @@ public:
     // Retrieves the PyGlobalLlvmData out of the interpreter state.
     static PyGlobalLlvmData *Get();
 
+    // Initializes the global_llvm_data singleton during startup.
+    static void Init();
+
     PyGlobalLlvmData();
     ~PyGlobalLlvmData();
 

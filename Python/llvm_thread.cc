@@ -3,6 +3,7 @@
 #include "Python/global_llvm_data.h"
 
 #include "Util/EventTimer.h"
+#include "Util/Stats.h"
 #include "Util/SynchronousQueue.h"
 
 #include "_llvmfunctionobject.h"
@@ -16,6 +17,7 @@
 #include "llvm/ADT/OwningPtr.h"
 #include "llvm/ExecutionEngine/ExecutionEngine.h"
 #include "llvm/Function.h"
+#include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/MutexGuard.h"
 #include "llvm/System/Mutex.h"
 
@@ -168,6 +170,24 @@ struct PauseJob : public PyJitJob {
     }
 };
 
+#ifdef Py_WITH_INSTRUMENTATION
+// Collect statistics about how long IR compilation takes, native code
+// generation takes, and how long we block the eval loop.
+class IrCompilationTimes : public DataVectorStats<int64_t> {
+public:
+    IrCompilationTimes()
+        : DataVectorStats<int64_t>("Time for IR JIT in ns") {}
+};
+class McCompilationTimes : public DataVectorStats<int64_t> {
+public:
+    McCompilationTimes()
+        : DataVectorStats<int64_t>("Time for MC JIT in ns") {}
+};
+
+static llvm::ManagedStatic<IrCompilationTimes> ir_compilation_times;
+static llvm::ManagedStatic<McCompilationTimes> mc_compilation_times;
+#endif
+
 // This job just compiles a code object to LLVM IR and optimizes it.  It does
 // not generate native code.  This is used mainly for getting the string
 // representation of the optimized code after the IR has been thrown away.
@@ -194,9 +214,6 @@ struct CompileToIrJob : public PyJitJob {
 
     // The number of compile jobs that were skipped after closing the queue.
     static int skipped_compile_count;
-
-    // TODO: Add instrumentation to find out how much time jobs spend on the
-    // queue.
 #endif  // Py_WITH_INSTRUMENTATION
 
     CompileToIrJob(PyCodeObject *code, _LlvmFunction *llvm_func,
@@ -224,6 +241,9 @@ struct CompileToIrJob : public PyJitJob {
         // Create the IR.
         if (this->llvm_function_ == NULL) {
             PY_LOG_TSC_EVENT(LLVM_COMPILE_START);
+#if Py_WITH_INSTRUMENTATION
+            Timer timer(*ir_compilation_times);
+#endif
             this->llvm_function_ = _PyCode_ToLlvmIr(this->code_, this->err_,
                                                     llvm_data);
             PY_LOG_TSC_EVENT(LLVM_COMPILE_END);
@@ -233,8 +253,8 @@ struct CompileToIrJob : public PyJitJob {
 
             // Optimize the IR.
             if (this->old_opt_level_ < this->new_opt_level_) {
-                if (PyGlobalLlvmData_Optimize(llvm_data, this->llvm_function_,
-                                              this->new_opt_level_) < 0) {
+                if (_LlvmFunction_Optimize(llvm_data, this->llvm_function_,
+                                           this->new_opt_level_) < 0) {
                     this->err_->SetError(PyExc_SystemError,
                                          "Optimization failed");
                     return JOB_ERROR;
@@ -280,13 +300,14 @@ struct CompileJob : public CompileToIrJob {
             return result;
 
         // JIT the IR to native code.
-        // TODO: Deal with recompiling native code.
+#if Py_WITH_INSTRUMENTATION
+        Timer timer(*mc_compilation_times);
+#endif
         PY_LOG_TSC_EVENT(JIT_START);
         this->native_function_ = _LlvmFunction_Jit(llvm_data,
                                                    this->llvm_function_);
         PY_LOG_TSC_EVENT(JIT_END);
-        assert(this->native_function_ &&
-               "Native code generation failed!");
+        assert(this->native_function_ && "Native code generation failed!");
         return JOB_OK;
     }
 
@@ -543,15 +564,22 @@ PyLlvmCompileThread::RunCompileJob(CompileToIrJob *job, Py_ShouldBlock block)
 {
     // Large functions take a very long time to translate to LLVM IR, optimize,
     // and JIT, so we just keep them in the interpreter.
-    if (PyString_GET_SIZE(job->code_->co_code) > 5000)
+    if (PyString_GET_SIZE(job->code_->co_code) > 5000) {
         return PY_COMPILE_REFUSED;
+    }
 
     // The exec statement wants to mess with the frame object in
     // ways that can inhibit optimizations (or make them harder to
     // implement), so we refuse to optimize code objects that use
     // exec.
-    if (job->code_->co_flags & CO_USES_EXEC)
+    if (job->code_->co_flags & CO_USES_EXEC) {
         return PY_COMPILE_REFUSED;
+    }
+
+    // If we release the GIL in this next code segment, and we need to make
+    // sure that no one else tries to compile this code object until we're
+    // done.
+    job->code_->co_being_compiled = 1;
 
 #ifdef WITH_BACKGROUND_COMPILATION
     if (block == PY_BLOCK) {
@@ -579,12 +607,14 @@ PyLlvmCompileThread::RunCompileJob(CompileToIrJob *job, Py_ShouldBlock block)
     }
     return PY_COMPILE_OK;
 #else // WITH_BACKGROUND_COMPILATION
-    // Use an OwningPtr to delete on return.
+    // Create the job as above and call its Run and Apply methods directly.
     llvm::OwningPtr<PyLlvmError> err(new PyLlvmError());
     llvm::OwningPtr<PyJitJob> job_owner(job);
     job->err_ = err.get();
+
     PyJitJob::JobResult r = job->Run(this->llvm_data_);
     job->Apply();
+
     switch (r) {
     default: assert(0 && "invalid enum value");
     case PyJitJob::JOB_EXIT:
@@ -656,6 +686,9 @@ PyLlvmCompileThread::Start()
 void
 PyLlvmCompileThread::Pause()
 {
+    if (!this->running_)
+        return;
+
 #ifdef WITH_BACKGROUND_COMPILATION
     this->RunJobAndWait(new PauseJob(this->unpause_event_, this->in_queue_,
                                      this->out_queue_));

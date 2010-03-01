@@ -5,7 +5,7 @@
 
 #include "Python.h"
 #include "intrcheck.h"
-#include "llvm_thread.h"
+#include "Python/global_llvm_data_fwd.h"
 
 #ifdef MS_WINDOWS
 #include <process.h>
@@ -926,7 +926,8 @@ PyOS_BeforeFork(void)
 {
 #ifdef WITH_THREAD
 #ifdef WITH_LLVM
-	PyLlvm_PauseCompilation();
+	if (_PyLlvmFuncs.loaded)
+		_PyLlvmFuncs.llvmthread_pause();
 #endif
 #endif
 }
@@ -937,7 +938,8 @@ PyOS_AfterFork(int is_child)
 #ifdef WITH_THREAD
 	if (is_child) {
 #ifdef WITH_LLVM
-		PyLlvm_ResetAfterFork();
+		if (_PyLlvmFuncs.loaded)
+			_PyLlvmFuncs.llvmthread_reset_after_fork();
 #endif
 		PyEval_ReInitThreads();
 		main_thread = PyThread_get_thread_ident();
@@ -946,7 +948,8 @@ PyOS_AfterFork(int is_child)
 		PyThread_ReInitTLS();
 	} else {
 #ifdef WITH_LLVM
-		PyLlvm_UnpauseCompilation();
+		if (_PyLlvmFuncs.loaded)
+			_PyLlvmFuncs.llvmthread_unpause();
 #endif
         }
 #endif
