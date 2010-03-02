@@ -787,7 +787,8 @@ Util/googletest/gtest.o:
 # BUILDPYTHON and python-config are order-only so that $^ doesn't pick them up.
 # The python-config line needs to come last, or this will be broken on Linux.
 AllUnitTests: $(srcdir)/Unittests/*Test.cc $(srcdir)/Unittests/pytest_main.cc \
-		$(LIBRARY) Util/googletest/gtest.o | $(BUILDPYTHON) python-config
+		$(LIBRARY) Util/googletest/gtest.o $(LLVMJIT_OBJS) \
+		| $(BUILDPYTHON) python-config
 	$(CXX) $(CPPFLAGS) -I$(srcdir)/Util/googletest/include -o $@ $^ \
 		-L. $(LDFLAGS) `$(RUNSHARED) ./$(BUILDPYTHON) ./python-config --cxxflags --ldflags --libs`
 
