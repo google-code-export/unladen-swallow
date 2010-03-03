@@ -3926,7 +3926,7 @@ class SetJitControlTests(LlvmTestCase):
 
 
 def test_main():
-    if len(sys.argv) > 1:
+    if __name__ == "__main__" and len(sys.argv) > 1:
         tests = []
         for test_name in sys.argv[1:]:
             test = globals().get(test_name)
