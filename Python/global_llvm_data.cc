@@ -23,6 +23,7 @@
 #include "llvm/GlobalVariable.h"
 #include "llvm/Module.h"
 #include "llvm/ModuleProvider.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -37,10 +38,26 @@ using llvm::Module;
 using llvm::StringRef;
 
 PyGlobalLlvmData *
+PyGlobalLlvmData_New()
+{
+    return new PyGlobalLlvmData;
+}
+
+void
+PyGlobalLlvmData_Clear(PyGlobalLlvmData *)
+{
+    // So far, do nothing.
+}
+
+void
+PyGlobalLlvmData_Free(PyGlobalLlvmData * global_data)
+{
+    delete global_data;
+}
+
+PyGlobalLlvmData *
 PyGlobalLlvmData::Get()
 {
-    if (!PyThreadState_GET()->interp->global_llvm_data)
-	PyThreadState_GET()->interp->global_llvm_data = new PyGlobalLlvmData;
     return PyThreadState_GET()->interp->global_llvm_data;
 }
 
@@ -224,6 +241,14 @@ PyGlobalLlvmData::Optimize(llvm::Function &f, int level)
     return 0;
 }
 
+int
+PyGlobalLlvmData_Optimize(struct PyGlobalLlvmData *global_data,
+                          _LlvmFunction *llvm_function,
+                          int level)
+{
+    return _LlvmFunction_Optimize(global_data, llvm_function, level);
+}
+
 #ifdef Py_WITH_INSTRUMENTATION
 // Collect statistics about the time it takes to collect unused globals.
 class GlobalGCTimes : public DataVectorStats<int64_t> {
@@ -280,6 +305,12 @@ PyGlobalLlvmData::CollectUnusedGlobals()
 #endif
 }
 
+void
+PyGlobalLlvmData_CollectUnusedGlobals(struct PyGlobalLlvmData *global_data)
+{
+    global_data->CollectUnusedGlobals();
+}
+
 llvm::Value *
 PyGlobalLlvmData::GetGlobalStringPtr(const std::string &value)
 {
@@ -310,4 +341,33 @@ PyGlobalLlvmData::GetGlobalStringPtr(const std::string &value)
     };
     return llvm::ConstantExpr::getGetElementPtr(
         llvm::cast<llvm::Constant>(the_string), indices, 2);
+}
+
+int
+_PyLlvm_Init()
+{
+    if (PyType_Ready(&PyLlvmFunction_Type) < 0)
+        return 0;
+
+    llvm::cl::ParseEnvironmentOptions("python", "PYTHONLLVMFLAGS", "", true);
+
+    return 1;
+}
+
+void
+_PyLlvm_Fini()
+{
+    llvm::llvm_shutdown();
+}
+
+int
+PyLlvm_SetDebug(int on)
+{
+#ifdef NDEBUG
+    if (on)
+        return 0;
+#else
+    llvm::DebugFlag = on;
+#endif
+    return 1;
 }

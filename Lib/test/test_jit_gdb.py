@@ -50,7 +50,7 @@ class DebuggerTests(unittest.TestCase):
                                   "--eval-command=backtrace",
                                   "--eval-command=continue",
                                   "--args",
-                                  sys.executable, "-c", """
+                                  sys.executable, "-S", "-c", """
 def foo(): bar()
 def bar(): baz()
 def baz(): print 'Hello, World!'

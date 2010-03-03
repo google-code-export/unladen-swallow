@@ -24,7 +24,7 @@ llvm_setdebug(PyObject *self, PyObject *on_obj)
     if (on == -1)  /* Error. */
         return NULL;
 
-    if (!_PyLlvmFuncs.set_debug(on)) {
+    if (!PyLlvm_SetDebug(on)) {
         PyErr_SetString(PyExc_ValueError, "llvm debugging not available");
         return NULL;
     }
@@ -55,20 +55,20 @@ llvm_compile(PyObject *self, PyObject *args)
 
     code = (PyCodeObject *)obj;
     if (code->co_llvm_function)
-        _PyLlvmFuncs.llvmfunction_dealloc(code->co_llvm_function);
-    code->co_llvm_function = _PyLlvmFuncs.code_to_llvmir(code);
+        _LlvmFunction_Dealloc(code->co_llvm_function);
+    code->co_llvm_function = _PyCode_ToLlvmIr(code);
     if (code->co_llvm_function == NULL)
         return NULL;
     if (code->co_optimization < opt_level &&
-        _PyLlvmFuncs.global_data_optimize(code->co_llvm_function,
-                                           opt_level) < 0) {
+        PyGlobalLlvmData_Optimize(PyGlobalLlvmData_GET(),
+                                  code->co_llvm_function, opt_level) < 0) {
         PyErr_Format(PyExc_ValueError,
                      "Failed to optimize to level %ld", opt_level);
-        _PyLlvmFuncs.llvmfunction_dealloc(code->co_llvm_function);
+        _LlvmFunction_Dealloc(code->co_llvm_function);
         return NULL;
     }
 
-    return _PyLlvmFuncs.llvmfunction_fromcodeobject((PyObject *)code);
+    return _PyLlvmFunction_FromCodeObject((PyObject *)code);
 }
 
 PyDoc_STRVAR(llvm_clear_feedback_doc,
@@ -103,7 +103,7 @@ llvm_clear_feedback(PyObject *self, PyObject *obj)
     }
 
     if (code->co_runtime_feedback)
-        _PyFeedbackMap.clear(code->co_runtime_feedback);
+        PyFeedbackMap_Clear(code->co_runtime_feedback);
     Py_RETURN_NONE;
 }
 
@@ -170,7 +170,7 @@ Python objects.");
 static PyObject *
 llvm_collect_unused_globals(PyObject *self)
 {
-    _PyLlvmFuncs.global_data_collect_unused_globals(PyGlobalLlvmData_GET());
+    PyGlobalLlvmData_CollectUnusedGlobals(PyGlobalLlvmData_GET());
     Py_RETURN_NONE;
 }
 
@@ -194,26 +194,14 @@ PyMODINIT_FUNC
 init_llvm(void)
 {
     PyObject *module;
-    PyObject *_llvmjit;
-
-    /* Error out if we can't load the _llvmjit module. */
-    _llvmjit = PyImport_ImportModule("_llvmjit");
-    if (_llvmjit == NULL) {
-        PyErr_SetString(PyExc_ImportError,
-                        "Cannot import _llvm without _llvmjit");
-        return;
-    } else {
-        Py_DECREF(_llvmjit);
-    }
-    assert(_PyLlvmFuncs.loaded);
 
     /* Create the module and add the functions */
     module = Py_InitModule3("_llvm", llvm_methods, llvm_module_doc);
     if (module == NULL)
         return;
 
-    Py_INCREF(_PyLlvmFuncs.llvmfunction_type);
+    Py_INCREF(&PyLlvmFunction_Type);
     if (PyModule_AddObject(module, "_function",
-                           _PyLlvmFuncs.llvmfunction_type))
+                           (PyObject *)&PyLlvmFunction_Type))
         return;
 }

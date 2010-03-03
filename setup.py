@@ -639,11 +639,8 @@ class PyBuildExt(build_ext):
 
         # LLVM wrappers
         if sysconfig.get_config_var("WITH_LLVM"):
-            # _llvm depends on _llvmjit
-            exts.append(self.llvmjit())
             exts.append( Extension('_llvm', ['_llvm.c']))
         else:
-            missing.append('_llvmjit')
             missing.append('_llvm')
 
         # socket(2)
@@ -1522,14 +1519,6 @@ class PyBuildExt(build_ext):
             missing.append('_tkinter')
 
         return missing
-
-    def llvmjit(self):
-        llvm_vars = sysconfig.parse_makefile('sysconfig')
-        return Extension('_llvmjit', ['_llvmjit.cc'],
-                         include_dirs=['Python'],
-                         extra_objects=llvm_vars["LLVMJIT_OBJS"].split(),
-                         extra_compile_args=llvm_vars['LLVM_CXXFLAGS'].split(),
-                         extra_link_args=llvm_vars['LLVM_LDFLAGS'].split())
 
     def detect_tkinter_darwin(self, inc_dirs, lib_dirs):
         # The _tkinter module, using frameworks. Since frameworks are quite

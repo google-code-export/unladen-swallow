@@ -329,7 +329,7 @@ PYTHON_OBJS=	\
 		$(THREADOBJ)
 
 ifneq (@BUILD_LLVM@, disabled)
-	LLVMJIT_OBJS =	\
+	PYTHON_OBJS +=	\
 		Python/global_llvm_data.o \
 		Python/llvm_fbuilder.o \
 		Python/llvm_compile.o \
@@ -385,7 +385,7 @@ OBJECT_OBJS=	\
 		$(UNICODE_OBJS)
 
 ifneq (@BUILD_LLVM@, disabled)
-	LLVMJIT_OBJS +=	\
+	OBJECT_OBJS +=	\
 		Objects/_llvmfunctionobject.o
 endif
 
@@ -458,15 +458,14 @@ $(LLVM_BIN_DIR)/clang $(LLVM_BIN_DIR)/opt $(LLVM_BIN_DIR)/llvm-link \
 
 sysconfig: llvm
 	@case @BUILD_LLVM@ in \
-	0|1) ( echo "LLVMJIT_OBJS=$(LLVMJIT_OBJS)";echo "LLVM_CXXFLAGS=$(LLVM_CXXFLAGS)"; echo "LLVM_LDFLAGS=$(LLVM_LDFLAGS)" ) > sysconfig;; \
+	0|1) ( echo "LLVM_CXXFLAGS=$(LLVM_CXXFLAGS)"; echo "LLVM_LDFLAGS=$(LLVM_LDFLAGS)" ) > sysconfig;; \
 	disabled) touch sysconfig;; \
 	esac
 
 # Build the interpreter
-$(BUILDPYTHON): Modules/python.o $(LIBRARY) $(LLVMJIT_OBJS) $(LDLIBRARY) \
-	$(BCLIBRARY) sysconfig $(LLVM_CONFIG)
+$(BUILDPYTHON): Modules/python.o $(LIBRARY) $(LDLIBRARY) $(BCLIBRARY) sysconfig $(LLVM_CONFIG)
 	$(LINKCC) $(LDFLAGS) -o $@ Modules/python.o $(LINKFORSHARED) $(BLDLIBRARY) \
-		$(LIBS) $(MODLIBS) $(SYSLIBS) $(LDLAST)
+		$(LIBS) $(MODLIBS) $(SYSLIBS) $(LLVM_LDFLAGS) $(LDLAST)
 
 platform: $(BUILDPYTHON)
 	$(RUNSHARED) ./$(BUILDPYTHON) -E -c 'import sys ; from distutils.util import get_platform ; print get_platform()+"-"+sys.version[0:3]' >platform
@@ -575,7 +574,6 @@ Modules/getbuildinfo.o: $(PARSER_OBJS) \
 		$(PYTHON_OBJS) \
 		$(MODULE_OBJS) \
 		$(SIGNAL_OBJS) \
-		$(LLVMJIT_OBJS) \
 		$(MODOBJS) \
 		$(srcdir)/Modules/getbuildinfo.c
 	$(CC) -c $(PY_CFLAGS) -DSVNVERSION="\"`LC_ALL=C $(SVNVERSION)`\"" -o $@ $(srcdir)/Modules/getbuildinfo.c
@@ -656,7 +654,12 @@ $(OPCODETARGETS_H): $(OPCODETARGETGEN_FILES)
 	$(OPCODETARGETGEN) $(OPCODETARGETS_H)
 
 Python/eval.o: Python/eval.cc $(OPCODETARGETS_H)
+ifeq (@BUILD_LLVM@, disabled)
 	$(CC) $(FORCE_C) -c $(PY_CFLAGS) -o $@ $<
+else
+	$(CXX) -c $(LLVM_CXXFLAGS) $(PY_CXXFLAGS) -o $@ $<
+endif
+
 
 Python/formatter_unicode.o: $(srcdir)/Python/formatter_unicode.c \
 				$(STRINGLIB_HEADERS)
@@ -761,7 +764,7 @@ PYTHON_HEADERS= \
 		pyconfig.h \
 		$(PARSER_HEADERS)
 
-$(LIBRARY_OBJS) Modules/python.o: $(PYTHON_HEADERS)
+$(LIBRARY_OBJS) $(MODOBJS) Modules/python.o: $(PYTHON_HEADERS)
 
 
 ######################################################################
@@ -787,8 +790,7 @@ Util/googletest/gtest.o:
 # BUILDPYTHON and python-config are order-only so that $^ doesn't pick them up.
 # The python-config line needs to come last, or this will be broken on Linux.
 AllUnitTests: $(srcdir)/Unittests/*Test.cc $(srcdir)/Unittests/pytest_main.cc \
-		$(LIBRARY) Util/googletest/gtest.o $(LLVMJIT_OBJS) \
-		| $(BUILDPYTHON) python-config
+		$(LIBRARY) Util/googletest/gtest.o | $(BUILDPYTHON) python-config
 	$(CXX) $(CPPFLAGS) -I$(srcdir)/Util/googletest/include -o $@ $^ \
 		-L. $(LDFLAGS) `$(RUNSHARED) ./$(BUILDPYTHON) ./python-config --cxxflags --ldflags --libs`
 

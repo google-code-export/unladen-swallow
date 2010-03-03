@@ -176,8 +176,7 @@ code_get_co_llvm(PyCodeObject *code)
 	if (code->co_llvm_function == NULL)
 		Py_RETURN_NONE;
 
-	/* The JIT must be loaded if co_llvm_function is set. */
-	return _PyLlvmFuncs.llvmfunction_fromcodeobject((PyObject *)code);
+	return _PyLlvmFunction_FromCodeObject((PyObject *)code);
 }
 
 
@@ -229,21 +228,14 @@ _PyCode_InvalidateMachineCode(PyCodeObject *code)
 	   recompiled. */
 	code->co_use_llvm = 0;
 	code->co_fatalbailcount++;
-#ifdef Py_WITH_INSTRUMENTATION
-	if (_PyLlvmFuncs.loaded)
-		_PyLlvmFuncs.record_fatal_bail(code);
-#endif
+	/* This is a no-op if not configured with --with-instrumentation. */
+	_PyEval_RecordFatalBail(code);
 }
 
 int
 _PyCode_ToOptimizedLlvmIr(PyCodeObject *code, int new_opt_level)
 {
-	if (!_PyLlvmFuncs.loaded) {
-		PyErr_SetString(PyExc_RuntimeError,
-				"Cannot compile code objects without the JIT");
-		return -1;
-	}
-
+	struct PyGlobalLlvmData *global_llvm_data;
 	if (new_opt_level < code->co_optimization) {
 		PyErr_Format(PyExc_ValueError,
 			     "Cannot reduce optimization level of code object"
@@ -265,13 +257,15 @@ _PyCode_ToOptimizedLlvmIr(PyCodeObject *code, int new_opt_level)
 	if (code->co_flags & CO_USES_EXEC)
 		return 1;
 	if (code->co_llvm_function == NULL) {
-		code->co_llvm_function = _PyLlvmFuncs.code_to_llvmir(code);
+		code->co_llvm_function = _PyCode_ToLlvmIr(code);
 		if (code->co_llvm_function == NULL)
 			return -1;
 	}
+	global_llvm_data = PyThreadState_GET()->interp->global_llvm_data;
 	if (code->co_optimization < new_opt_level &&
-	    _PyLlvmFuncs.global_data_optimize(code->co_llvm_function,
-					      new_opt_level) < 0) {
+	    PyGlobalLlvmData_Optimize(global_llvm_data,
+				      code->co_llvm_function,
+				      new_opt_level) < 0) {
 		PyErr_Format(PyExc_SystemError,
 			     "Failed to optimize to level %d",
 			     new_opt_level);
@@ -431,8 +425,7 @@ code_dealloc(PyCodeObject *co)
 #ifdef WITH_LLVM
 	// co_native_function is destroyed by co_llvm_function.
 	if (co->co_llvm_function) {
-		/* The JIT must be loaded if co_llvm_function is set. */
-		_PyLlvmFuncs.llvmfunction_dealloc(co->co_llvm_function);
+		_LlvmFunction_Dealloc(co->co_llvm_function);
 		co->co_llvm_function = NULL;
 	}
 	if (co->co_assumed_globals) {
@@ -441,8 +434,7 @@ code_dealloc(PyCodeObject *co)
 		co->co_assumed_globals = NULL;
 		co->co_assumed_builtins = NULL;
 	}
-	if (_PyLlvmFuncs.loaded)
-		_PyFeedbackMap.del(co->co_runtime_feedback);
+	PyFeedbackMap_Del(co->co_runtime_feedback);
 #endif
 	PyObject_DEL(co);
 }

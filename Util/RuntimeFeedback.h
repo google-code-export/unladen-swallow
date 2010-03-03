@@ -34,6 +34,11 @@ namespace llvm {
 template<typename, unsigned> class SmallVector;
 }
 
+// These are the counters used for feedback in the JUMP_IF opcodes.
+// The number of boolean inputs can be computed as (PY_FDO_JUMP_TRUE +
+// PY_FDO_JUMP_FALSE - PY_FDO_JUMP_NON_BOOLEAN).
+enum { PY_FDO_JUMP_TRUE = 0, PY_FDO_JUMP_FALSE, PY_FDO_JUMP_NON_BOOLEAN };
+
 class PyLimitedFeedback {
 public:
     PyLimitedFeedback();
