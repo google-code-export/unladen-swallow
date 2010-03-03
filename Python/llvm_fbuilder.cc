@@ -1385,10 +1385,12 @@ void
 LlvmFunctionBuilder::LOAD_GLOBAL_fast(int name_index)
 {
     PyCodeObject *code = this->code_object_;
+    assert(code->co_watching != NULL);
+    
     PyObject *name = PyTuple_GET_ITEM(code->co_names, name_index);
-    PyObject *obj = PyDict_GetItem(code->co_assumed_globals, name);
+    PyObject *obj = PyDict_GetItem(code->co_watching[WATCHING_GLOBALS], name);
     if (obj == NULL) {
-        obj = PyDict_GetItem(code->co_assumed_builtins, name);
+        obj = PyDict_GetItem(code->co_watching[WATCHING_BUILTINS], name);
         if (obj == NULL) {
             /* This isn't necessarily an error: it's legal Python code to refer
                to globals that aren't yet defined at compilation time. Is it a
@@ -1432,10 +1434,11 @@ LlvmFunctionBuilder::LOAD_GLOBAL_fast(int name_index)
 void
 LlvmFunctionBuilder::LOAD_GLOBAL(int name_index)
 {
-    // A code object might not have CO_FDO_GLOBALS set if
+    // A code object might not have co_watching set if
     // a) it was compiled by setting co_optimization, or
     // b) we couldn't watch the globals/builtins dicts.
-    if (this->code_object_->co_flags & CO_FDO_GLOBALS)
+    PyObject **watching = this->code_object_->co_watching;
+    if (watching && watching[WATCHING_GLOBALS] && watching[WATCHING_BUILTINS])
         this->LOAD_GLOBAL_fast(name_index);
     else
         this->LOAD_GLOBAL_safe(name_index);
@@ -4500,12 +4503,9 @@ LlvmFunctionBuilder::FinishFunction()
     // If the code object doesn't need the LOAD_GLOBAL optimization, it should
     // not care whether the globals/builtins change.
     PyCodeObject *code = this->code_object_;
-    if (!this->uses_load_global_opt_ && code->co_assumed_globals) {
-        code->co_flags &= ~CO_FDO_GLOBALS;
-        _PyDict_DropWatcher(code->co_assumed_globals, code);
-        _PyDict_DropWatcher(code->co_assumed_builtins, code);
-        code->co_assumed_globals = NULL;
-        code->co_assumed_builtins = NULL;
+    if (!this->uses_load_global_opt_ && code->co_watching) {
+        _PyCode_IgnoreDict(code, WATCHING_GLOBALS);
+        _PyCode_IgnoreDict(code, WATCHING_BUILTINS);
     }
 
     // We need to register to become invalidated from any types we've touched.

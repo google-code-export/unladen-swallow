@@ -117,8 +117,7 @@ PyCode_New(int argcount, int nlocals, int stacksize, int flags,
 		co->co_optimization = -1;
 		co->co_hotness = 0;
 		co->co_fatalbailcount = 0;
-		co->co_assumed_globals = NULL;
-		co->co_assumed_builtins = NULL;
+		co->co_watching = NULL;
 #endif
 	}
 	return co;
@@ -188,36 +187,77 @@ static PyGetSetDef code_getsetlist[] = {
 };
 
 
-int
-_PyCode_WatchGlobals(PyCodeObject *code, PyObject *globals, PyObject *builtins)
+static PyObject **
+new_watch_list(void)
 {
-	/* If any of these checks fail, we need this optimization off. */
-	code->co_flags &= ~CO_FDO_GLOBALS;
-	if (globals == NULL || builtins == NULL ||
-	    !PyDict_CheckExact(globals) || !PyDict_CheckExact(builtins)) {
-		return 0;
+	PyObject **list = PyMem_New(PyObject *, NUM_WATCHING_REASONS);
+	if (list == NULL) {
+		PyErr_NoMemory();
+		return NULL;
 	}
-	if (_PyDict_AddWatcher(globals, code)) {
-		return -1;
-	}
-	if (_PyDict_AddWatcher(builtins, code)) {
-		_PyDict_DropWatcher(globals, code);
-		return -1;
-	}
-	if (code->co_assumed_globals) {
-		_PyDict_DropWatcher(code->co_assumed_globals, code);
-		_PyDict_DropWatcher(code->co_assumed_builtins, code);
-	}
-	/* Only if all of the above went well can we turn this on. */
-	code->co_flags |= CO_FDO_GLOBALS;
+	memset(list, 0, sizeof(PyObject *) * NUM_WATCHING_REASONS);
+	return list;
+}
 
+
+int
+_PyCode_WatchDict(PyCodeObject *code, ReasonWatched reason, PyObject *dict)
+{
+	if (code->co_watching == NULL) {
+		code->co_watching = new_watch_list();
+		if (code->co_watching == NULL)
+			return -1;
+	}
+
+	if (code->co_watching[reason] != NULL) {
+		_PyDict_DropWatcher(code->co_watching[reason], code);
+	}
 	/* Note that we do not hold a reference to these dicts. If one of these
 	   dicts is deleted, it will notify all dependent code objects.
 	   Likewise, if this code object is deleted, it will remove itself from
 	   the dictionaries' watcher arrays. */
-	code->co_assumed_globals = globals;
-	code->co_assumed_builtins = builtins;
+	code->co_watching[reason] = dict;
+	_PyDict_AddWatcher(dict, code);
+
 	return 0;
+}
+
+int
+_PyCode_IgnoreDict(PyCodeObject *code, ReasonWatched reason)
+{
+	if (code->co_watching == NULL || code->co_watching[reason] == NULL)
+		return 0;
+	_PyDict_DropWatcher(code->co_watching[reason], code);
+	code->co_watching[reason] = NULL;
+	return 0;
+}
+
+Py_ssize_t
+_PyCode_WatchingSize(PyCodeObject *code)
+{
+	Py_ssize_t i, n = 0;
+	if (code->co_watching == NULL)
+		return 0;
+
+	for (i = 0; i < NUM_WATCHING_REASONS; ++i) {
+		n += (code->co_watching[i] != NULL);
+	}
+	return n;
+}
+
+void
+_PyCode_IgnoreWatchedDicts(PyCodeObject *code)
+{
+	Py_ssize_t i;
+	if (code->co_watching == NULL)
+		return;
+
+	for (i = 0; i < NUM_WATCHING_REASONS; ++i) {
+		if (code->co_watching[i] != NULL) {
+			_PyDict_DropWatcher(code->co_watching[i], code);
+		}
+		code->co_watching[i] = NULL;
+	}
 }
 
 void
@@ -230,6 +270,8 @@ _PyCode_InvalidateMachineCode(PyCodeObject *code)
 	code->co_fatalbailcount++;
 	/* This is a no-op if not configured with --with-instrumentation. */
 	_PyEval_RecordFatalBail(code);
+	/* The machine code is invalid, no need to keep watching these dicts. */
+	_PyCode_IgnoreWatchedDicts(code);
 }
 
 int
@@ -428,11 +470,10 @@ code_dealloc(PyCodeObject *co)
 		_LlvmFunction_Dealloc(co->co_llvm_function);
 		co->co_llvm_function = NULL;
 	}
-	if (co->co_assumed_globals) {
-		_PyDict_DropWatcher(co->co_assumed_globals, co);
-		_PyDict_DropWatcher(co->co_assumed_builtins, co);
-		co->co_assumed_globals = NULL;
-		co->co_assumed_builtins = NULL;
+	if (co->co_watching) {
+		_PyCode_IgnoreWatchedDicts(co);
+		PyMem_Free(co->co_watching);
+		co->co_watching = NULL;
 	}
 	PyFeedbackMap_Del(co->co_runtime_feedback);
 #endif

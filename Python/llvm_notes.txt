@@ -115,6 +115,42 @@ Relevant Files:
 - Python/eval.cc - definition, use of the hotness model.
 
 
+Infrastructure: Watching dictionaries for changes
+-------------------------------------------------
+
+Dictionaries are used frequently to implement important parts of Python, such
+as namespaces. In many cases, these dictionaries rarely -- or never -- change
+after being initialized. There are a number of optimizations we can make if we
+assume that these dictionaries never change, or if they do, that we notice and
+undo whatever assumptions have been made.
+
+Requirements:
+- Need to track why each dict is being watched.
+- Don't take references to watchers or dicts; destructors will clear things out.
+- Set semantics.
+
+Data structures:
+- Dicts keep PySmallSet of PyCodeObject*s.
+- Code objects keep PyWatchingStruct*.
+
+Register code object to watch dict: (_PyCode_WatchDict)
+    - Add dict to code object
+    - Add code object to dict (_PyDict_AddWatcher)
+
+Dict changes (_PyDict_NotifyAllWatchers):
+    - For each code object in the dict watch list,
+        - Set co_use_llvm to 0
+        - For each dict in the code object's watch list
+		  (_PyCode_IgnoreWatchedDicts),
+            - Remove the code object from that dict's watch list
+			  (_PyDict_DropWatcher)
+    - Assert dict's set is empty
+
+Code object deletion/unwatch (_PyCode_IgnoreWatchedDicts):
+    - Remove code object from all watched dicts (_PyDict_DropWatcher)
+    - Don't bother removing the watching struct.
+
+
 Memory use: Destroying unused LLVM globals
 ------------------------------------------
 
@@ -170,28 +206,13 @@ Python edge cases:
 Implementation:
 - When a function has been selected for compilation to LLVM IR, it will ask
   the given globals/builtins dicts (as pulled off the frame object) to notify
-  the code object when the dicts change.
-- All dicts will grow an array of code objects that are anticipating updates.
-  This array will be manipulated via `_PyDict_AddWatcher()` and
-  `_PyDict_DropWatcher()` functions. It is a fatal error to add the same watcher
-  twice, or to call `_PyDict_DropWatcher()` with a code object not in the
-  watcher array.
-- When code objects are deleted, they will call `_PyDict_DropWatcher()` on the
-  globals/builtins dicts they are assuming. When dicts are deleted, they will
-  notify all code objects watching them.
+  the code object when the dicts change. See the above Infrastructure section
+  on "Watching dictionaries for changes" for how this system works.
 - The optimized machine code will guard the cached pointer by testing
   co_use_llvm; if this is 0, tailcall to the interpreter to continue execution.
   Otherwise (if it is 1), continue execution of the machine code, using the
-  cached pointer in place of the two `PyDict_GetItem()` calls.
-- When a dict is modified or deleted, it will loop over the array of watchers
-  and do the following:
-  1. Set co_use_llvm to 0; this signifies that the machine code is invalid. Any
-     active machine code frames will see the change to co_use_llvm and tail call
-     to `PyEval_EvalFrame()` to continue execution.
-  2. Increment co_fatalbailcount since the machine code is invalidated.
-  3. Drop the code object from the watcher arrays of its assumed
-     builtins/globals.
-  The array of watchers will then be zeroed out.
+  cached pointer in place of the two `PyDict_GetItem()` calls. Dicts will set
+  the code object's co_use_llvm field to 0 when they are modified.
 
 Instrumentation:
 - The --with-instrumentation build will tell you which functions have their

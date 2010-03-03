@@ -409,8 +409,7 @@ public:
     DEFINE_FIELD(PyCodeObject, co_optimization)
     DEFINE_FIELD(PyCodeObject, co_fatalbailcount)
     DEFINE_FIELD(PyCodeObject, co_hotness)
-    DEFINE_FIELD(PyCodeObject, co_assumed_globals)
-    DEFINE_FIELD(PyCodeObject, co_assumed_builtins)
+    DEFINE_FIELD(PyCodeObject, co_watching)
 };
 
 template<> class TypeBuilder<PyFunctionObject, false> {

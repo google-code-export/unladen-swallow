@@ -5,6 +5,8 @@ extern "C" {
 #endif
 
 
+struct PySmallPtrSet;
+
 /* Dictionary object type -- mapping from hashable object to object */
 
 /* The distribution includes a separate file, Objects/dictnotes.txt,
@@ -91,14 +93,12 @@ struct _dictobject {
 	/* When the dict changes, tell any dependent code objects that whatever
 	 * assumptions they may have had about the state of the dict may be
 	 * invalid. This is used by the LLVM-generated machine code to speed up
-	 * access to globals and builtins. If ma_watchers_used is 0, no code
+	 * access to globals and builtins. If ma_watchers is NULL, no code
 	 * objects depend on this dictionary; this keeps updates to non-globals/
 	 * non-builtins dicts fast. Use _PyDict_AddWatcher() and 
 	 * _PyDict_DropWatcher() to modify this.
 	 */
-	PyCodeObject **ma_watchers;
-	Py_ssize_t ma_watchers_used;
-	Py_ssize_t ma_watchers_allocated;
+	struct PySmallPtrSet *ma_watchers;
 #endif
 };
 
@@ -153,14 +153,13 @@ PyAPI_FUNC(int) PyDict_DelItemString(PyObject *dp, const char *key);
 
 #ifdef WITH_LLVM
 /* Register the given code object as depending on the state of this dict.
-   Registering the same code object twice is a fatal error. Returns -1 on error,
-   0 on success. */
+   The same code object may be registered multiple times without error. Returns
+   -1 on error, 0 on success. */
 PyAPI_FUNC(int) _PyDict_AddWatcher(PyObject *dp, PyCodeObject *code);
 
 /* Unregister the given code object; it is no longer watching this dict for
-   changes. Unregistering a code object that isn't watching this dict (calling
-   _PyDict_DropWatcher() twice on the same dict/code pair, for example) is a
-   fatal error. */
+   changes. The same dict/code pair may be unregistered multiple times without
+   error. */
 PyAPI_FUNC(void) _PyDict_DropWatcher(PyObject *dp, PyCodeObject *code);
 
 /* Internal helper methods used for testing the dict-watching system. */

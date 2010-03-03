@@ -338,6 +338,7 @@ ifneq (@BUILD_LLVM@, disabled)
 		Util/EventTimer.o \
 		Util/PyAliasAnalysis.o \
 		Util/PyBytecodeIterator.o \
+		Util/PySmallPtrSet.o \
 		Util/PyTypeBuilder.o \
 		Util/RuntimeFeedback.o \
 		Util/SingleFunctionInliner.o \
@@ -756,6 +757,7 @@ PYTHON_HEADERS= \
 		Util/DeadGlobalElim.h \
 		Util/EventTimer.h \
 		Util/PyBytecodeIterator.h \
+		Util/PySmallPtrSet.h \
 		Util/PyTypeBuilder.h \
 		Util/RuntimeFeedback.h \
 		Util/RuntimeFeedback_fwd.h \

@@ -9,6 +9,18 @@
 extern "C" {
 #endif
 
+
+#ifdef WITH_LLVM
+/* Why we're watching a given dict. We malloc a list of PyObject*s to hold the
+   dicts being watched; these serve as indicies into that list. */
+typedef enum {
+    WATCHING_BUILTINS = 0,
+    WATCHING_GLOBALS,
+    NUM_WATCHING_REASONS,
+} ReasonWatched;
+#endif
+
+
 /* Bytecode object.  Keep this in sync with Util/PyTypeBuilder.h. */
 typedef struct PyCodeObject {
     PyObject_HEAD
@@ -55,12 +67,8 @@ typedef struct PyCodeObject {
     /* Measure of how hot this code object is. This is used to decide
        which code objects are worth sending through LLVM. */
     long co_hotness;
-    /* Because the globals dict is set on the frame, we record *which* globals
-       dict we're assuming. */
-    PyObject *co_assumed_globals;
-    /* Because the builtins dict is set on the frame, we record *which* builtins
-       dict we're assuming. */
-    PyObject *co_assumed_builtins;
+    /* Keep track of which dicts this code object is watching. */
+    PyObject **co_watching;
 #endif
 } PyCodeObject;
 
@@ -97,13 +105,6 @@ typedef struct PyCodeObject {
 #define CO_BLOCKSTACK   (1 << 7)
 /* Indicates whether this code object uses the exec statement. */
 #define CO_USES_EXEC    (1 << 8)
-/* The following CO_FDO_* flags control individual feedback-directed
-   optimizations. These are aggregated into CO_ALL_FDO_OPTS. These optimizations
-   are only triggered if we have data to support them, i.e., code compiled by
-   setting co_optimization won't benefit from this. */
-/* CO_FDO_GLOBALS: make assumptions about builtins/globals, for great justice */
-#define CO_FDO_GLOBALS  (1 << 9)
-#define CO_ALL_FDO_OPTS  (CO_FDO_GLOBALS)
 
 #if 0
 /* This is no longer used.  Stopped defining in 2.5, do not re-use. */
@@ -165,8 +166,8 @@ PyAPI_FUNC(PyObject*) PyCode_Optimize(PyObject *code, PyObject* consts,
    status code is returned, callers may need to back out any changes they've
    made, such as setting co_use_llvm.
 
-   You can use _PyCode_WatchGlobals() before calling this to advise the code
-   object that it should make assumptions about globals/builtins.
+   Some state from the code object, such as the co_watching field, may be used
+   during code generation to optimize the machine code.
 
    This should eventually be able to *re*compile bytecode to LLVM IR. See
    http://code.google.com/p/unladen-swallow/issues/detail?id=41. */
@@ -176,17 +177,22 @@ PyAPI_FUNC(int) _PyCode_ToOptimizedLlvmIr(PyCodeObject *code, int opt_level);
    If the globals or builtins change, co_use_llvm will be set to 0; this causes
    the machine code to bail back to the interpreter to continue execution.
 
-   This also adds CO_FDO_GLOBALS to the code object's co_flags bit array on
-   success.
-
    Returns 0 on success, -1 on serious failure. "Serious failure" here means
    something that we absolutely cannot recover from (out-of-memory is the big
    one) and needs to be conveyed to the user. There are recoverable failure
    modes (globals == NULL, builtins == NULL, etc) that merely disable the
    optimization and return 0. */
-PyAPI_FUNC(int) _PyCode_WatchGlobals(PyCodeObject *code,
-                                     PyObject *globals, PyObject *builtins);
+PyAPI_FUNC(int) _PyCode_WatchDict(PyCodeObject *code, ReasonWatched reason,
+                                  PyObject *dict);
 
+/* Stop watching a dict for changes. Returns 0 on success, -1 on failure. */
+PyAPI_FUNC(int) _PyCode_IgnoreDict(PyCodeObject *code, ReasonWatched reason);
+
+/* Internal helper function to get the number of dicts being watched. */
+PyAPI_FUNC(Py_ssize_t) _PyCode_WatchingSize(PyCodeObject *code);
+
+/* Ignore all dicts this code object is currently watching. */
+PyAPI_FUNC(void) _PyCode_IgnoreWatchedDicts(PyCodeObject *code);
 
 /* Perform any steps needed to mark a function's machine code as invalid.
    Individual fatal guard failures may need to do extra work on their own to
