@@ -27,8 +27,8 @@ except ImportError:
 class IoctlTests(unittest.TestCase):
 
     def setUp(self):
-        # TODO(rnk): This test doesn't pass with the background thread under -j
-        # always, so we disable the JIT for the duration of the tests.
+        # TODO(rnk): This test doesn't pass with the background thread under
+        # -Xjit=always, so we disable the JIT for the duration of the tests.
         if _llvm:
             self.orig_jit_control = _llvm.get_jit_control()
             _llvm.set_jit_control("never")

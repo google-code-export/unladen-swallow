@@ -85,12 +85,6 @@ int _PyOS_GetOpt(int argc, char **argv, char *optstring)
 		return '_';
 	}
 
-	if (option == 'X') {
-		fprintf(stderr,
-		  "-X is reserved for implementation-specific arguments\n");
-		return '_';
-	}
-
 	if ((ptr = strchr(optstring, option)) == NULL) {
 		if (_PyOS_opterr)
 			fprintf(stderr, "Unknown option: -%c\n", option);

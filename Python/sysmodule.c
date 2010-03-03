@@ -1256,7 +1256,7 @@ static PyStructSequence_Field flags_fields[] = {
 	{"unicode",		"-U"},
 	/* {"skip_first",		"-x"}, */
 	{"bytes_warning",	"-b"},
-	{"jit_control",		"-j"},
+	{"jit_control",		"-Xjit="},
 	{0}
 };
 

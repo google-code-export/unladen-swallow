@@ -140,7 +140,7 @@ class InterProcessSignalTests(unittest.TestCase):
                       " didn't arrive after another second.")
 
     def test_main(self):
-        # Call several functions once so that -j always will convert
+        # Call several functions once so that -Xjit=always will convert
         # them to machine code eagerly.  Otherwise they get JITted
         # during the select() call and make the test time out.
         self.assertTrue(True)

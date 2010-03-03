@@ -220,7 +220,7 @@ def foo():
         self.assertFalse("%stack_pointer_addr = alloca"
                          in str(test_func.__code__.co_llvm))
 
-    # -j always will cause this test to always fail.
+    # -Xjit=always will cause this test to always fail.
     if _llvm.get_jit_control() != "always":
         def test_fetch_unset_co_llvm(self):
             def test_func():
@@ -1414,8 +1414,8 @@ def generator(obj):
         self.assertRaises(StopIteration, g.next)
         self.assertEquals({"finally": 1}, obj)
 
-    # Getting this to work under -j always is a pain in the ass, and not worth
-    # the effort IMHO.
+    # Getting this to work under -Xjit=always is a pain in the ass, and not
+    # worth the effort IMHO.
     if _llvm.get_jit_control() != "always":
         def test_toggle_generator(self):
             # Toggling between native code and the interpreter between yields
@@ -3904,7 +3904,7 @@ class SetJitControlTests(LlvmTestCase):
         for _ in xrange(JIT_SPIN_COUNT):
             foo()
         self.assertFalse(foo.__code__.__use_llvm__,
-                         "Foo was JITed despite being run under -j never.")
+                         "Foo was JITed despite being run under -Xjit=never.")
 
     def test_jit_always(self):
         def foo():
@@ -3916,7 +3916,7 @@ class SetJitControlTests(LlvmTestCase):
         _llvm.set_jit_control("always")
         foo()
         self.assertTrue(foo.__code__.__use_llvm__,
-                        "Setting -j flag to always had no effect.")
+                        "Setting -X flag to jit=always had no effect.")
 
     def test_wrong_type(self):
         self.assertRaises(TypeError, _llvm.set_jit_control, 1)

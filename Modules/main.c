@@ -40,7 +40,7 @@ static char **orig_argv;
 static int  orig_argc;
 
 /* command line options */
-#define BASE_OPTS "3RbBc:dEg*hij:Jm:O*Q:sStuUvVW:xX?"
+#define BASE_OPTS "3RbBc:dEg*hiX:Jm:O*Q:sStuUvVW:x?"
 
 #ifndef RISCOS
 #define PROGRAM_OPTS BASE_OPTS
@@ -68,7 +68,6 @@ Options and arguments (and corresponding environment variables):\n\
          if stdin does not appear to be a terminal; also PYTHONINSPECT=x\n\
 ";
 static char *usage_2 = "\
--j arg : control JIT compilation: -j whenhot (default), -j never, -j always.\n\
 -m mod : run library module as a script (terminates option list)\n\
 -O#    : optimize generated code; also PYTHONOPTIMIZE=x\n\
 -Q arg : division options: -Qold (default), -Qwarn, -Qwarnall, -Qnew\n\
@@ -84,6 +83,8 @@ static char *usage_3 = "\
 -V     : print the Python version number and exit (also --version)\n\
 -W arg : warning control; arg is action:message:category:module:lineno\n\
 -x     : skip first line of source, allowing use of non-Unix forms of #!cmd\n\
+-Xjit=arg : control JIT compilation: -Xjit=whenhot (default), -Xjit=never,\n\
+            -Xjit=always.\n\
 ";
 #ifdef WITH_PY3K_WARNINGS
 static char *usage_4 = "\
@@ -355,20 +356,33 @@ Py_Main(int argc, char **argv)
 			Py_InteractiveFlag++;
 			break;
 
-                case 'j':
+                case 'X':
 #ifdef WITH_LLVM
-			if (Py_JitControlStrToEnum(_PyOS_optarg,
-						   &Py_JitControl) >= 0) {
-				break;  /* Success */
-			}
-			fprintf(stderr,
-				"-j option should be `-j whenhot', "
-				"`-j always`, or `-j never' only\n");
-#else
-			fprintf(stderr,
-			        "-j option is disabled when configured with "
-			        "--without-llvm\n");
+			/* Support both -Xjit=never and -Xjit never is a huge
+			   hassle due to the way _PyOS_GetOpt() works. This
+			   whole system should be replaced with something more
+			   flexible. */
+			if (strncmp(_PyOS_optarg, "jit=", 4) == 0) {
+				int r = Py_JitControlStrToEnum(_PyOS_optarg + 4,
+				                               &Py_JitControl);
+				if (r >= 0)
+					break;  /* Success */
+
+				fprintf(stderr,
+				        "-Xjit value should be `whenhot'"
+				        ", `always`, or `never', not `%s'\n",
+				        _PyOS_optarg);
+			} else
 #endif  /* WITH_LLVM */
+			if (strchr(_PyOS_optarg, '=') == NULL) {
+				fprintf(stderr,
+				        "-Xfoo flags require = to separate args"
+				        " (`-Xfoo=bar', not `-Xfoo bar')\n");
+			} else {
+				fprintf(stderr,
+				        "Unknown -X option: `%s'\n",
+				        _PyOS_optarg);
+			}
 			return usage(2, argv[0]);
 			/* NOTREACHED */
 

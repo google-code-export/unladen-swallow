@@ -124,9 +124,10 @@ class CodeWeakRefTests(unittest.TestCase):
 
         del f
         # Because f's code object is a constant of the code object we exec'd,
-        # when we run this test under -j always the constant is used to make an
-        # LLVM global variable.  This holds a reference to f's code object,
-        # which makes this test fail, unless we collect unused globals here.
+        # when we run this test under -Xjit=always the constant is used to
+        # make an LLVM global variable.  This holds a reference to f's code
+        # code object, which makes this test fail, unless we collect unused
+        # globals here.
         _llvm.collect_unused_globals()
 
         self.assertFalse(bool(coderef()))

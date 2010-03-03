@@ -206,12 +206,12 @@ Miscellaneous options
    raises an exception.  See also :envvar:`PYTHONINSPECT`.
 
 
-.. cmdoption:: -j <arg>
+.. cmdoption:: -Xjit=<arg>
 
-   Control how Python compiles to machine code. ``-j never`` completely
-   disables automatic compilation to machine code. ``-j always`` forces
+   Control how Python compiles to machine code. ``-Xjit=never`` completely
+   disables automatic compilation to machine code. ``-Xjit=always`` forces
    machine code compilation for all functions that get run. The default is
-   ``-j whenhot``, which optimizes hot functions only once, but optimizes the
+   ``-Xjit=whenhot``, which optimizes hot functions only once, but optimizes the
    function as much as possible. See also :envvar:`PYTHONJITCONTROL`.
 
 
@@ -467,7 +467,7 @@ These environment variables influence Python's behavior.
 .. envvar:: PYTHONJITCONTROL
 
    If this option is set to either ``never``, ``whenhot``, or ``always`` it is
-   equivalent to passing :option:`-j` on the command line with that value.
+   equivalent to passing :option:`-Xjit=` on the command line with that value.
 
 
 .. envvar:: PYTHONUNBUFFERED

@@ -92,7 +92,7 @@ int _Py_QnewFlag = 0;
 int Py_NoUserSiteDirectory = 0; /* for -s and site.py */
 int Py_ShowRefcountFlag = 0; /* For -R */
 #ifdef WITH_LLVM
-Py_JitOpts Py_JitControl = PY_JIT_WHENHOT; /* For -j */
+Py_JitOpts Py_JitControl = PY_JIT_WHENHOT; /* For -Xjit */
 #else
 Py_JitOpts Py_JitControl = PY_JIT_NEVER;
 #endif  /* WITH_LLVM */
@@ -146,7 +146,7 @@ static const char * const jitopts_strs[] = {
 	"always"
 };
 
-/* Helper function to turn the string argument to the '-j' flag into the
+/* Helper function to turn the string argument to the '-Xjit' flag into the
    Py_JitOpts enum.  Sets *flag to the enum of the flag.  Returns 0 on success
    and -1 on failure.  */
 

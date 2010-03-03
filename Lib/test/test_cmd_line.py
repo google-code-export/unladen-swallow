@@ -76,9 +76,10 @@ class CmdLineTest(unittest.TestCase):
 
     if WITH_LLVM:
         def test_jit_flag(self):
-            self.verify_valid_flag('-j', 'never')
-            self.verify_valid_flag('-j', 'whenhot')
-            self.verify_valid_flag('-j', 'always')
+            self.verify_valid_flag('-Xjit=never')
+            self.verify_valid_flag('-Xjit=whenhot')
+            self.verify_valid_flag('-Xjit=always')
+            self.verify_invalid_flag('-Xjit', 'always')
 
     def test_site_flag(self):
         self.verify_valid_flag('-S')

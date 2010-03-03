@@ -421,8 +421,8 @@ class SysModuleTest(unittest.TestCase):
                 # Once bailerror and tracing have been turned on, they cannot
                 # be turned off by generated machine code, because running
                 # generated machine code under tracing will cause another bail
-                # before we can turn either setting off.  Under -j always, any
-                # finally or except clauses we write to catch the bail
+                # before we can turn either setting off.  Under -Xjit=always,
+                # any finally or except clauses we write to catch the bail
                 # exception will use the compiled machine code unless we
                 # circumvent the JIT.  The only reliable way at this time to
                 # guarantee execution from the interpreter is to cause a bail
