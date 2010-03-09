@@ -785,15 +785,16 @@ $(BCLIBRARY): $(BCLIBRARY:.bc=.unopt.bc) $(LLVM_BIN_DIR)/opt
 
 # Unit tests, using Googletest
 
-Util/googletest/gtest.o:
-	$(CXX) -c $(PY_CXXFLAGS) -I$(srcdir)/Util/googletest -I$(srcdir)/Util/googletest/include -o $@ $(srcdir)/Util/googletest/src/gtest-all.cc
+Unittests/googletest/gtest.o:
+	$(CXX) -c $(PY_CXXFLAGS) -I$(srcdir)/Unittests/googletest \
+		-I$(srcdir)/Unittests/googletest/include -o $@ $(srcdir)/Unittests/googletest/src/gtest-all.cc
 
 # Must be in the root object directory for Python to find libpython.bc.
 # BUILDPYTHON and python-config are order-only so that $^ doesn't pick them up.
 # The python-config line needs to come last, or this will be broken on Linux.
 AllUnitTests: $(srcdir)/Unittests/*Test.cc $(srcdir)/Unittests/pytest_main.cc \
-		$(LIBRARY) Util/googletest/gtest.o | $(BUILDPYTHON) python-config
-	$(CXX) $(CPPFLAGS) -I$(srcdir)/Util/googletest/include -o $@ $^ \
+		$(LIBRARY) Unittests/googletest/gtest.o | $(BUILDPYTHON) python-config
+	$(CXX) $(CPPFLAGS) -I$(srcdir)/Unittests/googletest/include -o $@ $^ \
 		-L. $(LDFLAGS) `$(RUNSHARED) ./$(BUILDPYTHON) ./python-config --cxxflags --ldflags --libs`
 
 ifneq (@BUILD_LLVM@, disabled)
