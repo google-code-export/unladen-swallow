@@ -94,8 +94,10 @@ def spin_until_hot(func, *training_args):
 
     This will cause the function to be trained on both integer and floating
     point inputs.
-
     """
+    if not training_args:  # An empty training_args isn't what you meant.
+        training_args = [[]]
+
     results = []
     with set_jit_control("whenhot"):
         for _ in xrange(JIT_SPIN_COUNT):
@@ -3397,7 +3399,7 @@ def foo():
     return len([])
 """, optimization_level=None)
         import os  # Make sure this is in sys.modules.
-        spin_until_hot(foo, [])
+        spin_until_hot(foo)
 
         # If we get here, we haven't bailed, but double-check to be sure.
         self.assertTrue(foo.__code__.__use_llvm__)
@@ -3841,6 +3843,177 @@ def foo():
         # Check that we were optimizing LOAD_ATTR by mutating the type.
         C.foo = 4
         self.assertFalse(set_foo.__code__.__use_llvm__)
+
+    def test_two_imports(self):
+        # Regression test: at one point in development, this would blow up due
+        # to adding the same watcher to sys.modules twice.
+        foo = compile_for_llvm("foo", """
+def foo():
+    import os
+    import os
+    return os
+""", optimization_level=None)
+        spin_until_hot(foo)
+
+        import os
+        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertEqual(foo(), os)
+        self.assertTrue("_PyEval_ImportName" not in str(foo.__code__.co_llvm))
+
+    def test_cache_imports(self):
+        foo = compile_for_llvm("foo", """
+def foo():
+    import os
+    return os
+""", optimization_level=None)
+        spin_until_hot(foo)
+
+        import os
+        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertEqual(foo(), os)
+        self.assertTrue("_PyEval_ImportName" not in str(foo.__code__.co_llvm))
+
+    def test_cache_imports_monomorphic_imports_only(self):
+        # Test that we refuse to optimize polymorphic imports.
+        foo = compile_for_llvm("foo", """
+def foo():
+    import os
+    return os
+""", optimization_level=None)
+        # Verify things work like we expect: mucking with sys.modules["x"]
+        # should change the result of "import x".
+        import os
+        self.assertEqual(foo(), os)
+        with test_support.swap_item(sys.modules, "os", 5):
+            self.assertEqual(foo(), 5)
+        self.assertFalse(foo.__code__.__use_llvm__)
+        self.assertEqual(foo.__code__.co_fatalbailcount, 0)
+
+        # Normally we call _clear_feedback() here, but we want the 5 to count
+        # as a separate module.
+        spin_until_hot(foo)
+
+        self.assertEqual(foo.__code__.co_fatalbailcount, 0)
+        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertEqual(foo(), os)
+        self.assertTrue("_PyEval_ImportName" in str(foo.__code__.co_llvm))
+
+        # Changing sys.modules will *not* trigger a fatal bail to the
+        # interpreter, since we couldn't use the IMPORT_NAME optimization.
+        with test_support.swap_item(sys.modules, "os", 5):
+            self.assertEqual(foo(), 5)
+        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertEqual(foo.__code__.co_fatalbailcount, 0)
+
+    def test_cache_imports_robust_against_sys_modules_changes(self):
+        foo = compile_for_llvm("foo", """
+def foo():
+    import os
+    return os
+""", optimization_level=None)
+        # Verify things work like we expect: mucking with sys.modules["x"]
+        # should change the result of "import x".
+        import os
+        self.assertEqual(foo(), os)
+        with test_support.swap_item(sys.modules, "os", 5):
+            self.assertEqual(foo(), 5)
+        self.assertFalse(foo.__code__.__use_llvm__)
+        self.assertEqual(foo.__code__.co_fatalbailcount, 0)
+
+        _llvm.clear_feedback(foo)  # Don't let that 5 ruin things!
+        spin_until_hot(foo)
+
+        self.assertEqual(foo.__code__.co_fatalbailcount, 0)
+        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertEqual(foo(), os)
+
+        # Changing sys.modules will trigger a fatal bail to the interpreter.
+        with test_support.swap_item(sys.modules, "os", 5):
+            self.assertEqual(foo(), 5)
+        self.assertFalse(foo.__code__.__use_llvm__)
+        self.assertEqual(foo.__code__.co_fatalbailcount, 1)
+
+    def test_cache_imports_robust_against_target_assignments(self):
+        foo = compile_for_llvm("foo", """
+def foo():
+    import os.path
+    return os.path
+""", optimization_level=None)
+        # Verify things work like we expect.
+        import os.path
+        self.assertEqual(foo(), os.path)
+
+        _llvm.clear_feedback(foo)
+        spin_until_hot(foo)
+
+        self.assertEqual(foo.__code__.co_fatalbailcount, 0)
+        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertEqual(foo(), os.path)
+
+        # This doesn't change sys.modules, but it still needs to work.
+        import os
+        with test_support.swap_attr(os, "path", 5):
+            self.assertEqual(foo(), 5)
+        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertEqual(foo.__code__.co_fatalbailcount, 0)
+
+    def test_cache_imports_robust_against_parent_assignments(self):
+        foo = compile_for_llvm("foo", """
+def foo():
+    from os.path import exists
+    return exists
+""", optimization_level=None)
+        # Verify that our understanding of Python is correct: this kind of
+        # import should ignore changes to os in favor of the module associated
+        # with "os.path" in sys.modules.
+        import os
+        import os.path
+        real_exists = os.path.exists
+        class Module(object):
+            exists = lambda: "foo"
+        with test_support.swap_attr(os, "path", Module):
+            self.assertEqual(foo(), real_exists)
+
+        # Get us some FDO LLVM code.
+        _llvm.clear_feedback(foo)
+        spin_until_hot(foo)
+
+        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertEqual(foo.__code__.co_fatalbailcount, 0)
+
+        # Make sure everything still works.
+        self.assertEqual(foo(), os.path.exists)
+        with test_support.swap_attr(os, "path", Module):
+            self.assertEqual(foo(), real_exists)
+        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertEqual(foo.__code__.co_fatalbailcount, 0)
+
+    def test_cache_imports_robust_against_import_builtin_changes(self):
+        foo = compile_for_llvm("foo", """
+def foo():
+    import os
+    return os
+""", optimization_level=None)
+        # Verify things work like we expect: swapping out __import__ should
+        # be able to preempt sys.modules.
+        with test_support.swap_attr(__builtin__, "__import__", lambda *args: 5):
+            self.assertEqual(foo(), 5)
+
+        _llvm.clear_feedback(foo)
+        spin_until_hot(foo)
+
+        import os
+        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertEqual(foo.__code__.co_fatalbailcount, 0)
+        self.assertEqual(foo(), os)
+
+        # This doesn't change sys.modules, but it still needs to work. This
+        # should invalidate the machine code.
+        sys.setbailerror(True)
+        with test_support.swap_attr(__builtin__, "__import__", lambda *args: 5):
+            self.assertEqual(foo(), 5)
+        self.assertEqual(foo.__code__.co_fatalbailcount, 1)
+        self.assertFalse(foo.__code__.__use_llvm__)
 
 
 class InliningTests(LlvmTestCase, ExtraAssertsTestCase):

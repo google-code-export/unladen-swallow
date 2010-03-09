@@ -16,6 +16,8 @@
 #include "llvm/Constants.h"
 #include "llvm/Support/IRBuilder.h"
 #include "llvm/Support/TargetFolder.h"
+
+#include <bitset>
 #include <string>
 
 struct PyCodeObject;
@@ -666,6 +668,11 @@ private:
     void LOAD_FAST_safe(int index);
     void LOAD_FAST_fast(int index);
 
+    // A fast version that avoids the import machinery if sys.modules and other
+    // modules haven't changed. Returns false if the attempt to optimize failed;
+    // the safe version in IMPORT_NAME() will be used.
+    bool IMPORT_NAME_fast();
+
     /// Emits code to conditionally bail out to the interpreter loop
     /// if a line tracing function is installed.  If the line tracing
     /// function is not installed, execution will continue at
@@ -708,9 +715,9 @@ private:
     // The most recent index we've started emitting an instruction for.
     int f_lasti_;
 
-    // Flag to indicate whether this code object uses the LOAD_GLOBALS
-    // optimization.
-    bool uses_load_global_opt_;
+    // Flags to indicate whether the code object is watching any of the
+    // watchable dicts.
+    std::bitset<NUM_WATCHING_REASONS> uses_watched_dicts_;
 
     // The following pointers hold values created in the function's
     // entry block. They're constant after construction.

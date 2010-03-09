@@ -386,6 +386,45 @@ Relevant revisions:
 - http://code.google.com/p/unladen-swallow/source/detail?r=957
 
 
+Optimization: IMPORT_NAME compile-time caching
+----------------------------------------------
+
+We optimize import statements in much the same way as LOAD_GLOBAL: rather than
+doing the lookup at runtime, we do the lookup at compile-time and cache a
+guarded pointer in the generated machine code.
+
+Import statements are worth optimizing because the implementation of Django
+templates has very hot code that looks like this:
+
+  def escape(value):
+    from django.utils.safestring import mark_for_escaping
+    return mark_for_escaping(value)
+
+That import will hit the sys.modules dict, so it is relatively fast, but it is
+not free: there is a lot of work done before hitting sys.modules, such as
+parsing the module name to be imported. That work turns out to be pretty
+expensive, worth roughly 20% of Django template performance.
+
+The interpreter's runtime feedback mechanism has been extended to track which
+modules are returned from import statements. If a given import is monomorphic
+(always returns the same module), we cache a pointer to the module in the
+generated IR. The cached pointer is guarded by watching sys.modules and
+__builtins__ for changes.
+
+
+Guards:
+- If the __import__ builtin is overridden, it can return arbitrary objects.
+  Accordingly, we guard against changes to the builtins dict. Shadowing
+  __import__ in globals() does not change imports, so we do not guard on it.
+- If sys.modules changes, the machine code will be invalidated.
+
+
+Instrumentation:
+- The --with-instrumentation build includes measurements for how many import
+  statement were compiled; how many import statements were successfully
+  optimized; etc.
+
+
 Optimization: specialization of builtin functions
 -------------------------------------------------
 

@@ -188,17 +188,6 @@ _PyCode_ToLlvmIr(PyCodeObject *code)
         return NULL;
     }
 
-    // Some sanity checks on the incoming code object (difficult to do
-    // elsewhere): we always watch globals and builtins in pairs. If one isn't
-    // being watching, neither is being watched.
-#ifdef Py_DEBUG
-    if (code->co_watching) {
-        int watching_globals = (code->co_watching[WATCHING_GLOBALS] == NULL);
-        int watching_builtins = (code->co_watching[WATCHING_BUILTINS] == NULL);
-        assert(watching_globals == watching_builtins);
-    }
-#endif /* Py_DEBUG */
-
     PyGlobalLlvmData *global_data = PyGlobalLlvmData::Get();
     global_data->MaybeCollectUnusedGlobals();
 

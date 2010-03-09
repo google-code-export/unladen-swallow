@@ -16,6 +16,7 @@ extern "C" {
 typedef enum {
     WATCHING_BUILTINS = 0,
     WATCHING_GLOBALS,
+    WATCHING_SYS_MODULES,
     NUM_WATCHING_REASONS,
 } ReasonWatched;
 #endif

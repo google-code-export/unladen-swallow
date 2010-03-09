@@ -229,13 +229,13 @@ static llvm::ManagedStatic<ImportNameStats> import_name_stats;
 #define COND_BRANCH_INC_STATS(field) cond_branch_stats->field++
 #define BINOP_INC_STATS(field) binary_operator_stats->field++
 #define ACCESS_ATTR_INC_STATS(field) access_attr_stats->field++
-#define IMPORT_NAME_STATS(field) import_name_stats->field++
+#define IMPORT_NAME_INC_STATS(field) import_name_stats->field++
 #else
 #define CF_INC_STATS(field)
 #define COND_BRANCH_INC_STATS(field)
 #define BINOP_INC_STATS(field)
 #define ACCESS_ATTR_INC_STATS(field)
-#define IMPORT_NAME_STATS(field)
+#define IMPORT_NAME_INC_STATS(field)
 #endif  /* Py_WITH_INSTRUMENTATION */
 
 namespace {
@@ -391,8 +391,6 @@ LlvmFunctionBuilder::LlvmFunctionBuilder(
     assert(args == this->function_->arg_end() &&
            "Unexpected number of arguments");
     this->frame_->setName("frame");
-
-    this->uses_load_global_opt_ = false;
 
     BasicBlock *entry = this->CreateBasicBlock("entry");
     this->unreachable_block_ =
@@ -1386,7 +1384,9 @@ LlvmFunctionBuilder::LOAD_GLOBAL_fast(int name_index)
 {
     PyCodeObject *code = this->code_object_;
     assert(code->co_watching != NULL);
-    
+    assert(code->co_watching[WATCHING_GLOBALS]);
+    assert(code->co_watching[WATCHING_BUILTINS]);
+
     PyObject *name = PyTuple_GET_ITEM(code->co_names, name_index);
     PyObject *obj = PyDict_GetItem(code->co_watching[WATCHING_GLOBALS], name);
     if (obj == NULL) {
@@ -1399,7 +1399,8 @@ LlvmFunctionBuilder::LOAD_GLOBAL_fast(int name_index)
             return;
         }
     }
-    this->uses_load_global_opt_ = true;
+    this->uses_watched_dicts_.set(WATCHING_GLOBALS);
+    this->uses_watched_dicts_.set(WATCHING_BUILTINS);
 
     BasicBlock *keep_going = this->CreateBasicBlock("LOAD_GLOBAL_keep_going");
     BasicBlock *invalid_assumptions =
@@ -2512,7 +2513,10 @@ LlvmFunctionBuilder::CALL_FUNCTION_VAR_KW(int oparg)
 void
 LlvmFunctionBuilder::IMPORT_NAME()
 {
-    IMPORT_NAME_STATS(total);
+    IMPORT_NAME_INC_STATS(total);
+
+    if (this->IMPORT_NAME_fast())
+        return;
 
     Value *mod_name = this->Pop();
     Value *names = this->Pop();
@@ -2529,6 +2533,71 @@ LlvmFunctionBuilder::IMPORT_NAME()
 }
 
 #undef FUNC_TYPE
+
+bool
+LlvmFunctionBuilder::IMPORT_NAME_fast()
+{
+    const PyRuntimeFeedback *feedback = this->GetFeedback();
+    if (feedback == NULL || feedback->ObjectsOverflowed()) {
+        return false;
+    }
+
+    llvm::SmallVector<PyObject *, 3> objects;
+    feedback->GetSeenObjectsInto(objects);
+    if (objects.size() != 1 || !PyModule_Check(objects[0])) {
+        return false;
+    }
+    PyObject *module = objects[0];
+
+    // We need to invalidate this function if someone changes sys.modules.
+    if (this->code_object_->co_watching[WATCHING_SYS_MODULES] == NULL) {
+        PyObject *sys_modules = PyImport_GetModuleDict();
+        if (sys_modules == NULL) {
+            return false;
+        }
+
+        if (_PyCode_WatchDict(this->code_object_,
+                              WATCHING_SYS_MODULES,
+                              sys_modules)) {
+            PyErr_Clear();
+            return false;
+        }
+        this->uses_watched_dicts_.set(WATCHING_BUILTINS);
+        this->uses_watched_dicts_.set(WATCHING_SYS_MODULES);
+    }
+    // We start watching builtins when we begin compilation to LLVM IR (aka,
+    // we're always watching it by this point).
+    assert(this->code_object_->co_watching[WATCHING_BUILTINS]);
+    assert(this->code_object_->co_watching[WATCHING_SYS_MODULES]);
+
+    BasicBlock *keep_going = this->CreateBasicBlock("IMPORT_NAME_keep_going");
+    BasicBlock *invalid_assumptions =
+        this->CreateBasicBlock("IMPORT_NAME_invalid_assumptions");
+
+    Value *use_llvm = this->builder_.CreateLoad(this->use_llvm_addr_);
+    this->builder_.CreateCondBr(this->IsNonZero(use_llvm),
+                                keep_going,
+                                invalid_assumptions);
+
+    /* Our assumptions about the state of sys.modules no longer hold;
+       bail back to the interpreter. */
+    this->builder_.SetInsertPoint(invalid_assumptions);
+    this->CreateBailPoint(_PYFRAME_FATAL_GUARD_FAIL);
+
+    this->builder_.SetInsertPoint(keep_going);
+    /* TODO(collinwinter): we pop to get rid of the inputs to IMPORT_NAME.
+       Find a way to omit this work. */
+    this->DecRef(this->Pop());
+    this->DecRef(this->Pop());
+    this->DecRef(this->Pop());
+
+    Value *mod = this->GetGlobalVariableFor(module);
+    this->IncRef(mod);
+    this->Push(mod);
+
+    IMPORT_NAME_INC_STATS(optimized);
+    return true;
+}
 
 void
 LlvmFunctionBuilder::LOAD_DEREF(int index)
@@ -4500,12 +4569,15 @@ LlvmFunctionBuilder::EmbedPointer(void *ptr)
 int
 LlvmFunctionBuilder::FinishFunction()
 {
-    // If the code object doesn't need the LOAD_GLOBAL optimization, it should
-    // not care whether the globals/builtins change.
+    // If the code object doesn't need to watch any dicts, it shouldn't be
+    // invalidated when those dicts change.
     PyCodeObject *code = this->code_object_;
-    if (!this->uses_load_global_opt_ && code->co_watching) {
-        _PyCode_IgnoreDict(code, WATCHING_GLOBALS);
-        _PyCode_IgnoreDict(code, WATCHING_BUILTINS);
+    if (code->co_watching) {
+        for (unsigned i = 0; i < NUM_WATCHING_REASONS; ++i) {
+            if (!this->uses_watched_dicts_.test(i)) {
+                _PyCode_IgnoreDict(code, (ReasonWatched)i);
+            }
+        }
     }
 
     // We need to register to become invalidated from any types we've touched.
