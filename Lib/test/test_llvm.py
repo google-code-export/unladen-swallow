@@ -2696,6 +2696,26 @@ def foo(trigger):
         self.assertEquals(foo.__code__.co_fatalbailcount, 0)
         del match
 
+    def test_print_ir_after_LOAD_GLOBAL_fatal_bail(self):
+        # Regression test: this used to segfault when trying to print co_llvm
+        # after a fatal bail out of a function using the optimized LOAD_GLOBAL.
+        # The fatal bail code left the support infrastructure for LOAD_GLOBAL
+        # in a corrupted state.
+        foo = compile_for_llvm("foo", """
+def foo():
+    return len
+""", optimization_level=None)
+
+        spin_until_hot(foo)
+        self.assertTrue(foo.__code__.__use_llvm__)
+
+        # Force a fatal bail.
+        with test_support.swap_attr(__builtin__, "len", lambda x: 42):
+            foo()
+
+        # This used to cause a segfault.
+        self.assertTrue(str(foo.__code__.co_llvm))
+
     def test_setprofile_in_leaf_function(self):
         # Make sure that the fast version of CALL_FUNCTION supports profiling.
         data = []
