@@ -45,6 +45,8 @@ class DebuggerTests(unittest.TestCase):
 
     def test_gets_stack_trace(self):
         gdb_output = self.run_gdb("gdb", "--batch",
+                                  # Use 'start' to load any shared libraries.
+                                  "--eval-command=start",
                                   "--eval-command=break PyObject_Print",
                                   "--eval-command=run",
                                   "--eval-command=backtrace",
