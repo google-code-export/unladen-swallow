@@ -3110,19 +3110,19 @@ def foo(trigger):
             optimization_level=None)
         true_vals, false_vals, bails_lhs, bails_rhs, bails_true, bails_false =\
             test_vals
-        
+
         spin_until_hot(cmpop_func, true_vals)
         self.assertTrue(cmpop_func.__code__.__use_llvm__)
         self.assertTrue(cmpop_func(*true_vals))
         self.assertFalse(cmpop_func(*false_vals))
-        
+
         self.assertRaises(RuntimeError, cmpop_func, *bails_lhs)
         self.assertRaises(RuntimeError, cmpop_func, *bails_rhs)
-        
+
         sys.setbailerror(False)
         self.assertTrue(cmpop_func(*bails_true))
         self.assertFalse(cmpop_func(*bails_false))
-    
+
     def test_inline_cmpops(self):
         self._test_inlining_cmpop_generic("<", [
             (3, 4),
