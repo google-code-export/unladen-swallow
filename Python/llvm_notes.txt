@@ -385,6 +385,25 @@ Instrumentation:
 Relevant revisions:
 - http://code.google.com/p/unladen-swallow/source/detail?r=957
 
+Optimization: specialized comparison operators
+----------------------------------------------
+
+We take advantage of the gathered type feedback to optimize certain comparison
+operators based on their input types. For example, if we know that a certain == 
+operator always receives integer arguments, we can omit a lot of unnecessary
+indirection.
+
+While this certainly increases code size, it eliminates quite a bit of
+indirection.  This optimization works in almost the exact same way as the
+previous binary operator specializing patch.
+
+Supported operators:
+- <, <=, ==, !=, >, >= for integers
+- > for floats
+
+Instrumentation:
+- The --with-instrumentation build includes measurements for comparison
+  operator inlining.
 
 Optimization: IMPORT_NAME compile-time caching
 ----------------------------------------------

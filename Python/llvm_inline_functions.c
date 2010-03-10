@@ -641,6 +641,78 @@ _PyLlvm_StoreSubscr_List(PyObject *o, PyObject *key, PyObject *value)
     return 0;
 }
 
+PyObject * __attribute__((always_inline))
+_PyLlvm_BinLt_Int(PyObject *v, PyObject *w)
+{
+    if (!(PyInt_CheckExact(v) && PyInt_CheckExact(w))) {
+        return NULL;
+    }
+
+    return PyBool_FromLong(PyInt_AS_LONG(v) < PyInt_AS_LONG(w));
+}
+
+PyObject * __attribute__((always_inline))
+_PyLlvm_BinLe_Int(PyObject *v, PyObject *w)
+{
+    if (!(PyInt_CheckExact(v) && PyInt_CheckExact(w))) {
+        return NULL;
+    }
+
+    return PyBool_FromLong(PyInt_AS_LONG(v) <= PyInt_AS_LONG(w));
+}
+
+PyObject * __attribute__((always_inline))
+_PyLlvm_BinEq_Int(PyObject *v, PyObject *w)
+{
+    if (!(PyInt_CheckExact(v) && PyInt_CheckExact(w))) {
+        return NULL;
+    }
+
+    return PyBool_FromLong(PyInt_AS_LONG(v) == PyInt_AS_LONG(w));
+}
+
+PyObject * __attribute__((always_inline))
+_PyLlvm_BinNe_Int(PyObject *v, PyObject *w)
+{
+    if (!(PyInt_CheckExact(v) && PyInt_CheckExact(w))) {
+        return NULL;
+    }
+
+    return PyBool_FromLong(PyInt_AS_LONG(v) != PyInt_AS_LONG(w));
+}
+
+PyObject * __attribute__((always_inline))
+_PyLlvm_BinGt_Int(PyObject *v, PyObject *w)
+{
+    if (!(PyInt_CheckExact(v) && PyInt_CheckExact(w))) {
+        return NULL;
+    }
+
+    return PyBool_FromLong(PyInt_AS_LONG(v) > PyInt_AS_LONG(w));
+}
+
+PyObject * __attribute__((always_inline))
+_PyLlvm_BinGe_Int(PyObject *v, PyObject *w)
+{
+    if (!(PyInt_CheckExact(v) && PyInt_CheckExact(w))) {
+        return NULL;
+    }
+
+    return PyBool_FromLong(PyInt_AS_LONG(v) >= PyInt_AS_LONG(w));
+}
+
+
+PyObject * __attribute__((always_inline))
+_PyLlvm_BinGt_Float(PyObject *v, PyObject *w)
+{
+    if (!(PyFloat_CheckExact(v) && PyFloat_CheckExact(w))) {
+        return NULL;
+    }
+
+    return PyBool_FromLong(PyFloat_AS_DOUBLE(v) > PyFloat_AS_DOUBLE(w));
+}
+
+
 // TODO(jyasskin): remove these in favor of Clang-based top-down inlining. These
 // establish a baseline the more sophisticated system will need to meet or
 // exceed.

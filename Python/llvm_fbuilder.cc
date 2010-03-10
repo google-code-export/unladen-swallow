@@ -151,6 +151,28 @@ public:
 
 static llvm::ManagedStatic<BinaryOpStats> binary_operator_stats;
 
+class CmpOpStats {
+public:
+    ~CmpOpStats() {
+        errs() << "\nCompare operations inlining:\n";
+        errs() << "Total compare ops: " << this->total << "\n";
+        errs() << "Optimized compare ops: " << this->optimized << "\n";
+        errs() << "Unpredictable compare ops: " << this->unpredictable << "\n";
+        errs() << "Ommitted compare ops: " << this->omitted << "\n";
+    }
+
+    // Total number of comparison opcodes compiled.
+    unsigned total;
+    // Total number of comparison opcodes inlined.
+    unsigned optimized;
+    // Total number of comparison opcodes with unpredictable types.
+    unsigned unpredictable;
+    // Total number of comparison opcodes without inline-able functions.
+    unsigned omitted;
+};
+
+static llvm::ManagedStatic<CmpOpStats> compare_operator_stats;
+
 class AccessAttrStats {
 public:
     AccessAttrStats()
@@ -228,12 +250,14 @@ static llvm::ManagedStatic<ImportNameStats> import_name_stats;
 #define CF_INC_STATS(field) call_function_stats->field++
 #define COND_BRANCH_INC_STATS(field) cond_branch_stats->field++
 #define BINOP_INC_STATS(field) binary_operator_stats->field++
+#define CMPOP_INC_STATS(field) compare_operator_stats->field++
 #define ACCESS_ATTR_INC_STATS(field) access_attr_stats->field++
 #define IMPORT_NAME_INC_STATS(field) import_name_stats->field++
 #else
 #define CF_INC_STATS(field)
 #define COND_BRANCH_INC_STATS(field)
 #define BINOP_INC_STATS(field)
+#define CMPOP_INC_STATS(field)
 #define ACCESS_ATTR_INC_STATS(field)
 #define IMPORT_NAME_INC_STATS(field)
 #endif  /* Py_WITH_INSTRUMENTATION */
@@ -3411,7 +3435,6 @@ public:
         e.lhs_type = &LHS; e.rhs_type = &RHS; \
         this->optimized_operations_[e] = #OPT; \
     }
-
     // Int specializations.
     INLINABLE_BINOP(PyNumber_Add, PyInt_Type, PyInt_Type,
                     _PyLlvm_BinAdd_Int);
@@ -3453,6 +3476,18 @@ public:
                     _PyLlvm_BinMod_Str);
     INLINABLE_BINOP(PyNumber_Remainder, PyUnicode_Type, *Wildcard,
                     _PyLlvm_BinMod_Unicode);
+
+    // Cmpop Integer specializations
+    INLINABLE_BINOP(PyCmp_LT, PyInt_Type, PyInt_Type, _PyLlvm_BinLt_Int);
+    INLINABLE_BINOP(PyCmp_LE, PyInt_Type, PyInt_Type, _PyLlvm_BinLe_Int);
+    INLINABLE_BINOP(PyCmp_EQ, PyInt_Type, PyInt_Type, _PyLlvm_BinEq_Int);
+    INLINABLE_BINOP(PyCmp_NE, PyInt_Type, PyInt_Type, _PyLlvm_BinNe_Int);
+    INLINABLE_BINOP(PyCmp_GT, PyInt_Type, PyInt_Type, _PyLlvm_BinGt_Int);
+    INLINABLE_BINOP(PyCmp_GE, PyInt_Type, PyInt_Type, _PyLlvm_BinGe_Int);
+
+    // Cmpop Float specialization
+    INLINABLE_BINOP(PyCmp_GT, PyFloat_Type, PyFloat_Type, _PyLlvm_BinGt_Float);
+
 #undef INLINABLE_BINOP
     }
 
@@ -3765,8 +3800,87 @@ LlvmFunctionBuilder::ExceptionMatches(Value *exc, Value *exc_type)
     return this->IsPositive(result);
 }
 
+bool
+LlvmFunctionBuilder::COMPARE_OP_fast(int cmp_op, const PyTypeObject *lhs_type,
+                                     const PyTypeObject *rhs_type)
+{
+    const char *api_func = NULL;
+
+    switch (cmp_op) {
+#define CMPOP_NAME(op) { \
+    case op: \
+        api_func = #op; \
+        break; \
+}
+        CMPOP_NAME(PyCmp_IS)
+        CMPOP_NAME(PyCmp_IS_NOT)
+        CMPOP_NAME(PyCmp_IN)
+        CMPOP_NAME(PyCmp_NOT_IN)
+        CMPOP_NAME(PyCmp_EXC_MATCH)
+        CMPOP_NAME(PyCmp_EQ)
+        CMPOP_NAME(PyCmp_NE)
+        CMPOP_NAME(PyCmp_LT)
+        CMPOP_NAME(PyCmp_LE)
+        CMPOP_NAME(PyCmp_GT)
+        CMPOP_NAME(PyCmp_GE)
+        default:
+            Py_FatalError("unknown COMPARE_OP oparg");
+            return false;  // Not reached.
+#undef CMPOP_NAME
+    }
+
+    const char *name = optimized_binops->Find(api_func, lhs_type, rhs_type);
+    if (name == NULL) {
+        return false;
+    }
+
+    CMPOP_INC_STATS(optimized);
+
+    BasicBlock *success = this->CreateBasicBlock("CMPOP_OPT_success");
+    BasicBlock *bailpoint = this->CreateBasicBlock("CMPOP_OPT_bail");
+
+    Value *rhs = this->Pop();
+    Value *lhs = this->Pop();
+
+    Function *op =
+        this->GetGlobalFunction<PyObject*(PyObject*, PyObject*)>(name);
+    Value *result = this->CreateCall(op, lhs, rhs, "cmpop_result");
+    this->builder_.CreateCondBr(this->IsNull(result), bailpoint, success);
+
+    this->builder_.SetInsertPoint(bailpoint);
+    this->Push(lhs);
+    this->Push(rhs);
+    this->CreateBailPoint(_PYFRAME_GUARD_FAIL);
+
+    this->builder_.SetInsertPoint(success);
+    this->DecRef(lhs);
+    this->DecRef(rhs);
+    this->Push(result);
+    return true;
+}
+
 void
 LlvmFunctionBuilder::COMPARE_OP(int cmp_op)
+{
+    CMPOP_INC_STATS(total);
+    const PyTypeObject *lhs_type = this->GetTypeFeedback(0);
+    const PyTypeObject *rhs_type = this->GetTypeFeedback(1);
+    if (lhs_type != NULL && rhs_type != NULL) {
+        // Returning true means the op was successfully optimized.
+        if (this->COMPARE_OP_fast(cmp_op, lhs_type, rhs_type)) {
+            return;
+        }
+        CMPOP_INC_STATS(omitted);
+    }
+    else {
+        CMPOP_INC_STATS(unpredictable);
+    }
+
+    this->COMPARE_OP_safe(cmp_op);
+}
+
+void
+LlvmFunctionBuilder::COMPARE_OP_safe(int cmp_op)
 {
     Value *rhs = this->Pop();
     Value *lhs = this->Pop();

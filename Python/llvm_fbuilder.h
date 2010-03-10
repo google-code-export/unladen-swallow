@@ -188,6 +188,11 @@ public:
     void IMPORT_NAME();
 
     void COMPARE_OP(int cmp_op);
+    bool COMPARE_OP_fast(int cmp_op,
+                         const PyTypeObject *lhs_type,
+                         const PyTypeObject *rhs_type);
+    void COMPARE_OP_safe(int cmp_op);
+    
     void CALL_FUNCTION(int num_args);
     void CALL_FUNCTION_VAR(int num_args);
     void CALL_FUNCTION_KW(int num_args);

@@ -3094,6 +3094,93 @@ def foo(trigger):
         self.assertRaises(IndexError, foo, a, -10, 10)
         self.assertRaises(IndexError, foo, a, 10, 10)
 
+    def _test_inlining_cmpop_generic(self, op, test_vals):
+        """
+        test_vals should be something like:
+            [
+                (3, 3),   # True
+                (3, 4),   # False
+                (3.0, 3), # bails
+                (3, 3.0), # bails
+            ]
+        """
+        sys.setbailerror(True)
+        cmpop_func = compile_for_llvm("cmpop_func",
+            "def cmpop_func(a, b): return a %s b" % op,
+            optimization_level=None)
+        true_vals, false_vals, bails_lhs, bails_rhs, bails_true, bails_false =\
+            test_vals
+        
+        spin_until_hot(cmpop_func, true_vals)
+        self.assertTrue(cmpop_func.__code__.__use_llvm__)
+        self.assertTrue(cmpop_func(*true_vals))
+        self.assertFalse(cmpop_func(*false_vals))
+        
+        self.assertRaises(RuntimeError, cmpop_func, *bails_lhs)
+        self.assertRaises(RuntimeError, cmpop_func, *bails_rhs)
+        
+        sys.setbailerror(False)
+        self.assertTrue(cmpop_func(*bails_true))
+        self.assertFalse(cmpop_func(*bails_false))
+    
+    def test_inline_cmpops(self):
+        self._test_inlining_cmpop_generic("<", [
+            (3, 4),
+            (4, 3),
+            (2.0, 3),
+            (2, 3.0),
+            (2.0, 3.0),
+            (4.0, 3),
+        ])
+        self._test_inlining_cmpop_generic("<=", [
+            (3, 3),
+            (4, 3),
+            (3.0, 3),
+            (2, 3.0),
+            (3.0, 3),
+            (4.0, 3),
+        ])
+        self._test_inlining_cmpop_generic("==", [
+            (3, 3),
+            (4, 3),
+            (3.0, 3),
+            (2, 3.0),
+            (3.0, 3),
+            (4.0, 3),
+        ])
+        self._test_inlining_cmpop_generic("!=", [
+            (4, 3),
+            (3, 3),
+            (3.0, 3),
+            (2, 3.0),
+            (4.0, 3),
+            (3.0, 3),
+        ])
+        self._test_inlining_cmpop_generic(">", [
+            (4, 3),
+            (3, 4),
+            (2.0, 3),
+            (2, 3.0),
+            (4.0, 3),
+            (3.0, 4),
+        ])
+        self._test_inlining_cmpop_generic(">=", [
+            (4, 3),
+            (3, 4),
+            (2.0, 3),
+            (2, 3.0),
+            (4.0, 3),
+            (3.0, 4),
+        ])
+        self._test_inlining_cmpop_generic(">", [
+            (4.0, 3.0),
+            (3.0, 4.0),
+            (2.0, 3),
+            (2, 3.0),
+            (4, 3.0),
+            (3, 4.0),
+        ])
+
     def test_inlining_string_len(self):
         self.len_inlining_test("abcdef", length=6, unexpected_arg=[])
 
