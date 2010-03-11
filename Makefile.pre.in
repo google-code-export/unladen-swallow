@@ -1101,7 +1101,7 @@ libainstall:	all python-config
 		fi; \
 	fi
 	@if test @BUILD_LLVM@ != disabled ; then \
-		$(INSTALL_DATA) $(BCLIBRARY) $(DESTSHARED); \
+		$(INSTALL_DATA) $(BCLIBRARY) $(DESTDIR)$(DESTSHARED); \
 	fi
 	$(INSTALL_DATA) Modules/config.c $(DESTDIR)$(LIBPL)/config.c
 	$(INSTALL_DATA) Modules/python.o $(DESTDIR)$(LIBPL)/python.o
