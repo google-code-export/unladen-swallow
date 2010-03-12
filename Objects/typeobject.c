@@ -3570,6 +3570,24 @@ add_methods(PyTypeObject *type, PyMethodDef *meth)
 
 	for (; meth->ml_name != NULL; meth++) {
 		PyObject *descr;
+		if (meth->ml_min_arity < 0 ||
+		    meth->ml_min_arity > PY_MAX_ARITY) {
+			PyErr_Format(PyExc_ValueError,
+			     "ml_min_arity must be between 0 and PY_MAX_ARITY "
+			     "(%d), not %d (does a binary extension module "
+			     "need to be rebuilt?)", PY_MAX_ARITY,
+			     meth->ml_min_arity);
+			return -1;
+		}
+		if (meth->ml_max_arity < 0 ||
+		    meth->ml_max_arity > PY_MAX_ARITY) {
+			PyErr_Format(PyExc_ValueError,
+			     "ml_max_arity must be between 0 and PY_MAX_ARITY "
+			     "(%d), not %d (does a binary extension module "
+			     "need to be rebuilt?)", PY_MAX_ARITY,
+			     meth->ml_max_arity);
+			return -1;
+		}
 		if (PyDict_GetItemString(dict, meth->ml_name) &&
 			!(meth->ml_flags & METH_COEXIST))
 				continue;
