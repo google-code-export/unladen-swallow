@@ -916,7 +916,7 @@ Internal types
       :attr:`co_llvm` refers to an llvm::Function wrapper that can pretty-print the
       LLVM assembly that implements this code object.
 
-      Writable attributes: :attr:`__use_llvm__` is ``True`` if LLVM will be used to
+      Writable attributes: :attr:`co_use_jit` is ``True`` if LLVM will be used to
       run this function, or ``False`` if the normal CPython interpreter will be used.
       :attr:`co_optimization` is an integer from -1 to 2 recording how optimized
       :attr:`co_llvm` is.  -1 is totally unoptimized, and 0 is the default
@@ -938,6 +938,9 @@ Internal types
          single: co_varnames (code object attribute)
          single: co_cellvars (code object attribute)
          single: co_freevars (code object attribute)
+         single: co_use_jit (code object attribute)
+         single: co_optimization (code object attribute)
+         single: co_llvm (code object attribute)
 
       .. index:: object: generator
 

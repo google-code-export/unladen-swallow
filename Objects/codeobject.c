@@ -113,7 +113,7 @@ PyCode_New(int argcount, int nlocals, int stacksize, int flags,
 		// co_runtime_feedback is lazily initialized on first run to
 		// save memory for code that is never executed.
 		co->co_runtime_feedback = NULL;
-		co->co_use_llvm = 0;
+		co->co_use_jit = 0;
 		co->co_optimization = -1;
 		co->co_hotness = 0;
 		co->co_fatalbailcount = 0;
@@ -144,7 +144,7 @@ static PyMemberDef code_memberlist[] = {
 #ifdef WITH_LLVM
 	{"co_hotness", T_INT,		OFF(co_hotness),	READONLY},
 	{"co_fatalbailcount", T_INT,	OFF(co_fatalbailcount),	READONLY},
-	{"__use_llvm__", T_BOOL,	OFF(co_use_llvm)},
+	{"co_use_jit", T_BOOL,		OFF(co_use_jit)},
 #endif
 	{NULL}	/* Sentinel */
 };
@@ -266,7 +266,7 @@ _PyCode_InvalidateMachineCode(PyCodeObject *code)
 	/* This will cause the LLVM-generated code to bail back to the
 	   interpreter. The LLVM code won't be re-entered until it is
 	   recompiled. */
-	code->co_use_llvm = 0;
+	code->co_use_jit = 0;
 	code->co_fatalbailcount++;
 	/* This is a no-op if not configured with --with-instrumentation. */
 	_PyEval_RecordFatalBail(code);

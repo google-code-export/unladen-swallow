@@ -51,10 +51,10 @@ typedef struct _frame {
     int f_lasti;
 
 #ifdef WITH_LLVM
-    /* At frame creation-time, we snapshot the state of f_code->co_use_llvm.
+    /* At frame creation-time, we snapshot the state of f_code->co_use_jit.
        Without this, Python code can cause active generators to flip between
        LLVM and the interpreter at will, which is a bad idea. */
-    int f_use_llvm;
+    int f_use_jit;
 #endif
 
     /* Call PyFrame_GetLineNumber() instead of reading this field

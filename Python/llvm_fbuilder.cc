@@ -508,7 +508,7 @@ LlvmFunctionBuilder::LlvmFunctionBuilder(
     Value *frame_code = this->builder_.CreateLoad(
         FrameTy::f_code(this->builder_, this->frame_),
         "frame->f_code");
-    this->use_llvm_addr_ = CodeTy::co_use_llvm(this->builder_, frame_code);
+    this->use_jit_addr_ = CodeTy::co_use_jit(this->builder_, frame_code);
 #ifndef NDEBUG
     // Assert that the code object we pull out of the frame is the
     // same as the one passed into this object.
@@ -1012,7 +1012,7 @@ LlvmFunctionBuilder::FillBailToInterpreterBlock()
     // Don't just immediately jump back to the JITted code.
     this->builder_.CreateStore(
         ConstantInt::get(PyTypeBuilder<int>::get(this->context_), 0),
-        FrameTy::f_use_llvm(this->builder_, this->frame_));
+        FrameTy::f_use_jit(this->builder_, this->frame_));
     // Fill the frame object with any information that was in allocas here.
     this->CopyToFrameObject();
 
@@ -1433,9 +1433,9 @@ LlvmFunctionBuilder::LOAD_GLOBAL_fast(int name_index)
 #ifdef WITH_TSC
     this->LogTscEvent(LOAD_GLOBAL_ENTER_LLVM);
 #endif
-    Value *use_llvm = this->builder_.CreateLoad(this->use_llvm_addr_,
-                                                "co_use_llvm");
-    this->builder_.CreateCondBr(this->IsNonZero(use_llvm),
+    Value *use_jit = this->builder_.CreateLoad(this->use_jit_addr_,
+                                               "co_use_jit");
+    this->builder_.CreateCondBr(this->IsNonZero(use_jit),
                                 keep_going,
                                 invalid_assumptions);
 
@@ -1807,9 +1807,9 @@ LlvmFunctionBuilder::AttributeAccessor::GuardAttributeAccess(
 
     // Make sure that the code object is still valid.  This may fail if the
     // code object is invalidated inside of a call to the code object.
-    Value *use_llvm = builder.CreateLoad(fbuilder->use_llvm_addr_,
-                                         "co_use_llvm");
-    builder.CreateCondBr(fbuilder->IsNonZero(use_llvm), guard_type, bail_block);
+    Value *use_jit = builder.CreateLoad(fbuilder->use_jit_addr_,
+                                        "co_use_jit");
+    builder.CreateCondBr(fbuilder->IsNonZero(use_jit), guard_type, bail_block);
 
     // Compare ob_type against type and bail if it's the wrong type.  Since
     // we've subscribed to the type object for modification updates, the code
@@ -2598,8 +2598,8 @@ LlvmFunctionBuilder::IMPORT_NAME_fast()
     BasicBlock *invalid_assumptions =
         this->CreateBasicBlock("IMPORT_NAME_invalid_assumptions");
 
-    Value *use_llvm = this->builder_.CreateLoad(this->use_llvm_addr_);
-    this->builder_.CreateCondBr(this->IsNonZero(use_llvm),
+    Value *use_jit = this->builder_.CreateLoad(this->use_jit_addr_);
+    this->builder_.CreateCondBr(this->IsNonZero(use_jit),
                                 keep_going,
                                 invalid_assumptions);
 

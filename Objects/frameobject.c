@@ -720,7 +720,7 @@ PyFrame_New(PyThreadState *tstate, PyCodeObject *code, PyObject *globals,
 #ifdef WITH_LLVM
 	/* On entry to the eval loop, this may be set to true if the code
 	   object is compiled and the checks pass.  */
-	f->f_use_llvm = 0;
+	f->f_use_jit = 0;
 	f->f_bailed_from_llvm = _PYFRAME_NO_BAIL;
 	f->f_guard_type = _PYGUARD_DEFAULT;
 #endif

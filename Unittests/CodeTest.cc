@@ -25,7 +25,7 @@ protected:
         assert(code != NULL);
         // We only initialize the fields related to dict watchers.
         code->co_watching = NULL;
-        code->co_use_llvm = 0;
+        code->co_use_jit = 0;
         code->co_fatalbailcount = 0;
         code->ob_type = &PyCode_Type;
         return code;
@@ -126,7 +126,7 @@ TEST_F(CodeWatchingTest, InvalidateMachineCode)
     EXPECT_EQ(0, code->co_fatalbailcount);
 
     // Fake our way through compilation.
-    code->co_use_llvm = 1;
+    code->co_use_jit = 1;
     _PyCode_WatchDict(code, WATCHING_GLOBALS, this->globals_);
     _PyCode_WatchDict(code, WATCHING_BUILTINS, this->builtins_);
     EXPECT_EQ(2, _PyCode_WatchingSize(code));
@@ -135,7 +135,7 @@ TEST_F(CodeWatchingTest, InvalidateMachineCode)
 
     _PyCode_InvalidateMachineCode(code);
     EXPECT_EQ(1, code->co_fatalbailcount);
-    EXPECT_EQ(0, code->co_use_llvm);
+    EXPECT_EQ(0, code->co_use_jit);
     EXPECT_EQ(0, _PyCode_WatchingSize(code));
     EXPECT_EQ(0, _PyDict_NumWatchers((PyDictObject *)this->globals_));
     EXPECT_EQ(0, _PyDict_NumWatchers((PyDictObject *)this->builtins_));

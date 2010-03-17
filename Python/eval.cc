@@ -1105,16 +1105,16 @@ PyEval_EvalFrame(PyFrameObject *f)
 #ifdef WITH_LLVM
 	maybe_compile(co, f);
 
-	if (f->f_use_llvm) {
+	if (f->f_use_jit) {
 		assert(bail_reason == _PYFRAME_NO_BAIL);
 		assert(co->co_native_function != NULL &&
 		       "maybe_compile was supposed to ensure"
 		       " that co_native_function exists");
-		if (!co->co_use_llvm) {
-			// A frame cannot use_llvm if the underlying code object
-			// can't use_llvm. This comes up when a generator is
+		if (!co->co_use_jit) {
+			// A frame cannot use_jit if the underlying code object
+			// can't use_jit. This comes up when a generator is
 			// invalidated while active.
-			f->f_use_llvm = 0;
+			f->f_use_jit = 0;
 		}
 		else {
 			assert(co->co_fatalbailcount < PY_MAX_FATALBAILCOUNT);
@@ -4261,7 +4261,7 @@ mark_called(PyCodeObject *co)
 // - We are running under PY_JIT_WHENHOT and co's hotness has passed the
 //   hotness threshold.
 // - The code object was marked as needing to be run through LLVM
-//   (co_use_llvm is true).
+//   (co_use_jit is true).
 // - We are running under PY_JIT_ALWAYS.
 //
 // Returns 0 on success or -1 on failure.
@@ -4284,7 +4284,7 @@ maybe_compile(PyCodeObject *co, PyFrameObject *f)
 	}
 
 	if (co->co_fatalbailcount >= PY_MAX_FATALBAILCOUNT) {
-		co->co_use_llvm = 0;
+		co->co_use_jit = 0;
 		return 0;
 	}
 
@@ -4310,16 +4310,16 @@ maybe_compile(PyCodeObject *co, PyFrameObject *f)
 		return -1;
 	case PY_JIT_WHENHOT:
 		if (is_hot)
-			co->co_use_llvm = 1;
+			co->co_use_jit = 1;
 		break;
 	case PY_JIT_ALWAYS:
-		co->co_use_llvm = 1;
+		co->co_use_jit = 1;
 		break;
 	case PY_JIT_NEVER:
 		break;
 	}
 
-	if (co->co_use_llvm) {
+	if (co->co_use_jit) {
 		if (co->co_llvm_function == NULL) {
 			// Translate the bytecode to IR and optimize it if we
 			// haven't already done that.
@@ -4347,7 +4347,7 @@ maybe_compile(PyCodeObject *co, PyFrameObject *f)
 				if (r < 0)  // Error
 					return -1;
 				if (r == 1) {  // Codegen refused
-					co->co_use_llvm = 0;
+					co->co_use_jit = 0;
 					return 0;
 				}
 			}
@@ -4368,7 +4368,7 @@ maybe_compile(PyCodeObject *co, PyFrameObject *f)
 		PY_LOG_TSC_EVENT(EVAL_COMPILE_END);
 	}
 
-	f->f_use_llvm = co->co_use_llvm;
+	f->f_use_jit = co->co_use_jit;
 	return 0;
 }
 #endif  /* WITH_LLVM */

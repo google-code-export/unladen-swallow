@@ -25,7 +25,7 @@ protected:
         assert(code != NULL);
         // We only initialize the fields related to dict watchers.
         code->co_watching = NULL;
-        code->co_use_llvm = 0;
+        code->co_use_jit = 0;
         code->co_fatalbailcount = 0;
         code->ob_type = &PyCode_Type;
         return code;
@@ -75,7 +75,7 @@ TEST_F(DictWatcherTest, DictDealloc)
     PyObject *globals = PyDict_New();
     PyObject *builtins = PyDict_New();
     PyCodeObject *code1 = this->FakeCodeObject();
-    code1->co_use_llvm = 1;
+    code1->co_use_jit = 1;
 
     EXPECT_EQ(0, _PyCode_WatchDict(code1, WATCHING_GLOBALS, globals));
     EXPECT_EQ(0, _PyCode_WatchDict(code1, WATCHING_BUILTINS, builtins));
@@ -85,7 +85,7 @@ TEST_F(DictWatcherTest, DictDealloc)
 
     // This will notify the dicts.
     Py_DECREF(globals);
-    EXPECT_EQ(0, code1->co_use_llvm);
+    EXPECT_EQ(0, code1->co_use_jit);
     EXPECT_EQ(0, _PyCode_WatchingSize(code1));
     EXPECT_EQ(0, _PyDict_NumWatchers((PyDictObject *)globals));
     EXPECT_EQ(0, _PyDict_NumWatchers((PyDictObject *)builtins));
@@ -97,16 +97,16 @@ TEST_F(DictWatcherTest, DictDealloc)
 TEST_F(DictWatcherTest, NotifyWatcher)
 {
     PyCodeObject *code1 = this->FakeCodeObject();
-    code1->co_use_llvm = 1;
+    code1->co_use_jit = 1;
 
     EXPECT_EQ(0, _PyCode_WatchDict(code1, WATCHING_GLOBALS, this->globals_));
     EXPECT_EQ(0, _PyCode_WatchDict(code1, WATCHING_BUILTINS, this->builtins_));
-    EXPECT_EQ(1, code1->co_use_llvm);
+    EXPECT_EQ(1, code1->co_use_jit);
 
     // This should notify the watchers.
     PyDict_SetItemString(this->globals_, "hello", Py_None);
 
-    EXPECT_EQ(0, code1->co_use_llvm);
+    EXPECT_EQ(0, code1->co_use_jit);
     PyDictObject *globals_dict = (PyDictObject *)this->globals_;
     EXPECT_EQ(0, _PyDict_NumWatchers(globals_dict));
     PyDictObject *builtins_dict = (PyDictObject *)this->builtins_;

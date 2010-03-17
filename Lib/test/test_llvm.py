@@ -73,7 +73,7 @@ def compile_for_llvm(function_name, def_string, optimization_level=-1,
     if optimization_level is not None:
         if optimization_level >= DEFAULT_OPT_LEVEL:
             func.__code__.co_optimization = optimization_level
-        func.__code__.__use_llvm__ = True
+        func.__code__.co_use_jit = True
     return func
 
 
@@ -151,11 +151,11 @@ class GeneralCompilationTests(ExtraAssertsTestCase, LlvmTestCase):
         self.assertRaises(TypeError, _llvm._function)
 
     def test_use_llvm(self):
-        # Regression test: setting __use_llvm__ without setting an optimization
+        # Regression test: setting co_use_jit without setting an optimization
         # level used to segfault when the function was called.
         def foo():
             return 5
-        foo.__code__.__use_llvm__ = True
+        foo.__code__.co_use_jit = True
         foo()
 
     @at_each_optimization_level
@@ -227,8 +227,8 @@ def foo():
         def test_fetch_unset_co_llvm(self):
             def test_func():
                 pass
-            test_func.__code__.__use_llvm__ = True
-            # Just setting __use_llvm__ doesn't force code generation.
+            test_func.__code__.co_use_jit = True
+            # Just setting co_use_jit doesn't force code generation.
             self.assertEqual(str(test_func.__code__.co_llvm), "None")
 
     @at_each_optimization_level
@@ -768,7 +768,7 @@ def nosuchname():
         set_local = compile('a = 3', '<string>', 'exec')
         if level is not None:
             set_local.co_optimization = level
-            set_local.__use_llvm__ = True
+            set_local.co_use_jit = True
         exec set_local
         self.assertEquals(a, 3)
 
@@ -777,7 +777,7 @@ def nosuchname():
         do_del = compile('del a', '<string>', 'exec')
         if level is not None:
             do_del.co_optimization = level
-            do_del.__use_llvm__ = True
+            do_del.co_use_jit = True
         exec 'a = 3'
         self.assertEquals(a, 3)
         exec do_del
@@ -1428,9 +1428,9 @@ def generator(obj):
             # reentry.
             def generator():
                 yield 1
-                generator.func_code.__use_llvm__ = True
+                generator.func_code.co_use_jit = True
                 yield 2
-                generator.func_code.__use_llvm__ = False
+                generator.func_code.co_use_jit = False
                 yield 3
             self.assertEqual(list(generator()), [1, 2, 3])
 
@@ -1444,7 +1444,7 @@ def make_closure(a, level):
         c = d + 1
         return a, b, c, d, e
     if level is not None:
-        inner.__code__.__use_llvm__ = True
+        inner.__code__.co_use_jit = True
         inner.__code__.co_optimization = level
     b = 2
     return inner
@@ -1462,7 +1462,7 @@ def unbound_freevar(level):
     def inner():
         return b
     if level is not None:
-        inner.__code__.__use_llvm__ = True
+        inner.__code__.co_use_jit = True
         inner.__code__.co_optimization = level
     return inner
 ''', level)
@@ -1480,7 +1480,7 @@ def unbound_local(level):
             b = 3
         return b
     if level is not None:
-        inner.__code__.__use_llvm__ = True
+        inner.__code__.co_use_jit = True
         inner.__code__.co_optimization = level
     return inner
 ''', level)
@@ -1664,7 +1664,7 @@ def foo():
     finally:
         len([])  # This can be anything.
 """, optimization_level=None, globals_dict={"cause_bail": cause_bail})
-        foo.__code__.__use_llvm__ = True
+        foo.__code__.co_use_jit = True
 
         orig_func = sys.gettrace()
         try:
@@ -1672,7 +1672,7 @@ def foo():
         finally:
             sys.settrace(orig_func)
         # Even though we bailed, the machine code is still valid.
-        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo.__code__.co_use_jit)
 
 
 # Tests for div/truediv won't work right if we enable true
@@ -2472,7 +2472,7 @@ class OptimizationTests(LlvmTestCase, ExtraAssertsTestCase):
         iterations = JIT_SPIN_COUNT
         [foo() for _ in xrange(iterations)]
         self.assertEqual(foo.__code__.co_hotness, iterations * 10)
-        self.assertEqual(foo.__code__.__use_llvm__, True)
+        self.assertEqual(foo.__code__.co_use_jit, True)
         self.assertEqual(foo.__code__.co_optimization, JIT_OPT_LEVEL)
         self.assertContains("getelementptr", str(foo.__code__.co_llvm))
 
@@ -2486,7 +2486,7 @@ def foo():
         pass
 """, optimization_level=None)
         self.assertEqual(foo.__code__.co_hotness, 0)
-        self.assertFalse(foo.__code__.__use_llvm__)
+        self.assertFalse(foo.__code__.co_use_jit)
         foo()
 
         # +1 point each for 1e6 loop iterations.
@@ -2494,7 +2494,7 @@ def foo():
         self.assertEqual(foo.__code__.co_hotness, hotness)
 
         foo()  # Hot-or-not calculations are done on function-entry.
-        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo.__code__.co_use_jit)
 
     def test_nested_for_loop_hotness(self):
         # Verify our understanding of how the hotness model deals with nested
@@ -2507,7 +2507,7 @@ def foo():
             pass
 """, optimization_level=None)
         self.assertEqual(foo.__code__.co_hotness, 0)
-        self.assertFalse(foo.__code__.__use_llvm__)
+        self.assertFalse(foo.__code__.co_use_jit)
         foo()
 
         # 50 outer loop iterations, 3500 inner loop iterations.
@@ -2525,7 +2525,7 @@ def foo():
             x = 8  # Nonsense
 """, optimization_level=None)
         self.assertEqual(foo.__code__.co_hotness, 0)
-        self.assertFalse(foo.__code__.__use_llvm__)
+        self.assertFalse(foo.__code__.co_use_jit)
         foo()
 
         hotness = HOTNESS_CALL + HOTNESS_LOOP * 1000000
@@ -2540,7 +2540,7 @@ def foo():
         return True
 """, optimization_level=None)
         self.assertEqual(foo.__code__.co_hotness, 0)
-        self.assertFalse(foo.__code__.__use_llvm__)
+        self.assertFalse(foo.__code__.co_use_jit)
         foo()
 
         # Note that we don't count the loop in any way, since we never take
@@ -2557,7 +2557,7 @@ def foo():
         i -= 1
 """, optimization_level=None)
         self.assertEqual(foo.__code__.co_hotness, 0)
-        self.assertFalse(foo.__code__.__use_llvm__)
+        self.assertFalse(foo.__code__.co_use_jit)
         foo()
 
         hotness = HOTNESS_CALL + HOTNESS_LOOP * 1000000
@@ -2575,7 +2575,7 @@ def foo():
 
         l = map(list, l)
         self.assertEqual(foo.__code__.co_hotness, iterations * HOTNESS_CALL)
-        self.assertEqual(foo.__code__.__use_llvm__, True)
+        self.assertEqual(foo.__code__.co_use_jit, True)
         self.assertEqual(foo.__code__.co_optimization, JIT_OPT_LEVEL)
 
     def test_generator_hotness_osr(self):
@@ -2591,7 +2591,7 @@ def foo(iterations):
         # the compiled code, so the hotness stops growing when it passes the
         # threshold.
         self.assertEqual(foo.__code__.co_hotness, 100001)
-        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo.__code__.co_use_jit)
         self.assertEqual(foo.__code__.co_optimization, JIT_OPT_LEVEL)
 
     def test_fast_load_global(self):
@@ -2606,14 +2606,14 @@ def foo(x, callback):
 """, optimization_level=None)
 
             spin_until_hot(foo, [[], lambda: None])
-            self.assertEqual(foo.__code__.__use_llvm__, True)
+            self.assertEqual(foo.__code__.co_use_jit, True)
 
             def change_builtins():
-                self.assertEqual(foo.__code__.__use_llvm__, True)
+                self.assertEqual(foo.__code__.co_use_jit, True)
                 __builtin__.len = lambda x: 7
 
             def run_test():
-                self.assertEqual(foo.__code__.__use_llvm__, True)
+                self.assertEqual(foo.__code__.co_use_jit, True)
                 self.assertEqual(foo.__code__.co_fatalbailcount, 0)
                 sys.setbailerror(True)
                 try:
@@ -2621,7 +2621,7 @@ def foo(x, callback):
                 finally:
                     sys.setbailerror(False)
                 self.assertEqual(foo.__code__.co_fatalbailcount, 1)
-                self.assertEqual(foo.__code__.__use_llvm__, False)
+                self.assertEqual(foo.__code__.co_use_jit, False)
             run_test()
 
     def test_global_dict_mismatch(self):
@@ -2667,7 +2667,7 @@ def load_x_2():
             for _ in xrange(1000 * 200):
                 v = gauss(0, 0.7) ** 7
         foo()
-        self.assertEquals(gauss.__code__.__use_llvm__, True)
+        self.assertEquals(gauss.__code__.co_use_jit, True)
 
     def test_global_name_unknown_at_compilation_time(self):
         # Extracted from Sympy: the global `match` is unknown when foo() becomes
@@ -2683,7 +2683,7 @@ def foo(trigger):
     return 5
 """, optimization_level=None)
         spin_until_hot(foo, [[]])
-        self.assertEquals(foo.__code__.__use_llvm__, True)
+        self.assertEquals(foo.__code__.co_use_jit, True)
         self.assertEquals(foo([]), 5)
 
         # Set `match` so that we can run foo(True) and have it work correctly.
@@ -2692,7 +2692,7 @@ def foo(trigger):
         self.assertEquals(foo([1]), 7)
         # Looking up `match` doesn't depend on any pointers cached in the IR,
         # so changing the globals didn't invalidate the code.
-        self.assertEquals(foo.__code__.__use_llvm__, True)
+        self.assertEquals(foo.__code__.co_use_jit, True)
         self.assertEquals(foo.__code__.co_fatalbailcount, 0)
         del match
 
@@ -2707,7 +2707,7 @@ def foo():
 """, optimization_level=None)
 
         spin_until_hot(foo)
-        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo.__code__.co_use_jit)
 
         # Force a fatal bail.
         with test_support.swap_attr(__builtin__, "len", lambda x: 42):
@@ -2729,7 +2729,7 @@ def foo():
             [leaf(), len([])]
 
         spin_until_hot(outer, [lambda: None])
-        self.assertTrue(outer.__code__.__use_llvm__)
+        self.assertTrue(outer.__code__.co_use_jit)
         sys.setbailerror(False)
         outer(profiling_leaf)
         sys.setprofile(None)
@@ -2745,11 +2745,11 @@ def foo():
             return f([])
 
         spin_until_hot(foo, [len])
-        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo.__code__.co_use_jit)
         self.assertRaises(RuntimeError, foo, lambda x: 7)
 
         # Make sure bailing does the right thing.
-        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo.__code__.co_use_jit)
         sys.setbailerror(False)
         self.assertEqual(foo(lambda x: 7), 7)
 
@@ -2763,17 +2763,17 @@ def foo():
         foo = compile_for_llvm("foo", "def foo(): return len([])",
                                optimization_level=None)
         spin_until_hot(foo, [])
-        self.assertEqual(foo.__code__.__use_llvm__, True)
+        self.assertEqual(foo.__code__.co_use_jit, True)
         self.assertEqual(foo.__code__.co_fatalbailcount, 0)
         self.assertEqual(foo(), 0)
 
         with test_support.swap_attr(__builtin__, "len", lambda x: 7):
-            self.assertEqual(foo.__code__.__use_llvm__, False)
+            self.assertEqual(foo.__code__.co_use_jit, False)
             self.assertEqual(foo.__code__.co_fatalbailcount, 1)
-            # Since we can't recompile things yet, __use_llvm__ should be left
+            # Since we can't recompile things yet, co_use_jit should be left
             # at False and execution should use the eval loop.
             spin_until_hot(foo, [])
-            self.assertEqual(foo.__code__.__use_llvm__, False)
+            self.assertEqual(foo.__code__.co_use_jit, False)
             self.assertEqual(foo(), 7)
 
     def test_fast_calls_method(self):
@@ -2784,7 +2784,7 @@ def foo():
         foo = compile_for_llvm('foo', 'def foo(x): return x()',
                                optimization_level=None)
         spin_until_hot(foo, [d.popitem])
-        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo.__code__.co_use_jit)
 
         k, v = foo(d.popitem)
         self.assertTrue(k < 12000, k)
@@ -2795,7 +2795,7 @@ def foo():
         foo = compile_for_llvm('foo', 'def foo(x): return isinstance(x, int)',
                                optimization_level=None)
         spin_until_hot(foo, [5])
-        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo.__code__.co_use_jit)
         self.assertTrue(foo(5))
         self.assertFalse(foo([]))
         self.assertContains("@isinstance", str(foo.__code__.co_llvm))
@@ -2809,7 +2809,7 @@ def foo():
         x = Object()
         spin_until_hot(foo, [x])
         self.assertEqual(x.y, 5)
-        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo.__code__.co_use_jit)
         self.assertContains("@setattr", str(foo.__code__.co_llvm))
 
     def test_fast_calls_variadic_arguments(self):
@@ -2818,7 +2818,7 @@ def foo():
                                optimization_level=None)
         input = [1, 2]
         spin_until_hot(foo, [input])
-        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo.__code__.co_use_jit)
         self.assertEqual(foo([2, 3]), 6)
         self.assertRaises(TypeError, foo, 5)
         self.assertContains("@sum", str(foo.__code__.co_llvm))
@@ -2830,7 +2830,7 @@ def foo():
                                optimization_level=None)
         input = [1, 2]
         spin_until_hot(foo, [input])
-        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo.__code__.co_use_jit)
         self.assertEqual(foo([2, 3]), 5)
         self.assertRaises(TypeError, foo, 5)
         self.assertContains("@sum", str(foo.__code__.co_llvm))
@@ -2842,7 +2842,7 @@ def foo():
         foo = compile_for_llvm('foo', 'def foo(x): return x.join(["c", "d"])',
                                optimization_level=None)
         spin_until_hot(foo, ["a"], ["c"])
-        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo.__code__.co_use_jit)
         self.assertEqual(foo("a"), "cad")
 
         # A new, unknown-to-the-feedback-system instance should reuse the
@@ -2857,7 +2857,7 @@ def foo():
         foo = compile_for_llvm("foo", "def foo(a, b): return a % b",
                                optimization_level=None)
         spin_until_hot(foo, [good_string, 5])
-        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo.__code__.co_use_jit)
         self.assertEquals(foo(good_string, 5), "ab5d")
         self.assertEquals(type(foo(good_string, 5)), good_type)
 
@@ -2883,7 +2883,7 @@ def foo():
                                optimization_level=None)
         spin_until_hot(mul, [3, 4], [3.0, 4.0])
 
-        self.assertTrue(mul.__code__.__use_llvm__)
+        self.assertTrue(mul.__code__.co_use_jit)
         self.assertContains("PyNumber_Multiply", str(mul.__code__.co_llvm))
         self.assertEquals(mul(3, 4), 12)
         self.assertEquals(mul(3.0, 4.0), 12.0)
@@ -2894,7 +2894,7 @@ def foo():
 
         # Prime with ints.
         spin_until_hot(mod, [8, 3])
-        self.assertTrue(mod.__code__.__use_llvm__)
+        self.assertTrue(mod.__code__.co_use_jit)
         self.assertEqual(mod(8, 3), 2)
         self.assertEqual(mod(9, 2), 1)
         self.assertEqual(mod(9, 1), 0)
@@ -2929,8 +2929,8 @@ def foo():
         # Specialize foo_float and foo_int on their respective types.
         spin_until_hot(foo_float, [1.0, 2.0, 3.0])
         spin_until_hot(foo_int, [1, 2, 3])
-        self.assertTrue(foo_float.__code__.__use_llvm__)
-        self.assertTrue(foo_int.__code__.__use_llvm__)
+        self.assertTrue(foo_float.__code__.co_use_jit)
+        self.assertTrue(foo_int.__code__.co_use_jit)
 
         # Test bailing
         self.assertRaises(RuntimeError, foo_float, 1.0, 1.0, 1)
@@ -2986,10 +2986,10 @@ def foo():
         spin_until_hot(foo_int, [1, 2, 2])
         spin_until_hot(mul_float_int, [1.0, 2])
         spin_until_hot(div_float_int, [1.0, 2])
-        self.assertTrue(foo_float.__code__.__use_llvm__)
-        self.assertTrue(foo_int.__code__.__use_llvm__)
-        self.assertTrue(mul_float_int.__code__.__use_llvm__)
-        self.assertTrue(div_float_int.__code__.__use_llvm__)
+        self.assertTrue(foo_float.__code__.co_use_jit)
+        self.assertTrue(foo_int.__code__.co_use_jit)
+        self.assertTrue(mul_float_int.__code__.co_use_jit)
+        self.assertTrue(div_float_int.__code__.co_use_jit)
         for func in [foo_float, foo_int, mul_float_int, div_float_int]:
             self.assertFalse("PyNumber_Multiply" in str(func.__code__.co_llvm))
             self.assertFalse("PyNumber_Divide" in str(func.__code__.co_llvm))
@@ -3044,7 +3044,7 @@ def foo():
                                optimization_level=None)
         a = getitem_type([1])
         spin_until_hot(foo, [a, 0])
-        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo.__code__.co_use_jit)
         self.assertEqual(foo(a, 0), 1)
         self.assertEqual(foo(a, -1), 1)
 
@@ -3081,7 +3081,7 @@ def foo():
                                optimization_level=None)
         a = [1]
         spin_until_hot(foo, [a, 0, 10])
-        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo.__code__.co_use_jit)
         self.assertEqual(a[0], 10)
 
         # Test negative indices.
@@ -3132,7 +3132,7 @@ def foo():
             test_vals
 
         spin_until_hot(cmpop_func, true_vals)
-        self.assertTrue(cmpop_func.__code__.__use_llvm__)
+        self.assertTrue(cmpop_func.__code__.co_use_jit)
         self.assertTrue(cmpop_func(*true_vals))
         self.assertFalse(cmpop_func(*false_vals))
 
@@ -3220,7 +3220,7 @@ def foo():
         foo = compile_for_llvm('foo', 'def foo(s): return len(s)',
                                optimization_level=None)
         spin_until_hot(foo, [arg])
-        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo.__code__.co_use_jit)
         self.assertEqual(foo(arg), length)
 
         ir = str(foo.__code__.co_llvm)
@@ -3335,13 +3335,13 @@ def foo(x):
 
         spin_until_hot(foo, [True])
 
-        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo.__code__.co_use_jit)
         self.assertEqual(foo(True), 7)
         self.assertRaises(RuntimeError, foo, False)
         self.assertEqual(foo.__code__.co_fatalbailcount, 0)
 
         sys.setbailerror(False)
-        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo.__code__.co_use_jit)
         self.assertEqual(foo(False), 8)
 
         # Make sure we didn't actually compile the untaken branch to LLVM IR.
@@ -3360,7 +3360,7 @@ def foo(x):
 
         spin_until_hot(foo, [True], [False])
 
-        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo.__code__.co_use_jit)
         self.assertEqual(foo(True), 7)
         self.assertEqual(foo(False), 8)  # Does not raise RuntimeError
 
@@ -3382,13 +3382,13 @@ def foo(x):
 
         spin_until_hot(foo, [False])
 
-        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo.__code__.co_use_jit)
         self.assertEqual(foo(False), 7)
         self.assertRaises(RuntimeError, foo, True)
         self.assertEqual(foo.__code__.co_fatalbailcount, 0)
 
         sys.setbailerror(False)
-        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo.__code__.co_use_jit)
         self.assertEqual(foo(True), 8)
 
         # Make sure we didn't actually compile the untaken branch to LLVM IR.
@@ -3407,7 +3407,7 @@ def foo(x):
 
         spin_until_hot(foo, [True], [False])
 
-        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo.__code__.co_use_jit)
         self.assertEqual(foo(False), 7)
         self.assertEqual(foo(True), 8)  # Does not raise RuntimeError
 
@@ -3426,13 +3426,13 @@ def foo(x):
 
         spin_until_hot(foo, [False])
 
-        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo.__code__.co_use_jit)
         self.assertEqual(foo(False), False)
         self.assertRaises(RuntimeError, foo, True)
         self.assertEqual(foo.__code__.co_fatalbailcount, 0)
 
         sys.setbailerror(False)
-        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo.__code__.co_use_jit)
         self.assertEqual(foo(True), '0x1')
 
         # Make sure we didn't actually compile the untaken branch to LLVM IR.
@@ -3448,7 +3448,7 @@ def foo(x):
 
         spin_until_hot(foo, [True], [False])
 
-        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo.__code__.co_use_jit)
         self.assertEqual(foo(False), False)
         self.assertEqual(foo(True), '0x1')  # Does not raise RuntimeError
 
@@ -3467,13 +3467,13 @@ def foo(x):
 
         spin_until_hot(foo, [True])
 
-        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo.__code__.co_use_jit)
         self.assertEqual(foo(True), True)
         self.assertRaises(RuntimeError, foo, False)
         self.assertEqual(foo.__code__.co_fatalbailcount, 0)
 
         sys.setbailerror(False)
-        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo.__code__.co_use_jit)
         self.assertEqual(foo(False), '0x1')
 
         # Make sure we didn't actually compile the untaken branch to LLVM IR.
@@ -3489,7 +3489,7 @@ def foo(x):
 
         spin_until_hot(foo, [True], [False])
 
-        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo.__code__.co_use_jit)
         self.assertEqual(foo(True), True)
         self.assertEqual(foo(False), '0x1')  # Does not raise RuntimeError
 
@@ -3509,7 +3509,7 @@ def foo():
         spin_until_hot(foo)
 
         # If we get here, we haven't bailed, but double-check to be sure.
-        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo.__code__.co_use_jit)
 
     def test_load_attr_fast_bails(self):
         # Test that this simple object uses fast attribute lookup.  We do this
@@ -3523,7 +3523,7 @@ def foo():
         c = C()
 
         spin_until_hot(get_foo, [c])
-        self.assertTrue(get_foo.__code__.__use_llvm__)
+        self.assertTrue(get_foo.__code__.co_use_jit)
 
         # Check that the code bails correctly by passing an argument of another
         # type.
@@ -3553,14 +3553,14 @@ def foo():
         c = C()
 
         spin_until_hot(get_foo, [c])
-        self.assertTrue(get_foo.__code__.__use_llvm__)
+        self.assertTrue(get_foo.__code__.co_use_jit)
 
         # Check that invalidating the code by assigning a descriptor works.
         # The descriptor on the type will override the object attribute.
         def new_get_foo(self):
             return -1
         C.foo = property(new_get_foo)
-        self.assertFalse(get_foo.__code__.__use_llvm__)
+        self.assertFalse(get_foo.__code__.co_use_jit)
         self.assertEqual(c.foo, -1)
         self.assertEqual(get_foo(c), -1)
 
@@ -3578,14 +3578,14 @@ def foo():
         self.assertFalse(hasattr(c, '__dict__'))
 
         spin_until_hot(get_foo, [c])
-        self.assertTrue(get_foo.__code__.__use_llvm__)
+        self.assertTrue(get_foo.__code__.co_use_jit)
 
         # Check that invalidating the code by assigning a descriptor works.
         # The descriptor on the type will override the object attribute.
         def new_get_foo(self):
             return -1
         C.foo = property(new_get_foo)
-        self.assertFalse(get_foo.__code__.__use_llvm__)
+        self.assertFalse(get_foo.__code__.co_use_jit)
         self.assertEqual(c.foo, -1)
         self.assertEqual(get_foo(c), -1)
 
@@ -3602,13 +3602,13 @@ def foo():
         c = C()
 
         spin_until_hot(get_foo, [c])
-        self.assertTrue(get_foo.__code__.__use_llvm__)
+        self.assertTrue(get_foo.__code__.co_use_jit)
 
         # Check that invalidating the code by assigning a descriptor works.
         def new_foo(self):
             return -1
         C.foo = property(new_foo)
-        self.assertFalse(get_foo.__code__.__use_llvm__)
+        self.assertFalse(get_foo.__code__.co_use_jit)
         self.assertEqual(c.foo, -1)
         self.assertEqual(get_foo(c), -1)
 
@@ -3650,13 +3650,13 @@ def foo():
         # not speed, so we turn off errors on bails.
         spin_until_hot(get_foo, [c])
         sys.setbailerror(False)
-        self.assertTrue(get_foo.__code__.__use_llvm__)
+        self.assertTrue(get_foo.__code__.co_use_jit)
         test_mutate_descriptor()
-        self.assertTrue(get_foo.__code__.__use_llvm__)
+        self.assertTrue(get_foo.__code__.co_use_jit)
 
         # Check that we were optimizing LOAD_ATTR by mutating the type.
         C.foo = 3
-        self.assertFalse(get_foo.__code__.__use_llvm__)
+        self.assertFalse(get_foo.__code__.co_use_jit)
 
     def test_load_attr_fast_mutate_non_data_descr_to_data_descr(self):
         # Make a non-data descriptor class and a data-descriptor class and see
@@ -3699,16 +3699,16 @@ def foo():
         # not speed, so we turn off errors on bails.
         spin_until_hot(get_foo, [])
         sys.setbailerror(False)
-        self.assertTrue(get_foo.__code__.__use_llvm__)
+        self.assertTrue(get_foo.__code__.co_use_jit)
         test_mutate_descriptor()
         # Note that the code is *not* invalidated when we mutate the class of
         # the descriptor because we cannot listen for modifications.  Instead,
         # we have a guard on the type of the descriptor.
-        self.assertTrue(get_foo.__code__.__use_llvm__)
+        self.assertTrue(get_foo.__code__.co_use_jit)
 
         # Check that we were optimizing LOAD_ATTR by mutating the type.
         C.foo = 4
-        self.assertFalse(get_foo.__code__.__use_llvm__)
+        self.assertFalse(get_foo.__code__.co_use_jit)
 
     def test_load_attr_fast_mutate_descriptor_to_non_descriptor(self):
         # Make a descriptor class and then mutate the class so that it's a
@@ -3750,16 +3750,16 @@ def foo():
         # not speed, so we turn off errors on bails.
         spin_until_hot(get_foo, [])
         sys.setbailerror(False)
-        self.assertTrue(get_foo.__code__.__use_llvm__)
+        self.assertTrue(get_foo.__code__.co_use_jit)
         test_mutate_descriptor()
         # Note that the code is *not* invalidated when we mutate the class of
         # the descriptor because we cannot listen for modifications.  Instead,
         # we have a guard on the type of the descriptor.
-        self.assertTrue(get_foo.__code__.__use_llvm__)
+        self.assertTrue(get_foo.__code__.co_use_jit)
 
         # Check that we were optimizing LOAD_ATTR by mutating the type.
         C.foo = 4
-        self.assertFalse(get_foo.__code__.__use_llvm__)
+        self.assertFalse(get_foo.__code__.co_use_jit)
 
     def test_load_attr_fast_mutate_descriptor_method(self):
         # Make a descriptor class and then mutate mutate its __get__ method to
@@ -3794,10 +3794,10 @@ def foo():
         # not speed, so we turn off errors on bails.
         spin_until_hot(get_foo, [])
         sys.setbailerror(False)
-        self.assertTrue(get_foo.__code__.__use_llvm__)
+        self.assertTrue(get_foo.__code__.co_use_jit)
         test_mutate_descriptor()
         # Mutating the descriptor type invalidates the code.
-        self.assertFalse(get_foo.__code__.__use_llvm__)
+        self.assertFalse(get_foo.__code__.co_use_jit)
 
     def test_load_attr_fast_freed_type(self):
         # Train a code object on a certain type, and then free it.  The code
@@ -3811,7 +3811,7 @@ def foo():
             return o.foo
         c = C()
         spin_until_hot(get_foo, [c])
-        self.assertTrue(get_foo.__code__.__use_llvm__)
+        self.assertTrue(get_foo.__code__.co_use_jit)
 
         # Do this song and dance to free C.
         ref = weakref.ref(C)
@@ -3822,7 +3822,7 @@ def foo():
         self.assertEqual(ref(), None)  # Check that C was really freed.
 
         # Now that C is gone, the machine code should be invalid.
-        self.assertFalse(get_foo.__code__.__use_llvm__)
+        self.assertFalse(get_foo.__code__.co_use_jit)
 
     def test_load_attr_fast_invalidates_during_call(self):
         # Make sure we properly bail if we are invalidated while the method is
@@ -3846,12 +3846,12 @@ def foo():
 
         c = C()
         spin_until_hot(get_foo, [c])
-        self.assertTrue(get_foo.__code__.__use_llvm__)
+        self.assertTrue(get_foo.__code__.co_use_jit)
         self.assertEqual(get_foo(c), 1)
         invalidate_code = True
         sys.setbailerror(False)
         self.assertEqual(get_foo(c), 2)
-        self.assertFalse(get_foo.__code__.__use_llvm__)
+        self.assertFalse(get_foo.__code__.co_use_jit)
 
     def test_store_attr_fast_bails(self):
         class C(object):
@@ -3880,7 +3880,7 @@ def foo():
         spin_until_hot(set_attr, [c, 0])
         # Check that sticking a foo descriptor on C invalidates the code.
         C.foo = property(lambda self: -1)
-        self.assertFalse(set_attr.__code__.__use_llvm__)
+        self.assertFalse(set_attr.__code__.co_use_jit)
         self.assertEqual(c.foo, -1)
         self.assertRaises(AttributeError, set_attr, c, 0)
         self.assertEqual(c.foo, -1)
@@ -3934,12 +3934,12 @@ def foo():
         # Delete any stale foo attribute shadowing the non-data descriptor.
         del c.foo
         sys.setbailerror(False)
-        self.assertTrue(set_foo.__code__.__use_llvm__)
+        self.assertTrue(set_foo.__code__.co_use_jit)
         test_mutate_descriptor()
         # Note that the code is *not* invalidated when we mutate the class of
         # the descriptor because we cannot listen for modifications.  Instead,
         # we have a guard on the type of the descriptor.
-        self.assertTrue(set_foo.__code__.__use_llvm__)
+        self.assertTrue(set_foo.__code__.co_use_jit)
 
         # Check that it bails.
         sys.setbailerror(True)
@@ -3949,7 +3949,7 @@ def foo():
 
         # Check that we were optimizing LOAD_ATTR by mutating the type.
         C.foo = 4
-        self.assertFalse(set_foo.__code__.__use_llvm__)
+        self.assertFalse(set_foo.__code__.co_use_jit)
 
     def test_two_imports(self):
         # Regression test: at one point in development, this would blow up due
@@ -3963,7 +3963,7 @@ def foo():
         spin_until_hot(foo)
 
         import os
-        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo.__code__.co_use_jit)
         self.assertEqual(foo(), os)
         self.assertTrue("_PyEval_ImportName" not in str(foo.__code__.co_llvm))
 
@@ -3976,7 +3976,7 @@ def foo():
         spin_until_hot(foo)
 
         import os
-        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo.__code__.co_use_jit)
         self.assertEqual(foo(), os)
         self.assertTrue("_PyEval_ImportName" not in str(foo.__code__.co_llvm))
 
@@ -3993,7 +3993,7 @@ def foo():
         self.assertEqual(foo(), os)
         with test_support.swap_item(sys.modules, "os", 5):
             self.assertEqual(foo(), 5)
-        self.assertFalse(foo.__code__.__use_llvm__)
+        self.assertFalse(foo.__code__.co_use_jit)
         self.assertEqual(foo.__code__.co_fatalbailcount, 0)
 
         # Normally we call _clear_feedback() here, but we want the 5 to count
@@ -4001,7 +4001,7 @@ def foo():
         spin_until_hot(foo)
 
         self.assertEqual(foo.__code__.co_fatalbailcount, 0)
-        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo.__code__.co_use_jit)
         self.assertEqual(foo(), os)
         self.assertTrue("_PyEval_ImportName" in str(foo.__code__.co_llvm))
 
@@ -4009,7 +4009,7 @@ def foo():
         # interpreter, since we couldn't use the IMPORT_NAME optimization.
         with test_support.swap_item(sys.modules, "os", 5):
             self.assertEqual(foo(), 5)
-        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo.__code__.co_use_jit)
         self.assertEqual(foo.__code__.co_fatalbailcount, 0)
 
     def test_cache_imports_robust_against_sys_modules_changes(self):
@@ -4024,20 +4024,20 @@ def foo():
         self.assertEqual(foo(), os)
         with test_support.swap_item(sys.modules, "os", 5):
             self.assertEqual(foo(), 5)
-        self.assertFalse(foo.__code__.__use_llvm__)
+        self.assertFalse(foo.__code__.co_use_jit)
         self.assertEqual(foo.__code__.co_fatalbailcount, 0)
 
         _llvm.clear_feedback(foo)  # Don't let that 5 ruin things!
         spin_until_hot(foo)
 
         self.assertEqual(foo.__code__.co_fatalbailcount, 0)
-        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo.__code__.co_use_jit)
         self.assertEqual(foo(), os)
 
         # Changing sys.modules will trigger a fatal bail to the interpreter.
         with test_support.swap_item(sys.modules, "os", 5):
             self.assertEqual(foo(), 5)
-        self.assertFalse(foo.__code__.__use_llvm__)
+        self.assertFalse(foo.__code__.co_use_jit)
         self.assertEqual(foo.__code__.co_fatalbailcount, 1)
 
     def test_cache_imports_robust_against_target_assignments(self):
@@ -4054,14 +4054,14 @@ def foo():
         spin_until_hot(foo)
 
         self.assertEqual(foo.__code__.co_fatalbailcount, 0)
-        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo.__code__.co_use_jit)
         self.assertEqual(foo(), os.path)
 
         # This doesn't change sys.modules, but it still needs to work.
         import os
         with test_support.swap_attr(os, "path", 5):
             self.assertEqual(foo(), 5)
-        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo.__code__.co_use_jit)
         self.assertEqual(foo.__code__.co_fatalbailcount, 0)
 
     def test_cache_imports_robust_against_parent_assignments(self):
@@ -4085,14 +4085,14 @@ def foo():
         _llvm.clear_feedback(foo)
         spin_until_hot(foo)
 
-        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo.__code__.co_use_jit)
         self.assertEqual(foo.__code__.co_fatalbailcount, 0)
 
         # Make sure everything still works.
         self.assertEqual(foo(), os.path.exists)
         with test_support.swap_attr(os, "path", Module):
             self.assertEqual(foo(), real_exists)
-        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo.__code__.co_use_jit)
         self.assertEqual(foo.__code__.co_fatalbailcount, 0)
 
     def test_cache_imports_robust_against_import_builtin_changes(self):
@@ -4110,7 +4110,7 @@ def foo():
         spin_until_hot(foo)
 
         import os
-        self.assertTrue(foo.__code__.__use_llvm__)
+        self.assertTrue(foo.__code__.co_use_jit)
         self.assertEqual(foo.__code__.co_fatalbailcount, 0)
         self.assertEqual(foo(), os)
 
@@ -4120,7 +4120,7 @@ def foo():
         with test_support.swap_attr(__builtin__, "__import__", lambda *args: 5):
             self.assertEqual(foo(), 5)
         self.assertEqual(foo.__code__.co_fatalbailcount, 1)
-        self.assertFalse(foo.__code__.__use_llvm__)
+        self.assertFalse(foo.__code__.co_use_jit)
 
 
 class InliningTests(LlvmTestCase, ExtraAssertsTestCase):
@@ -4146,19 +4146,19 @@ class LlvmRebindBuiltinsTests(test_dynamic.RebindBuiltinsTests):
         foo = compile_for_llvm("foo", "def foo(): return len(range(3))",
                                optimization_level=None)
         self.configure_func(foo)
-        self.assertEqual(foo.__code__.__use_llvm__, True)
+        self.assertEqual(foo.__code__.co_use_jit, True)
 
         with test_support.swap_item(globals(), "len", lambda x: 7):
-            self.assertEqual(foo.__code__.__use_llvm__, False)
+            self.assertEqual(foo.__code__.co_use_jit, False)
 
     def test_changing_builtins_invalidates_function(self):
         foo = compile_for_llvm("foo", "def foo(): return len(range(3))",
                                optimization_level=None)
         self.configure_func(foo)
-        self.assertEqual(foo.__code__.__use_llvm__, True)
+        self.assertEqual(foo.__code__.co_use_jit, True)
 
         with test_support.swap_attr(__builtin__, "len", lambda x: 7):
-            self.assertEqual(foo.__code__.__use_llvm__, False)
+            self.assertEqual(foo.__code__.co_use_jit, False)
 
     def test_nondict_builtins_class(self):
         # Regression test: this used to trigger a fatal assertion when trying
@@ -4170,7 +4170,7 @@ class LlvmRebindBuiltinsTests(test_dynamic.RebindBuiltinsTests):
         foo = compile_for_llvm("foo", "def foo(): return len",
                                optimization_level=None,
                                globals_dict=D(globals()))
-        foo.__code__.__use_llvm__ = True
+        foo.__code__.co_use_jit = True
         foo()
 
 
@@ -4179,23 +4179,23 @@ class SetJitControlTests(LlvmTestCase):
     def test_jit_never(self):
         def foo():
             pass
-        foo.__code__.__use_llvm__ = False
+        foo.__code__.co_use_jit = False
         _llvm.set_jit_control("never")
         for _ in xrange(JIT_SPIN_COUNT):
             foo()
-        self.assertFalse(foo.__code__.__use_llvm__,
+        self.assertFalse(foo.__code__.co_use_jit,
                          "Foo was JITed despite being run under -Xjit=never.")
 
     def test_jit_always(self):
         def foo():
             pass
-        foo.__code__.__use_llvm__ = False
+        foo.__code__.co_use_jit = False
         foo()
-        self.assertFalse(foo.__code__.__use_llvm__,
+        self.assertFalse(foo.__code__.co_use_jit,
                          "Expected one call not to cause JITing.")
         _llvm.set_jit_control("always")
         foo()
-        self.assertTrue(foo.__code__.__use_llvm__,
+        self.assertTrue(foo.__code__.co_use_jit,
                         "Setting -X flag to jit=always had no effect.")
 
     def test_wrong_type(self):

@@ -57,7 +57,7 @@ def foo(): bar()
 def bar(): baz()
 def baz(): print 'Hello, World!'
 for function in (foo, bar, baz):
-    function.__code__.__use_llvm__ = True
+    function.__code__.co_use_jit = True
 foo()""")
         # Get the indices of each function in the stack trace.
         foo, bar, baz, output = map(

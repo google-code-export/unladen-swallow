@@ -28,8 +28,8 @@ Here are the primary files that you'll be working on as part of Unladen Swallow:
 Invariants
 ----------
 
-- If f->f_use_llvm is true, co->co_use_llvm is true; if co->co_use_llvm is true,
-  f->f_use_llvm may be true. Individual execution frames may disable LLVM for
+- If f->f_use_jit is true, co->co_use_jit is true; if co->co_use_jit is true,
+  f->f_use_jit may be true. Individual execution frames may disable LLVM for
   a number of reasons: if tracing is enabled, or if some assumptions in the
   machine code are known not to hold in this particular frame of execution.
 
@@ -139,7 +139,7 @@ Register code object to watch dict: (_PyCode_WatchDict)
 
 Dict changes (_PyDict_NotifyAllWatchers):
     - For each code object in the dict watch list,
-        - Set co_use_llvm to 0
+        - Set co_use_jit to 0
         - For each dict in the code object's watch list
 		  (_PyCode_IgnoreWatchedDicts),
             - Remove the code object from that dict's watch list
@@ -209,10 +209,10 @@ Implementation:
   the code object when the dicts change. See the above Infrastructure section
   on "Watching dictionaries for changes" for how this system works.
 - The optimized machine code will guard the cached pointer by testing
-  co_use_llvm; if this is 0, tailcall to the interpreter to continue execution.
+  co_use_jit; if this is 0, tailcall to the interpreter to continue execution.
   Otherwise (if it is 1), continue execution of the machine code, using the
   cached pointer in place of the two `PyDict_GetItem()` calls. Dicts will set
-  the code object's co_use_llvm field to 0 when they are modified.
+  the code object's co_use_jit field to 0 when they are modified.
 
 Instrumentation:
 - The --with-instrumentation build will tell you which functions have their

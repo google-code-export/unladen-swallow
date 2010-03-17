@@ -728,8 +728,8 @@ private:
     // entry block. They're constant after construction.
     llvm::Value *frame_;
 
-    // Address of code_object_->co_use_llvm, used for guards.
-    llvm::Value *use_llvm_addr_;
+    // Address of code_object_->co_use_jit, used for guards.
+    llvm::Value *use_jit_addr_;
 
     llvm::Value *tstate_;
     llvm::Value *stack_bottom_;

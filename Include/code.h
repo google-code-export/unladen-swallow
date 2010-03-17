@@ -51,9 +51,9 @@ typedef struct PyCodeObject {
     PyEvalFrameFunction co_native_function;
     struct PyFeedbackMap *co_runtime_feedback;
     /* True if interpretation will be done through the LLVM JIT. This exists
-       only for ease of testing; the flag that matters is f_use_llvm on the
-       frame object, which is influenced by co_use_llvm. */
-    char co_use_llvm;
+       only for ease of testing; the flag that matters is f_use_jit on the
+       frame object, which is influenced by co_use_jit. */
+    char co_use_jit;
     /* Stores which optimizations have been applied to this code
        object.  Each level corresponds to an argument to
        PyGlobalLlvmData::Optimize().  Starts at -1 for unoptimized
@@ -165,7 +165,7 @@ PyAPI_FUNC(PyObject*) PyCode_Optimize(PyObject *code, PyObject* consts,
 /* Compile a given function to LLVM IR, and apply a set of optimization passes.
    Returns -1 on error, 0 on succcess, 1 if codegen was refused. If a non-zero
    status code is returned, callers may need to back out any changes they've
-   made, such as setting co_use_llvm.
+   made, such as setting co_use_jit.
 
    Some state from the code object, such as the co_watching field, may be used
    during code generation to optimize the machine code.
@@ -175,7 +175,7 @@ PyAPI_FUNC(PyObject*) PyCode_Optimize(PyObject *code, PyObject* consts,
 PyAPI_FUNC(int) _PyCode_ToOptimizedLlvmIr(PyCodeObject *code, int opt_level);
 
 /* Register a code object to receive updates if its globals or builtins change.
-   If the globals or builtins change, co_use_llvm will be set to 0; this causes
+   If the globals or builtins change, co_use_jit will be set to 0; this causes
    the machine code to bail back to the interpreter to continue execution.
 
    Returns 0 on success, -1 on serious failure. "Serious failure" here means

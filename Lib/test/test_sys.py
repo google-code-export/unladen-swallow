@@ -415,7 +415,7 @@ class SysModuleTest(unittest.TestCase):
                 foo()
                 return 7
             bar.__code__.co_optimization = 2
-            bar.__code__.__use_llvm__ = True
+            bar.__code__.co_use_jit = True
 
             def run_test():
                 # Once bailerror and tracing have been turned on, they cannot
