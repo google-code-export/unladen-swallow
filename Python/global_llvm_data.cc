@@ -22,7 +22,6 @@
 #include "llvm/Function.h"
 #include "llvm/GlobalVariable.h"
 #include "llvm/Module.h"
-#include "llvm/ModuleProvider.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ManagedStatic.h"
@@ -107,18 +106,17 @@ PyGlobalLlvmData::PyGlobalLlvmData()
 {
     std::string error;
     llvm::MemoryBuffer *stdlib_file = find_stdlib_bc();
-    this->module_provider_ =
-      llvm::getBitcodeModuleProvider(stdlib_file, this->context(), &error);
-    if (this->module_provider_ == NULL) {
+    this->module_ =
+            llvm::getLazyBitcodeModule(stdlib_file, this->context(), &error);
+    if (this->module_ == NULL) {
       Py_FatalError(error.c_str());
     }
-    this->module_ = this->module_provider_->getModule();
 
-    this->debug_info_.reset(new llvm::DIFactory(*module_));
+    this->debug_info_.reset(new llvm::DIFactory(*this->module_));
 
     llvm::InitializeNativeTarget();
     engine_ = llvm::ExecutionEngine::create(
-        module_provider_,
+        this->module_,
         // Don't force the interpreter (use JIT if possible).
         false,
         &error,
@@ -184,10 +182,10 @@ PyGlobalLlvmData::InstallInitialModule()
 void
 PyGlobalLlvmData::InitializeOptimizations()
 {
-    optimizations_[0] = new FunctionPassManager(this->module_provider_);
+    optimizations_[0] = new FunctionPassManager(this->module_);
 
     FunctionPassManager *quick =
-        new FunctionPassManager(this->module_provider_);
+        new FunctionPassManager(this->module_);
     optimizations_[1] = quick;
     quick->add(new llvm::TargetData(*engine_->getTargetData()));
     quick->add(llvm::createPromoteMemoryToRegisterPass());
@@ -197,11 +195,11 @@ PyGlobalLlvmData::InitializeOptimizations()
 
     // This is the default optimization used by the JIT.
     FunctionPassManager *O2 =
-        new FunctionPassManager(this->module_provider_);
+        new FunctionPassManager(this->module_);
     optimizations_[2] = O2;
     O2->add(new llvm::TargetData(*engine_->getTargetData()));
     O2->add(llvm::createCFGSimplificationPass());
-    O2->add(PyCreateSingleFunctionInliningPass(this->module_provider_));
+    O2->add(PyCreateSingleFunctionInliningPass());
     O2->add(llvm::createJumpThreadingPass());
     O2->add(llvm::createPromoteMemoryToRegisterPass());
     O2->add(llvm::createInstructionCombiningPass());

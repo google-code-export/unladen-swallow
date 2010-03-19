@@ -13,7 +13,6 @@ class ModuleProvider;
 
 // Inlines calls into the active function according to Python-specific
 // rules.  For now, this only inlines always-inline functions.
-llvm::FunctionPass *PyCreateSingleFunctionInliningPass(
-    llvm::ModuleProvider *mp);
+llvm::FunctionPass *PyCreateSingleFunctionInliningPass();
 
 #endif  // UTIL_SINGLEFUNCTIONINLINER_H

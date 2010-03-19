@@ -33,6 +33,7 @@ using llvm::GlobalVariable;
 using llvm::LLVMContext;
 using llvm::Module;
 using llvm::Pass;
+using llvm::PassInfo;
 using llvm::PointerType;
 using llvm::SCEV;
 using llvm::SCEVUnknown;
@@ -99,6 +100,12 @@ public:
     virtual AliasResult alias(const Value *V1, unsigned V1Size,
                               const Value *V2, unsigned V2Size);
     virtual bool pointsToConstantMemory(const Value *V);
+
+    virtual void *getAdjustedAnalysisPointer(const PassInfo *PI) {
+        if (PI->isPassID(&AliasAnalysis::ID))
+            return (AliasAnalysis*)this;
+        return this;
+    }
 
 private:
     // True if V points inside a PyObject to a field we know is
@@ -402,7 +409,7 @@ PyAliasAnalysis::PointsToConstFieldInPyObject(const Value *v)
     if (isa<PointerType>(v->getType())) {
         // Right size to be the type pointer.
         const SCEV *offset = this->scev_->getMinusSCEV(s, gv_scev);
-        const SCEV *type_field = this->scev_->getFieldOffsetExpr(
+        const SCEV *type_field = this->scev_->getOffsetOfExpr(
             py::ObjectTy::get(*this->context_),
             py::ObjectTy::ob_type_index(*this->context_));
         if (offset == type_field)

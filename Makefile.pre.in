@@ -792,9 +792,14 @@ Unittests/googletest/gtest.o:
 # Must be in the root object directory for Python to find libpython.bc.
 # BUILDPYTHON and python-config are order-only so that $^ doesn't pick them up.
 # The python-config line needs to come last, or this will be broken on Linux.
+#
+# gcc's TR1 <tuple> header depends on RTTI, so force googletest to use
+# its own tuple implementation.  When we import googletest >=1.4.0, we
+# can drop the RTTI line.
 AllUnitTests: $(srcdir)/Unittests/*Test.cc $(srcdir)/Unittests/pytest_main.cc \
-		$(LIBRARY) Unittests/googletest/gtest.o | $(BUILDPYTHON) python-config
-	$(CXX) $(CPPFLAGS) -I$(srcdir)/Unittests/googletest/include -o $@ $^ \
+              $(LIBRARY) Unittests/googletest/gtest.o | $(BUILDPYTHON) python-config
+	$(CXX) $(CPPFLAGS) -I$(srcdir)/Unittests/googletest/include \
+		-DGTEST_HAS_RTTI=0 -DGTEST_HAS_TR1_TUPLE=0 -o $@ $^ \
 		-L. $(LDFLAGS) `$(RUNSHARED) ./$(BUILDPYTHON) ./python-config --cxxflags --ldflags --libs`
 
 ifneq (@BUILD_LLVM@, disabled)

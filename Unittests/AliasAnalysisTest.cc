@@ -10,7 +10,6 @@
 #include "llvm/BasicBlock.h"
 #include "llvm/ExecutionEngine/ExecutionEngine.h"
 #include "llvm/Function.h"
-#include "llvm/ModuleProvider.h"
 #include "llvm/PassManager.h"
 #include "llvm/Support/IRBuilder.h"
 #include "llvm/Target/TargetData.h"
@@ -83,7 +82,7 @@ protected:
     AliasAnalysisTest()
         : global_data_(*PyGlobalLlvmData::Get()),
           mirror_(this->global_data_.constant_mirror()),
-          fpm_(this->global_data_.module_provider()),
+          fpm_(this->global_data_.module()),
           function_(Function::Create(PyTypeBuilder<void()>::get(
                                          this->global_data_.context()),
                                      GlobalValue::ExternalLinkage,
@@ -137,7 +136,9 @@ TEST_F(AliasAnalysisTest, ImmutableValue)
     this->builder_.CreateRetVoid();
 
     Pass *pass = CreatePyAliasAnalysis(this->global_data_);
-    AliasAnalysis *aa = dynamic_cast<AliasAnalysis*>(pass);
+    AliasAnalysis *aa = static_cast<AliasAnalysis*>(
+        pass->getAdjustedAnalysisPointer(
+            Pass::getClassPassInfo<AliasAnalysis>()));
     this->fpm_.add(pass);
     this->fpm_.run(*this->function_);
 
@@ -191,7 +192,9 @@ TEST_F(AliasAnalysisTest, ImmutableTypeMutableValue)
     this->builder_.CreateRetVoid();
 
     Pass *pass = CreatePyAliasAnalysis(this->global_data_);
-    AliasAnalysis *aa = dynamic_cast<AliasAnalysis*>(pass);
+    AliasAnalysis *aa = static_cast<AliasAnalysis*>(
+        pass->getAdjustedAnalysisPointer(
+            Pass::getClassPassInfo<AliasAnalysis>()));
     this->fpm_.add(pass);
     this->fpm_.run(*this->function_);
 
@@ -246,7 +249,9 @@ TEST_F(AliasAnalysisTest, MutableType)
     this->builder_.CreateRetVoid();
 
     Pass *pass = CreatePyAliasAnalysis(this->global_data_);
-    AliasAnalysis *aa = dynamic_cast<AliasAnalysis*>(pass);
+    AliasAnalysis *aa = static_cast<AliasAnalysis*>(
+        pass->getAdjustedAnalysisPointer(
+            Pass::getClassPassInfo<AliasAnalysis>()));
     this->fpm_.add(pass);
     this->fpm_.run(*this->function_);
 
