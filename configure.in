@@ -580,11 +580,12 @@ RUNSHARED=''
 # Check for this really early so we can use it to toggle LINKCC.
 #
 # Expected behaviour:
-#   - Omit --with-llvm: use in-tree LLVM
-#   - --with-llvm (no DIRECTORY): use in-tree LLVM
+#   - Omit --with-llvm: use llvm-config we find in the path or $LLVM_CONFIG
+#   - --with-llvm (no DIRECTORY): Same
 #   - --with-llvm=DIRECTORY: use the LLVM installed in DIRECTORY
 #   - --without-llvm: disable everything that requires LLVM
 dnl quadrigraphs "@<:@" and "@:>@" produce "[" and "]" in the output
+AC_ARG_VAR(LLVM_CONFIG, [LLVM configuration script])
 AC_MSG_CHECKING(for --with(out)-llvm)
 AC_ARG_WITH(llvm, 
             AC_HELP_STRING(--with(out)-llvm@<:@=DIRECTORY@:>@,
@@ -593,37 +594,55 @@ AC_ARG_WITH(llvm,
                            Python built with --without-llvm cannot load
                            extension modules built with --with-llvm or
                            vice-versa.),
-            [with_llvm=$withval])
+            [with_llvm=$withval],
+            [with_llvm=yes])
 
 if test "$with_llvm" = "no"
 then
     AC_MSG_RESULT(disabled)
-    BUILD_LLVM=disabled
+    WITH_LLVM=0
 else
-    if test -z "$with_llvm"
+    AC_MSG_RESULT($with_llvm)
+    WITH_LLVM=1
+    if test "$with_llvm" = "yes"
     then
-        AC_MSG_RESULT(built-in)
-        LLVM_PATH=""
-        BUILD_LLVM=1
+        AC_PATH_PROG(LLVM_CONFIG, llvm-config)
+        if test -z "$LLVM_CONFIG"
+        then
+            AC_MSG_ERROR([cannot find llvm-config on the PATH])
+        fi
     else
-        AC_MSG_RESULT($with_llvm); 
-        LLVM_PATH=$with_llvm
-        AC_CHECK_FILE("$LLVM_PATH/bin/clang",
-            [], [echo "Did not find clang in the expected path"; exit 1])
-        AC_CHECK_FILE("$LLVM_PATH/bin/opt",
-            [], [echo "Did not find opt in the expected path"; exit 1])
-        AC_CHECK_FILE("$LLVM_PATH/bin/llvm-link",
-            [], [echo "Did not find llvm-link in the expected path"; exit 1])
-        AC_CHECK_FILE("$LLVM_PATH/bin/llvm-dis",
-            [], [echo "Did not find llvm-dis in the expected path"; exit 1])
-        AC_CHECK_FILE("$LLVM_PATH/bin/llvm-config",
-            [], [echo "Did not find llvm-config in the expected path"; exit 1])
-        echo "Using preinstalled LLVM: $LLVM_PATH"
-        BUILD_LLVM=0
+        AC_PATH_PROG(LLVM_CONFIG, llvm-config, [], [$with_llvm/bin])
+        if test -z "$LLVM_CONFIG"
+        then
+            AC_MSG_ERROR([cannot find llvm-config in $with_llvm/bin])
+        fi
     fi
+
+    LLVM_INC_DIR=`$LLVM_CONFIG --includedir`
+    LLVM_BIN_DIR=`$LLVM_CONFIG --bindir`
+    LLVM_CXXFLAGS=`$LLVM_CONFIG jit bitreader backend --cxxflags`
+    LLVM_LDFLAGS=`$LLVM_CONFIG jit bitreader backend --ldflags --libs | awk '{ORS=" "} {print $0}'`
+    LLVM_LIB_PATHS=`$LLVM_CONFIG jit bitreader backend --libfiles`
+
+    AC_CHECK_FILE("$LLVM_BIN_DIR/clang",
+        [], [AC_MSG_ERROR([Did not find clang in $LLVM_BIN_DIR])])
+    AC_CHECK_FILE("$LLVM_BIN_DIR/opt",
+        [], [AC_MSG_ERROR([Did not find opt in $LLVM_BIN_DIR])])
+    AC_CHECK_FILE("$LLVM_BIN_DIR/llvm-link",
+        [], [AC_MSG_ERROR([Did not find llvm-link in $LLVM_BIN_DIR])])
+    AC_CHECK_FILE("$LLVM_BIN_DIR/llvm-dis",
+        [], [AC_MSG_ERROR([Did not find llvm-dis in $LLVM_BIN_DIR])])
+
     AC_DEFINE(WITH_LLVM, 1,
         [Use LLVM for code generation. This makes things fast.])
 fi
+AC_SUBST(WITH_LLVM)
+AC_SUBST(LLVM_INC_DIR)
+AC_SUBST(LLVM_BIN_DIR)
+AC_SUBST(LLVM_CXXFLAGS)
+AC_SUBST(LLVM_LDFLAGS)
+AC_SUBST(LLVM_LIB_PATHS)
 
 # LINKCC is the command that links the python executable -- default is $(CXX).
 # This is altered for AIX in order to build the export list before 
@@ -822,6 +841,23 @@ then
 else AC_MSG_RESULT(no); Py_DEBUG='false'
 fi],
 [AC_MSG_RESULT(no)])
+
+if test "$with_llvm" != "no"
+then
+    LLVM_BUILD_MODE=`$LLVM_CONFIG --build-mode`
+    if echo $LLVM_BUILD_MODE | grep -e -Asserts &>/dev/null
+    then
+        if test "$Py_DEBUG" = "true"
+        then
+            AC_MSG_ERROR([--with-pydebug requires +Asserts LLVM. Got "$LLVM_BUILD_MODE"])
+        fi
+    else
+        if test "$Py_DEBUG" != "true"
+        then
+            AC_MSG_ERROR([--without-pydebug requires -Asserts LLVM. Got "$LLVM_BUILD_MODE"])
+        fi
+    fi
+fi
 
 # XXX Shouldn't the code above that fiddles with BASECFLAGS and OPT be
 # merged with this chunk of code?
@@ -3891,35 +3927,6 @@ then
 fi
 AC_MSG_RESULT($with_computed_gotos)
 
-if test "$BUILD_LLVM" = "1"
-then
-    LLVM_BASE="Util/llvm"
-    # llvm and llvm_tools are empty make targets that touch these files so they
-    # won't be rerun every time.  However, if the user uses the built-in version
-    # of LLVM, we need those targets to run, so we need to remove those files.
-    rm -f llvm llvm_tools
-    # Re-assigning $ac_configure_args is a hack to pass different
-    # arguments to LLVM's configure script due to a limitation in
-    # AC_CONFIG_SUBDIRS.  Since AC_CONFIG_SUBDIRS only runs the configure
-    # script inside of AC_OUTPUT, we can't re-assign the old configure
-    # arguments at any time it would make a difference.  The practical
-    # effect is that config.status passes some extra arguments when it
-    # re-runs the Python configure script.
-    # Keep these arguments in sync with Util/llvm/install-llvm.sh.
-    ac_configure_args="$ac_configure_args --enable-jit --enable-targets=host --enable-bindings=none"
-    if test "$Py_DEBUG" = 'true' ; then
-        ac_configure_args="$ac_configure_args --disable-optimized --enable-debug-runtime --enable-assertions"
-        LLVM_PATH="$LLVM_BASE/Debug"
-    else
-        ac_configure_args="$ac_configure_args --enable-optimized --disable-assertions --enable-debug-symbols"
-        LLVM_PATH="$LLVM_BASE/Release+Debug-Asserts"
-    fi
-    echo "Will build LLVM in $LLVM_BASE"
-    AC_CONFIG_SUBDIRS([Util/llvm])
-fi
-AC_SUBST(BUILD_LLVM)
-AC_SUBST(LLVM_PATH)
-
 # Check for --with-instrumentation
 AC_MSG_CHECKING(for --with-instrumentation)
 AC_ARG_WITH(instrumentation,
@@ -3933,7 +3940,7 @@ then
         [Compile in a bunch of runtime instrumentation useful for optimizing
          Python itself.])
 	AC_MSG_RESULT(yes);
-    if test "$BUILD_LLVM" = "disabled"
+    if test "WITH_LLVM" = "0"
 	then
 		AC_MSG_ERROR([--with-instrumentation requires --with-llvm])
 	fi
@@ -3950,7 +3957,7 @@ then
 	AC_DEFINE(WITH_TSC, 1, 
 	          [Define to profile with the Pentium timestamp counter]) 
 	AC_MSG_RESULT(yes)
-	if test "$BUILD_LLVM" = "disabled"
+	if test "WITH_LLVM" = "0"
 	then
 		AC_MSG_ERROR([--with-tsc requires --with-llvm])
 	fi

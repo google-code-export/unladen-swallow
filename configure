@@ -695,6 +695,13 @@ BLDLIBRARY
 LDLIBRARYDIR
 INSTSONAME
 RUNSHARED
+LLVM_CONFIG
+WITH_LLVM
+LLVM_INC_DIR
+LLVM_BIN_DIR
+LLVM_CXXFLAGS
+LLVM_LDFLAGS
+LLVM_LIB_PATHS
 LINKCC
 RANLIB
 AR
@@ -735,9 +742,6 @@ HAVE_GETHOSTBYNAME
 LIBM
 LIBC
 UNICODE_OBJS
-subdirs
-BUILD_LLVM
-LLVM_PATH
 THREADHEADERS
 SRCDIRS
 LTLIBOBJS'
@@ -753,8 +757,9 @@ CPPFLAGS
 CXX
 CXXFLAGS
 CCC
-CPP'
-ac_subdirs_all='Util/llvm'
+CPP
+LLVM_CONFIG'
+
 
 # Initialize some variables set by options.
 ac_init_help=
@@ -1389,6 +1394,7 @@ Some influential environment variables:
   CXX         C++ compiler command
   CXXFLAGS    C++ compiler flags
   CPP         C preprocessor
+  LLVM_CONFIG LLVM configuration script
 
 Use these variables to override the choices made by `configure' or to help
 it to find libraries and programs with nonstandard names/locations.
@@ -4186,16 +4192,19 @@ RUNSHARED=''
 # Check for this really early so we can use it to toggle LINKCC.
 #
 # Expected behaviour:
-#   - Omit --with-llvm: use in-tree LLVM
-#   - --with-llvm (no DIRECTORY): use in-tree LLVM
+#   - Omit --with-llvm: use llvm-config we find in the path or $LLVM_CONFIG
+#   - --with-llvm (no DIRECTORY): Same
 #   - --with-llvm=DIRECTORY: use the LLVM installed in DIRECTORY
 #   - --without-llvm: disable everything that requires LLVM
+
 { echo "$as_me:$LINENO: checking for --with(out)-llvm" >&5
 echo $ECHO_N "checking for --with(out)-llvm... $ECHO_C" >&6; }
 
 # Check whether --with-llvm was given.
 if test "${with_llvm+set}" = set; then
   withval=$with_llvm; with_llvm=$withval
+else
+  with_llvm=yes
 fi
 
 
@@ -4203,152 +4212,235 @@ if test "$with_llvm" = "no"
 then
     { echo "$as_me:$LINENO: result: disabled" >&5
 echo "${ECHO_T}disabled" >&6; }
-    BUILD_LLVM=disabled
+    WITH_LLVM=0
 else
-    if test -z "$with_llvm"
+    { echo "$as_me:$LINENO: result: $with_llvm" >&5
+echo "${ECHO_T}$with_llvm" >&6; }
+    WITH_LLVM=1
+    if test "$with_llvm" = "yes"
     then
-        { echo "$as_me:$LINENO: result: built-in" >&5
-echo "${ECHO_T}built-in" >&6; }
-        LLVM_PATH=""
-        BUILD_LLVM=1
+        # Extract the first word of "llvm-config", so it can be a program name with args.
+set dummy llvm-config; ac_word=$2
+{ echo "$as_me:$LINENO: checking for $ac_word" >&5
+echo $ECHO_N "checking for $ac_word... $ECHO_C" >&6; }
+if test "${ac_cv_path_LLVM_CONFIG+set}" = set; then
+  echo $ECHO_N "(cached) $ECHO_C" >&6
+else
+  case $LLVM_CONFIG in
+  [\\/]* | ?:[\\/]*)
+  ac_cv_path_LLVM_CONFIG="$LLVM_CONFIG" # Let the user override the test with a path.
+  ;;
+  *)
+  as_save_IFS=$IFS; IFS=$PATH_SEPARATOR
+for as_dir in $PATH
+do
+  IFS=$as_save_IFS
+  test -z "$as_dir" && as_dir=.
+  for ac_exec_ext in '' $ac_executable_extensions; do
+  if { test -f "$as_dir/$ac_word$ac_exec_ext" && $as_test_x "$as_dir/$ac_word$ac_exec_ext"; }; then
+    ac_cv_path_LLVM_CONFIG="$as_dir/$ac_word$ac_exec_ext"
+    echo "$as_me:$LINENO: found $as_dir/$ac_word$ac_exec_ext" >&5
+    break 2
+  fi
+done
+done
+IFS=$as_save_IFS
+
+  ;;
+esac
+fi
+LLVM_CONFIG=$ac_cv_path_LLVM_CONFIG
+if test -n "$LLVM_CONFIG"; then
+  { echo "$as_me:$LINENO: result: $LLVM_CONFIG" >&5
+echo "${ECHO_T}$LLVM_CONFIG" >&6; }
+else
+  { echo "$as_me:$LINENO: result: no" >&5
+echo "${ECHO_T}no" >&6; }
+fi
+
+
+        if test -z "$LLVM_CONFIG"
+        then
+            { { echo "$as_me:$LINENO: error: cannot find llvm-config on the PATH" >&5
+echo "$as_me: error: cannot find llvm-config on the PATH" >&2;}
+   { (exit 1); exit 1; }; }
+        fi
     else
-        { echo "$as_me:$LINENO: result: $with_llvm" >&5
-echo "${ECHO_T}$with_llvm" >&6; };
-        LLVM_PATH=$with_llvm
-        as_ac_File=`echo "ac_cv_file_"$LLVM_PATH/bin/clang"" | $as_tr_sh`
-{ echo "$as_me:$LINENO: checking for \"$LLVM_PATH/bin/clang\"" >&5
-echo $ECHO_N "checking for \"$LLVM_PATH/bin/clang\"... $ECHO_C" >&6; }
-if { as_var=$as_ac_File; eval "test \"\${$as_var+set}\" = set"; }; then
+        # Extract the first word of "llvm-config", so it can be a program name with args.
+set dummy llvm-config; ac_word=$2
+{ echo "$as_me:$LINENO: checking for $ac_word" >&5
+echo $ECHO_N "checking for $ac_word... $ECHO_C" >&6; }
+if test "${ac_cv_path_LLVM_CONFIG+set}" = set; then
   echo $ECHO_N "(cached) $ECHO_C" >&6
 else
-  test "$cross_compiling" = yes &&
-  { { echo "$as_me:$LINENO: error: cannot check for file existence when cross compiling" >&5
-echo "$as_me: error: cannot check for file existence when cross compiling" >&2;}
-   { (exit 1); exit 1; }; }
-if test -r ""$LLVM_PATH/bin/clang""; then
-  eval "$as_ac_File=yes"
-else
-  eval "$as_ac_File=no"
+  case $LLVM_CONFIG in
+  [\\/]* | ?:[\\/]*)
+  ac_cv_path_LLVM_CONFIG="$LLVM_CONFIG" # Let the user override the test with a path.
+  ;;
+  *)
+  as_save_IFS=$IFS; IFS=$PATH_SEPARATOR
+for as_dir in $with_llvm/bin
+do
+  IFS=$as_save_IFS
+  test -z "$as_dir" && as_dir=.
+  for ac_exec_ext in '' $ac_executable_extensions; do
+  if { test -f "$as_dir/$ac_word$ac_exec_ext" && $as_test_x "$as_dir/$ac_word$ac_exec_ext"; }; then
+    ac_cv_path_LLVM_CONFIG="$as_dir/$ac_word$ac_exec_ext"
+    echo "$as_me:$LINENO: found $as_dir/$ac_word$ac_exec_ext" >&5
+    break 2
+  fi
+done
+done
+IFS=$as_save_IFS
+
+  ;;
+esac
 fi
-fi
-ac_res=`eval echo '${'$as_ac_File'}'`
-	       { echo "$as_me:$LINENO: result: $ac_res" >&5
-echo "${ECHO_T}$ac_res" >&6; }
-if test `eval echo '${'$as_ac_File'}'` = yes; then
-  :
+LLVM_CONFIG=$ac_cv_path_LLVM_CONFIG
+if test -n "$LLVM_CONFIG"; then
+  { echo "$as_me:$LINENO: result: $LLVM_CONFIG" >&5
+echo "${ECHO_T}$LLVM_CONFIG" >&6; }
 else
-  echo "Did not find clang in the expected path"; exit 1
+  { echo "$as_me:$LINENO: result: no" >&5
+echo "${ECHO_T}no" >&6; }
 fi
 
-        as_ac_File=`echo "ac_cv_file_"$LLVM_PATH/bin/opt"" | $as_tr_sh`
-{ echo "$as_me:$LINENO: checking for \"$LLVM_PATH/bin/opt\"" >&5
-echo $ECHO_N "checking for \"$LLVM_PATH/bin/opt\"... $ECHO_C" >&6; }
-if { as_var=$as_ac_File; eval "test \"\${$as_var+set}\" = set"; }; then
-  echo $ECHO_N "(cached) $ECHO_C" >&6
-else
-  test "$cross_compiling" = yes &&
-  { { echo "$as_me:$LINENO: error: cannot check for file existence when cross compiling" >&5
-echo "$as_me: error: cannot check for file existence when cross compiling" >&2;}
-   { (exit 1); exit 1; }; }
-if test -r ""$LLVM_PATH/bin/opt""; then
-  eval "$as_ac_File=yes"
-else
-  eval "$as_ac_File=no"
-fi
-fi
-ac_res=`eval echo '${'$as_ac_File'}'`
-	       { echo "$as_me:$LINENO: result: $ac_res" >&5
-echo "${ECHO_T}$ac_res" >&6; }
-if test `eval echo '${'$as_ac_File'}'` = yes; then
-  :
-else
-  echo "Did not find opt in the expected path"; exit 1
-fi
 
-        as_ac_File=`echo "ac_cv_file_"$LLVM_PATH/bin/llvm-link"" | $as_tr_sh`
-{ echo "$as_me:$LINENO: checking for \"$LLVM_PATH/bin/llvm-link\"" >&5
-echo $ECHO_N "checking for \"$LLVM_PATH/bin/llvm-link\"... $ECHO_C" >&6; }
-if { as_var=$as_ac_File; eval "test \"\${$as_var+set}\" = set"; }; then
-  echo $ECHO_N "(cached) $ECHO_C" >&6
-else
-  test "$cross_compiling" = yes &&
-  { { echo "$as_me:$LINENO: error: cannot check for file existence when cross compiling" >&5
-echo "$as_me: error: cannot check for file existence when cross compiling" >&2;}
+        if test -z "$LLVM_CONFIG"
+        then
+            { { echo "$as_me:$LINENO: error: cannot find llvm-config in $with_llvm/bin" >&5
+echo "$as_me: error: cannot find llvm-config in $with_llvm/bin" >&2;}
    { (exit 1); exit 1; }; }
-if test -r ""$LLVM_PATH/bin/llvm-link""; then
-  eval "$as_ac_File=yes"
-else
-  eval "$as_ac_File=no"
-fi
-fi
-ac_res=`eval echo '${'$as_ac_File'}'`
-	       { echo "$as_me:$LINENO: result: $ac_res" >&5
-echo "${ECHO_T}$ac_res" >&6; }
-if test `eval echo '${'$as_ac_File'}'` = yes; then
-  :
-else
-  echo "Did not find llvm-link in the expected path"; exit 1
-fi
-
-        as_ac_File=`echo "ac_cv_file_"$LLVM_PATH/bin/llvm-dis"" | $as_tr_sh`
-{ echo "$as_me:$LINENO: checking for \"$LLVM_PATH/bin/llvm-dis\"" >&5
-echo $ECHO_N "checking for \"$LLVM_PATH/bin/llvm-dis\"... $ECHO_C" >&6; }
-if { as_var=$as_ac_File; eval "test \"\${$as_var+set}\" = set"; }; then
-  echo $ECHO_N "(cached) $ECHO_C" >&6
-else
-  test "$cross_compiling" = yes &&
-  { { echo "$as_me:$LINENO: error: cannot check for file existence when cross compiling" >&5
-echo "$as_me: error: cannot check for file existence when cross compiling" >&2;}
-   { (exit 1); exit 1; }; }
-if test -r ""$LLVM_PATH/bin/llvm-dis""; then
-  eval "$as_ac_File=yes"
-else
-  eval "$as_ac_File=no"
-fi
-fi
-ac_res=`eval echo '${'$as_ac_File'}'`
-	       { echo "$as_me:$LINENO: result: $ac_res" >&5
-echo "${ECHO_T}$ac_res" >&6; }
-if test `eval echo '${'$as_ac_File'}'` = yes; then
-  :
-else
-  echo "Did not find llvm-dis in the expected path"; exit 1
-fi
-
-        as_ac_File=`echo "ac_cv_file_"$LLVM_PATH/bin/llvm-config"" | $as_tr_sh`
-{ echo "$as_me:$LINENO: checking for \"$LLVM_PATH/bin/llvm-config\"" >&5
-echo $ECHO_N "checking for \"$LLVM_PATH/bin/llvm-config\"... $ECHO_C" >&6; }
-if { as_var=$as_ac_File; eval "test \"\${$as_var+set}\" = set"; }; then
-  echo $ECHO_N "(cached) $ECHO_C" >&6
-else
-  test "$cross_compiling" = yes &&
-  { { echo "$as_me:$LINENO: error: cannot check for file existence when cross compiling" >&5
-echo "$as_me: error: cannot check for file existence when cross compiling" >&2;}
-   { (exit 1); exit 1; }; }
-if test -r ""$LLVM_PATH/bin/llvm-config""; then
-  eval "$as_ac_File=yes"
-else
-  eval "$as_ac_File=no"
-fi
-fi
-ac_res=`eval echo '${'$as_ac_File'}'`
-	       { echo "$as_me:$LINENO: result: $ac_res" >&5
-echo "${ECHO_T}$ac_res" >&6; }
-if test `eval echo '${'$as_ac_File'}'` = yes; then
-  :
-else
-  echo "Did not find llvm-config in the expected path"; exit 1
-fi
-
-        echo "Using preinstalled LLVM: $LLVM_PATH"
-        BUILD_LLVM=0
+        fi
     fi
+
+    LLVM_INC_DIR=`$LLVM_CONFIG --includedir`
+    LLVM_BIN_DIR=`$LLVM_CONFIG --bindir`
+    LLVM_CXXFLAGS=`$LLVM_CONFIG jit bitreader backend --cxxflags`
+    LLVM_LDFLAGS=`$LLVM_CONFIG jit bitreader backend --ldflags --libs | awk '{ORS=" "} {print $0}'`
+    LLVM_LIB_PATHS=`$LLVM_CONFIG jit bitreader backend --libfiles`
+
+    as_ac_File=`echo "ac_cv_file_"$LLVM_BIN_DIR/clang"" | $as_tr_sh`
+{ echo "$as_me:$LINENO: checking for \"$LLVM_BIN_DIR/clang\"" >&5
+echo $ECHO_N "checking for \"$LLVM_BIN_DIR/clang\"... $ECHO_C" >&6; }
+if { as_var=$as_ac_File; eval "test \"\${$as_var+set}\" = set"; }; then
+  echo $ECHO_N "(cached) $ECHO_C" >&6
+else
+  test "$cross_compiling" = yes &&
+  { { echo "$as_me:$LINENO: error: cannot check for file existence when cross compiling" >&5
+echo "$as_me: error: cannot check for file existence when cross compiling" >&2;}
+   { (exit 1); exit 1; }; }
+if test -r ""$LLVM_BIN_DIR/clang""; then
+  eval "$as_ac_File=yes"
+else
+  eval "$as_ac_File=no"
+fi
+fi
+ac_res=`eval echo '${'$as_ac_File'}'`
+	       { echo "$as_me:$LINENO: result: $ac_res" >&5
+echo "${ECHO_T}$ac_res" >&6; }
+if test `eval echo '${'$as_ac_File'}'` = yes; then
+  :
+else
+  { { echo "$as_me:$LINENO: error: Did not find clang in $LLVM_BIN_DIR" >&5
+echo "$as_me: error: Did not find clang in $LLVM_BIN_DIR" >&2;}
+   { (exit 1); exit 1; }; }
+fi
+
+    as_ac_File=`echo "ac_cv_file_"$LLVM_BIN_DIR/opt"" | $as_tr_sh`
+{ echo "$as_me:$LINENO: checking for \"$LLVM_BIN_DIR/opt\"" >&5
+echo $ECHO_N "checking for \"$LLVM_BIN_DIR/opt\"... $ECHO_C" >&6; }
+if { as_var=$as_ac_File; eval "test \"\${$as_var+set}\" = set"; }; then
+  echo $ECHO_N "(cached) $ECHO_C" >&6
+else
+  test "$cross_compiling" = yes &&
+  { { echo "$as_me:$LINENO: error: cannot check for file existence when cross compiling" >&5
+echo "$as_me: error: cannot check for file existence when cross compiling" >&2;}
+   { (exit 1); exit 1; }; }
+if test -r ""$LLVM_BIN_DIR/opt""; then
+  eval "$as_ac_File=yes"
+else
+  eval "$as_ac_File=no"
+fi
+fi
+ac_res=`eval echo '${'$as_ac_File'}'`
+	       { echo "$as_me:$LINENO: result: $ac_res" >&5
+echo "${ECHO_T}$ac_res" >&6; }
+if test `eval echo '${'$as_ac_File'}'` = yes; then
+  :
+else
+  { { echo "$as_me:$LINENO: error: Did not find opt in $LLVM_BIN_DIR" >&5
+echo "$as_me: error: Did not find opt in $LLVM_BIN_DIR" >&2;}
+   { (exit 1); exit 1; }; }
+fi
+
+    as_ac_File=`echo "ac_cv_file_"$LLVM_BIN_DIR/llvm-link"" | $as_tr_sh`
+{ echo "$as_me:$LINENO: checking for \"$LLVM_BIN_DIR/llvm-link\"" >&5
+echo $ECHO_N "checking for \"$LLVM_BIN_DIR/llvm-link\"... $ECHO_C" >&6; }
+if { as_var=$as_ac_File; eval "test \"\${$as_var+set}\" = set"; }; then
+  echo $ECHO_N "(cached) $ECHO_C" >&6
+else
+  test "$cross_compiling" = yes &&
+  { { echo "$as_me:$LINENO: error: cannot check for file existence when cross compiling" >&5
+echo "$as_me: error: cannot check for file existence when cross compiling" >&2;}
+   { (exit 1); exit 1; }; }
+if test -r ""$LLVM_BIN_DIR/llvm-link""; then
+  eval "$as_ac_File=yes"
+else
+  eval "$as_ac_File=no"
+fi
+fi
+ac_res=`eval echo '${'$as_ac_File'}'`
+	       { echo "$as_me:$LINENO: result: $ac_res" >&5
+echo "${ECHO_T}$ac_res" >&6; }
+if test `eval echo '${'$as_ac_File'}'` = yes; then
+  :
+else
+  { { echo "$as_me:$LINENO: error: Did not find llvm-link in $LLVM_BIN_DIR" >&5
+echo "$as_me: error: Did not find llvm-link in $LLVM_BIN_DIR" >&2;}
+   { (exit 1); exit 1; }; }
+fi
+
+    as_ac_File=`echo "ac_cv_file_"$LLVM_BIN_DIR/llvm-dis"" | $as_tr_sh`
+{ echo "$as_me:$LINENO: checking for \"$LLVM_BIN_DIR/llvm-dis\"" >&5
+echo $ECHO_N "checking for \"$LLVM_BIN_DIR/llvm-dis\"... $ECHO_C" >&6; }
+if { as_var=$as_ac_File; eval "test \"\${$as_var+set}\" = set"; }; then
+  echo $ECHO_N "(cached) $ECHO_C" >&6
+else
+  test "$cross_compiling" = yes &&
+  { { echo "$as_me:$LINENO: error: cannot check for file existence when cross compiling" >&5
+echo "$as_me: error: cannot check for file existence when cross compiling" >&2;}
+   { (exit 1); exit 1; }; }
+if test -r ""$LLVM_BIN_DIR/llvm-dis""; then
+  eval "$as_ac_File=yes"
+else
+  eval "$as_ac_File=no"
+fi
+fi
+ac_res=`eval echo '${'$as_ac_File'}'`
+	       { echo "$as_me:$LINENO: result: $ac_res" >&5
+echo "${ECHO_T}$ac_res" >&6; }
+if test `eval echo '${'$as_ac_File'}'` = yes; then
+  :
+else
+  { { echo "$as_me:$LINENO: error: Did not find llvm-dis in $LLVM_BIN_DIR" >&5
+echo "$as_me: error: Did not find llvm-dis in $LLVM_BIN_DIR" >&2;}
+   { (exit 1); exit 1; }; }
+fi
+
+
 
 cat >>confdefs.h <<\_ACEOF
 #define WITH_LLVM 1
 _ACEOF
 
 fi
+
+
+
+
+
+
 
 # LINKCC is the command that links the python executable -- default is $(CXX).
 # This is altered for AIX in order to build the export list before
@@ -4899,6 +4991,27 @@ else
 echo "${ECHO_T}no" >&6; }
 fi
 
+
+if test "$with_llvm" != "no"
+then
+    LLVM_BUILD_MODE=`$LLVM_CONFIG --build-mode`
+    if echo $LLVM_BUILD_MODE | grep -e -Asserts &>/dev/null
+    then
+        if test "$Py_DEBUG" = "true"
+        then
+            { { echo "$as_me:$LINENO: error: --with-pydebug requires +Asserts LLVM. Got \"$LLVM_BUILD_MODE\"" >&5
+echo "$as_me: error: --with-pydebug requires +Asserts LLVM. Got \"$LLVM_BUILD_MODE\"" >&2;}
+   { (exit 1); exit 1; }; }
+        fi
+    else
+        if test "$Py_DEBUG" != "true"
+        then
+            { { echo "$as_me:$LINENO: error: --without-pydebug requires -Asserts LLVM. Got \"$LLVM_BUILD_MODE\"" >&5
+echo "$as_me: error: --without-pydebug requires -Asserts LLVM. Got \"$LLVM_BUILD_MODE\"" >&2;}
+   { (exit 1); exit 1; }; }
+        fi
+    fi
+fi
 
 # XXX Shouldn't the code above that fiddles with BASECFLAGS and OPT be
 # merged with this chunk of code?
@@ -25392,36 +25505,6 @@ fi
 { echo "$as_me:$LINENO: result: $with_computed_gotos" >&5
 echo "${ECHO_T}$with_computed_gotos" >&6; }
 
-if test "$BUILD_LLVM" = "1"
-then
-    LLVM_BASE="Util/llvm"
-    # llvm and llvm_tools are empty make targets that touch these files so they
-    # won't be rerun every time.  However, if the user uses the built-in version
-    # of LLVM, we need those targets to run, so we need to remove those files.
-    rm -f llvm llvm_tools
-    # Re-assigning $ac_configure_args is a hack to pass different
-    # arguments to LLVM's configure script due to a limitation in
-    # AC_CONFIG_SUBDIRS.  Since AC_CONFIG_SUBDIRS only runs the configure
-    # script inside of AC_OUTPUT, we can't re-assign the old configure
-    # arguments at any time it would make a difference.  The practical
-    # effect is that config.status passes some extra arguments when it
-    # re-runs the Python configure script.
-    # Keep these arguments in sync with Util/llvm/install-llvm.sh.
-    ac_configure_args="$ac_configure_args --enable-jit --enable-targets=host --enable-bindings=none"
-    if test "$Py_DEBUG" = 'true' ; then
-        ac_configure_args="$ac_configure_args --disable-optimized --enable-debug-runtime --enable-assertions"
-        LLVM_PATH="$LLVM_BASE/Debug"
-    else
-        ac_configure_args="$ac_configure_args --enable-optimized --disable-assertions --enable-debug-symbols"
-        LLVM_PATH="$LLVM_BASE/Release+Debug-Asserts"
-    fi
-    echo "Will build LLVM in $LLVM_BASE"
-    subdirs="$subdirs Util/llvm"
-
-fi
-
-
-
 # Check for --with-instrumentation
 { echo "$as_me:$LINENO: checking for --with-instrumentation" >&5
 echo $ECHO_N "checking for --with-instrumentation... $ECHO_C" >&6; }
@@ -25441,7 +25524,7 @@ _ACEOF
 
 	{ echo "$as_me:$LINENO: result: yes" >&5
 echo "${ECHO_T}yes" >&6; };
-    if test "$BUILD_LLVM" = "disabled"
+    if test "WITH_LLVM" = "0"
 	then
 		{ { echo "$as_me:$LINENO: error: --with-instrumentation requires --with-llvm" >&5
 echo "$as_me: error: --with-instrumentation requires --with-llvm" >&2;}
@@ -25468,7 +25551,7 @@ _ACEOF
 
 	{ echo "$as_me:$LINENO: result: yes" >&5
 echo "${ECHO_T}yes" >&6; }
-	if test "$BUILD_LLVM" = "disabled"
+	if test "WITH_LLVM" = "0"
 	then
 		{ { echo "$as_me:$LINENO: error: --with-tsc requires --with-llvm" >&5
 echo "$as_me: error: --with-tsc requires --with-llvm" >&2;}
@@ -26206,6 +26289,13 @@ BLDLIBRARY!$BLDLIBRARY$ac_delim
 LDLIBRARYDIR!$LDLIBRARYDIR$ac_delim
 INSTSONAME!$INSTSONAME$ac_delim
 RUNSHARED!$RUNSHARED$ac_delim
+LLVM_CONFIG!$LLVM_CONFIG$ac_delim
+WITH_LLVM!$WITH_LLVM$ac_delim
+LLVM_INC_DIR!$LLVM_INC_DIR$ac_delim
+LLVM_BIN_DIR!$LLVM_BIN_DIR$ac_delim
+LLVM_CXXFLAGS!$LLVM_CXXFLAGS$ac_delim
+LLVM_LDFLAGS!$LLVM_LDFLAGS$ac_delim
+LLVM_LIB_PATHS!$LLVM_LIB_PATHS$ac_delim
 LINKCC!$LINKCC$ac_delim
 RANLIB!$RANLIB$ac_delim
 AR!$AR$ac_delim
@@ -26217,13 +26307,6 @@ LN!$LN$ac_delim
 OPT!$OPT$ac_delim
 BASECFLAGS!$BASECFLAGS$ac_delim
 UNIVERSAL_ARCH_FLAGS!$UNIVERSAL_ARCH_FLAGS$ac_delim
-OTHER_LIBTOOL_OPT!$OTHER_LIBTOOL_OPT$ac_delim
-LIBTOOL_CRUFT!$LIBTOOL_CRUFT$ac_delim
-BASECXXFLAGS!$BASECXXFLAGS$ac_delim
-FORCE_C!$FORCE_C$ac_delim
-SO!$SO$ac_delim
-LDSHARED!$LDSHARED$ac_delim
-BLDSHARED!$BLDSHARED$ac_delim
 _ACEOF
 
   if test `sed -n "s/.*$ac_delim\$/X/p" conf$$subs.sed | grep -c X` = 97; then
@@ -26265,6 +26348,13 @@ _ACEOF
 ac_delim='%!_!# '
 for ac_last_try in false false false false false :; do
   cat >conf$$subs.sed <<_ACEOF
+OTHER_LIBTOOL_OPT!$OTHER_LIBTOOL_OPT$ac_delim
+LIBTOOL_CRUFT!$LIBTOOL_CRUFT$ac_delim
+BASECXXFLAGS!$BASECXXFLAGS$ac_delim
+FORCE_C!$FORCE_C$ac_delim
+SO!$SO$ac_delim
+LDSHARED!$LDSHARED$ac_delim
+BLDSHARED!$BLDSHARED$ac_delim
 CCSHARED!$CCSHARED$ac_delim
 LINKFORSHARED!$LINKFORSHARED$ac_delim
 CFLAGSFORSHARED!$CFLAGSFORSHARED$ac_delim
@@ -26287,15 +26377,12 @@ HAVE_GETHOSTBYNAME!$HAVE_GETHOSTBYNAME$ac_delim
 LIBM!$LIBM$ac_delim
 LIBC!$LIBC$ac_delim
 UNICODE_OBJS!$UNICODE_OBJS$ac_delim
-subdirs!$subdirs$ac_delim
-BUILD_LLVM!$BUILD_LLVM$ac_delim
-LLVM_PATH!$LLVM_PATH$ac_delim
 THREADHEADERS!$THREADHEADERS$ac_delim
 SRCDIRS!$SRCDIRS$ac_delim
 LTLIBOBJS!$LTLIBOBJS$ac_delim
 _ACEOF
 
-  if test `sed -n "s/.*$ac_delim\$/X/p" conf$$subs.sed | grep -c X` = 28; then
+  if test `sed -n "s/.*$ac_delim\$/X/p" conf$$subs.sed | grep -c X` = 32; then
     break
   elif $ac_last_try; then
     { { echo "$as_me:$LINENO: error: could not make $CONFIG_STATUS" >&5
@@ -26722,186 +26809,6 @@ if test "$no_create" != yes; then
   # Use ||, not &&, to avoid exiting from the if with $? = 1, which
   # would make configure fail if this is the last instruction.
   $ac_cs_success || { (exit 1); exit 1; }
-fi
-
-#
-# CONFIG_SUBDIRS section.
-#
-if test "$no_recursion" != yes; then
-
-  # Remove --cache-file and --srcdir arguments so they do not pile up.
-  ac_sub_configure_args=
-  ac_prev=
-  eval "set x $ac_configure_args"
-  shift
-  for ac_arg
-  do
-    if test -n "$ac_prev"; then
-      ac_prev=
-      continue
-    fi
-    case $ac_arg in
-    -cache-file | --cache-file | --cache-fil | --cache-fi \
-    | --cache-f | --cache- | --cache | --cach | --cac | --ca | --c)
-      ac_prev=cache_file ;;
-    -cache-file=* | --cache-file=* | --cache-fil=* | --cache-fi=* \
-    | --cache-f=* | --cache-=* | --cache=* | --cach=* | --cac=* | --ca=* \
-    | --c=*)
-      ;;
-    --config-cache | -C)
-      ;;
-    -srcdir | --srcdir | --srcdi | --srcd | --src | --sr)
-      ac_prev=srcdir ;;
-    -srcdir=* | --srcdir=* | --srcdi=* | --srcd=* | --src=* | --sr=*)
-      ;;
-    -prefix | --prefix | --prefi | --pref | --pre | --pr | --p)
-      ac_prev=prefix ;;
-    -prefix=* | --prefix=* | --prefi=* | --pref=* | --pre=* | --pr=* | --p=*)
-      ;;
-    *)
-      case $ac_arg in
-      *\'*) ac_arg=`echo "$ac_arg" | sed "s/'/'\\\\\\\\''/g"` ;;
-      esac
-      ac_sub_configure_args="$ac_sub_configure_args '$ac_arg'" ;;
-    esac
-  done
-
-  # Always prepend --prefix to ensure using the same prefix
-  # in subdir configurations.
-  ac_arg="--prefix=$prefix"
-  case $ac_arg in
-  *\'*) ac_arg=`echo "$ac_arg" | sed "s/'/'\\\\\\\\''/g"` ;;
-  esac
-  ac_sub_configure_args="'$ac_arg' $ac_sub_configure_args"
-
-  # Pass --silent
-  if test "$silent" = yes; then
-    ac_sub_configure_args="--silent $ac_sub_configure_args"
-  fi
-
-  ac_popdir=`pwd`
-  for ac_dir in : $subdirs; do test "x$ac_dir" = x: && continue
-
-    # Do not complain, so a configure script can configure whichever
-    # parts of a large source tree are present.
-    test -d "$srcdir/$ac_dir" || continue
-
-    ac_msg="=== configuring in $ac_dir (`pwd`/$ac_dir)"
-    echo "$as_me:$LINENO: $ac_msg" >&5
-    echo "$ac_msg" >&6
-    { as_dir="$ac_dir"
-  case $as_dir in #(
-  -*) as_dir=./$as_dir;;
-  esac
-  test -d "$as_dir" || { $as_mkdir_p && mkdir -p "$as_dir"; } || {
-    as_dirs=
-    while :; do
-      case $as_dir in #(
-      *\'*) as_qdir=`echo "$as_dir" | sed "s/'/'\\\\\\\\''/g"`;; #(
-      *) as_qdir=$as_dir;;
-      esac
-      as_dirs="'$as_qdir' $as_dirs"
-      as_dir=`$as_dirname -- "$as_dir" ||
-$as_expr X"$as_dir" : 'X\(.*[^/]\)//*[^/][^/]*/*$' \| \
-	 X"$as_dir" : 'X\(//\)[^/]' \| \
-	 X"$as_dir" : 'X\(//\)$' \| \
-	 X"$as_dir" : 'X\(/\)' \| . 2>/dev/null ||
-echo X"$as_dir" |
-    sed '/^X\(.*[^/]\)\/\/*[^/][^/]*\/*$/{
-	    s//\1/
-	    q
-	  }
-	  /^X\(\/\/\)[^/].*/{
-	    s//\1/
-	    q
-	  }
-	  /^X\(\/\/\)$/{
-	    s//\1/
-	    q
-	  }
-	  /^X\(\/\).*/{
-	    s//\1/
-	    q
-	  }
-	  s/.*/./; q'`
-      test -d "$as_dir" && break
-    done
-    test -z "$as_dirs" || eval "mkdir $as_dirs"
-  } || test -d "$as_dir" || { { echo "$as_me:$LINENO: error: cannot create directory $as_dir" >&5
-echo "$as_me: error: cannot create directory $as_dir" >&2;}
-   { (exit 1); exit 1; }; }; }
-    ac_builddir=.
-
-case "$ac_dir" in
-.) ac_dir_suffix= ac_top_builddir_sub=. ac_top_build_prefix= ;;
-*)
-  ac_dir_suffix=/`echo "$ac_dir" | sed 's,^\.[\\/],,'`
-  # A ".." for each directory in $ac_dir_suffix.
-  ac_top_builddir_sub=`echo "$ac_dir_suffix" | sed 's,/[^\\/]*,/..,g;s,/,,'`
-  case $ac_top_builddir_sub in
-  "") ac_top_builddir_sub=. ac_top_build_prefix= ;;
-  *)  ac_top_build_prefix=$ac_top_builddir_sub/ ;;
-  esac ;;
-esac
-ac_abs_top_builddir=$ac_pwd
-ac_abs_builddir=$ac_pwd$ac_dir_suffix
-# for backward compatibility:
-ac_top_builddir=$ac_top_build_prefix
-
-case $srcdir in
-  .)  # We are building in place.
-    ac_srcdir=.
-    ac_top_srcdir=$ac_top_builddir_sub
-    ac_abs_top_srcdir=$ac_pwd ;;
-  [\\/]* | ?:[\\/]* )  # Absolute name.
-    ac_srcdir=$srcdir$ac_dir_suffix;
-    ac_top_srcdir=$srcdir
-    ac_abs_top_srcdir=$srcdir ;;
-  *) # Relative name.
-    ac_srcdir=$ac_top_build_prefix$srcdir$ac_dir_suffix
-    ac_top_srcdir=$ac_top_build_prefix$srcdir
-    ac_abs_top_srcdir=$ac_pwd/$srcdir ;;
-esac
-ac_abs_srcdir=$ac_abs_top_srcdir$ac_dir_suffix
-
-
-    cd "$ac_dir"
-
-    # Check for guested configure; otherwise get Cygnus style configure.
-    if test -f "$ac_srcdir/configure.gnu"; then
-      ac_sub_configure=$ac_srcdir/configure.gnu
-    elif test -f "$ac_srcdir/configure"; then
-      ac_sub_configure=$ac_srcdir/configure
-    elif test -f "$ac_srcdir/configure.in"; then
-      # This should be Cygnus configure.
-      ac_sub_configure=$ac_aux_dir/configure
-    else
-      { echo "$as_me:$LINENO: WARNING: no configuration information is in $ac_dir" >&5
-echo "$as_me: WARNING: no configuration information is in $ac_dir" >&2;}
-      ac_sub_configure=
-    fi
-
-    # The recursion is here.
-    if test -n "$ac_sub_configure"; then
-      # Make the cache file name correct relative to the subdirectory.
-      case $cache_file in
-      [\\/]* | ?:[\\/]* ) ac_sub_cache_file=$cache_file ;;
-      *) # Relative name.
-	ac_sub_cache_file=$ac_top_build_prefix$cache_file ;;
-      esac
-
-      { echo "$as_me:$LINENO: running $SHELL $ac_sub_configure $ac_sub_configure_args --cache-file=$ac_sub_cache_file --srcdir=$ac_srcdir" >&5
-echo "$as_me: running $SHELL $ac_sub_configure $ac_sub_configure_args --cache-file=$ac_sub_cache_file --srcdir=$ac_srcdir" >&6;}
-      # The eval makes quoting arguments work.
-      eval "\$SHELL \"\$ac_sub_configure\" $ac_sub_configure_args \
-	   --cache-file=\"\$ac_sub_cache_file\" --srcdir=\"\$ac_srcdir\"" ||
-	{ { echo "$as_me:$LINENO: error: $ac_sub_configure failed for $ac_dir" >&5
-echo "$as_me: error: $ac_sub_configure failed for $ac_dir" >&2;}
-   { (exit 1); exit 1; }; }
-    fi
-
-    cd "$ac_popdir"
-  done
 fi
 
 
