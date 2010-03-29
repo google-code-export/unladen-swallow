@@ -7,9 +7,10 @@ set BITCODE=%4
 set BCLIBRARY_UNOPT=%5
 set BCLIBRARY=%6
 
-set CLANG="%CD%\..\Util\llvm\obj\bin\Release\clang"
-set LLVM_LINK="%CD%\..\Util\llvm\obj\bin\Release\llvm-link"
-set OPT="%CD%\..\Util\llvm\obj\bin\Release\opt"
+set LLVM_BIN="C:\LLVM\Release\bin"
+set CLANG="%LLVM_BIN%\clang"
+set LLVM_LINK="%LLVM_BIN%\llvm-link"
+set OPT="%LLVM_BIN%\opt"
 
 set CFLAGS=-I.. -I..\Include -I..\PC -D_USRDLL -DPy_BUILD_CORE -DPy_ENABLE_SHARED -DWIN32 -D_WIN32
 if "%CONFIGURATION%"=="Debug" set CFLAGS=%CFLAGS% -D_DEBUG

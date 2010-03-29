@@ -43,7 +43,7 @@
 			<Tool
 				Name="VCCLCompilerTool"
 				AdditionalOptions="/Zm200 "
-				AdditionalIncludeDirectories="..\Python;..\Modules\zlib;..;$(IntDir);..\Util\llvm\include;..\Util\llvm\obj\include"
+				AdditionalIncludeDirectories="..\Python;..\Modules\zlib;..;C:\LLVM\Release\include"
 				PreprocessorDefinitions="_USRDLL;Py_BUILD_CORE;Py_ENABLE_SHARED;WIN32;_SCL_SECURE_NO_WARNINGS"
 				ExceptionHandling="1"
 				RuntimeLibrary="2"
@@ -67,7 +67,7 @@
 				Name="VCLinkerTool"
 				AdditionalDependencies="getbuildinfo.o LLVMAnalysis.lib LLVMAsmPrinter.lib LLVMBitReader.lib LLVMCodeGen.lib LLVMCore.lib LLVMExecutionEngine.lib LLVMInstCombine.lib LLVMipa.lib LLVMipo.lib LLVMJIT.lib LLVMMC.lib LLVMScalarOpts.lib LLVMSelectionDAG.lib LLVMSupport.lib LLVMSystem.lib LLVMTarget.lib LLVMTransformUtils.lib LLVMX86AsmPrinter.lib LLVMX86CodeGen.lib LLVMX86Info.lib"
 				OutputFile="$(OutDir)\$(PyDllName).dll"
-				AdditionalLibraryDirectories="..\Util\llvm\obj\lib\Release"
+				AdditionalLibraryDirectories="C:\LLVM\Release\lib"
 				IgnoreDefaultLibraryNames="libc"
 				ProgramDatabaseFile="$(OutDir)$(PyDllName).pdb"
 				BaseAddress="0x1e000000"
@@ -121,7 +121,7 @@
 			<Tool
 				Name="VCCLCompilerTool"
 				AdditionalOptions="/Zm200 "
-				AdditionalIncludeDirectories="..\Python;..\Modules\zlib;..;$(IntDir);..\Util\llvm\include;..\Util\llvm\obj\include"
+				AdditionalIncludeDirectories="..\Python;..\Modules\zlib;..;C:\LLVM\Release64\include"
 				PreprocessorDefinitions="_USRDLL;Py_BUILD_CORE;Py_ENABLE_SHARED;WIN32;_SCL_SECURE_NO_WARNINGS"
 				ExceptionHandling="1"
 				RuntimeLibrary="2"
@@ -145,7 +145,7 @@
 				Name="VCLinkerTool"
 				AdditionalDependencies="getbuildinfo.o LLVMAnalysis.lib LLVMAsmPrinter.lib LLVMBitReader.lib LLVMCodeGen.lib LLVMCore.lib LLVMExecutionEngine.lib LLVMInstCombine.lib LLVMipa.lib LLVMipo.lib LLVMJIT.lib LLVMMC.lib LLVMScalarOpts.lib LLVMSelectionDAG.lib LLVMSupport.lib LLVMSystem.lib LLVMTarget.lib LLVMTransformUtils.lib LLVMX86AsmPrinter.lib LLVMX86CodeGen.lib LLVMX86Info.lib"
 				OutputFile="$(OutDir)\$(PyDllName).dll"
-				AdditionalLibraryDirectories="..\Util\llvm\obj-x64\lib\Release"
+				AdditionalLibraryDirectories="C:\LLVM\Release64\lib"
 				IgnoreDefaultLibraryNames="libc"
 				ProgramDatabaseFile="$(OutDir)$(PyDllName).pdb"
 				BaseAddress="0x1e000000"
@@ -202,7 +202,7 @@
 				Optimization="0"
 				InlineFunctionExpansion="0"
 				EnableIntrinsicFunctions="false"
-				AdditionalIncludeDirectories="..\Python;..\Modules\zlib;..;$(IntDir);..\Util\llvm\include;..\Util\llvm\obj\include"
+				AdditionalIncludeDirectories="..\Python;..\Modules\zlib;..;C:\LLVM\Debug\include"
 				PreprocessorDefinitions="_USRDLL;Py_BUILD_CORE;Py_ENABLE_SHARED;WIN32;_SCL_SECURE_NO_WARNINGS"
 				ExceptionHandling="1"
 				RuntimeLibrary="3"
@@ -226,7 +226,7 @@
 				Name="VCLinkerTool"
 				AdditionalDependencies="getbuildinfo.o LLVMAnalysis.lib LLVMAsmPrinter.lib LLVMBitReader.lib LLVMCodeGen.lib LLVMCore.lib LLVMExecutionEngine.lib LLVMInstCombine.lib LLVMipa.lib LLVMipo.lib LLVMJIT.lib LLVMMC.lib LLVMScalarOpts.lib LLVMSelectionDAG.lib LLVMSupport.lib LLVMSystem.lib LLVMTarget.lib LLVMTransformUtils.lib LLVMX86AsmPrinter.lib LLVMX86CodeGen.lib LLVMX86Info.lib"
 				OutputFile="$(OutDir)\$(PyDllName)_d.dll"
-				AdditionalLibraryDirectories="..\Util\llvm\obj\lib\Debug"
+				AdditionalLibraryDirectories="C:\LLVM\Debug\lib"
 				IgnoreDefaultLibraryNames="libc"
 				ProgramDatabaseFile="$(OutDir)$(PyDllName)_d.pdb"
 				BaseAddress="0x1e000000"
@@ -283,7 +283,7 @@
 				Optimization="0"
 				InlineFunctionExpansion="0"
 				EnableIntrinsicFunctions="false"
-				AdditionalIncludeDirectories="..\Python;..\Modules\zlib;..;$(IntDir);..\Util\llvm\include;..\Util\llvm\obj\include"
+				AdditionalIncludeDirectories="..\Python;..\Modules\zlib;..;C:\LLVM\Debug64\include"
 				PreprocessorDefinitions="_USRDLL;Py_BUILD_CORE;Py_ENABLE_SHARED;WIN32;_SCL_SECURE_NO_WARNINGS"
 				ExceptionHandling="1"
 				RuntimeLibrary="3"
@@ -307,7 +307,7 @@
 				Name="VCLinkerTool"
 				AdditionalDependencies="getbuildinfo.o LLVMAnalysis.lib LLVMAsmPrinter.lib LLVMBitReader.lib LLVMCodeGen.lib LLVMCore.lib LLVMExecutionEngine.lib LLVMInstCombine.lib LLVMipa.lib LLVMipo.lib LLVMJIT.lib LLVMMC.lib LLVMScalarOpts.lib LLVMSelectionDAG.lib LLVMSupport.lib LLVMSystem.lib LLVMTarget.lib LLVMTransformUtils.lib LLVMX86AsmPrinter.lib LLVMX86CodeGen.lib LLVMX86Info.lib"
 				OutputFile="$(OutDir)\$(PyDllName)_d.dll"
-				AdditionalLibraryDirectories="..\Util\llvm\obj-x64\lib\Debug"
+				AdditionalLibraryDirectories="C:\LLVM\Debug64\lib"
 				IgnoreDefaultLibraryNames="libc"
 				ProgramDatabaseFile="$(OutDir)$(PyDllName)_d.pdb"
 				BaseAddress="0x1e000000"
@@ -360,7 +360,7 @@
 			<Tool
 				Name="VCCLCompilerTool"
 				AdditionalOptions="/Zm200 "
-				AdditionalIncludeDirectories="..\Python;..\Modules\zlib;..;$(IntDir);..\Util\llvm\include;..\Util\llvm\obj\include"
+				AdditionalIncludeDirectories="..\Python;..\Modules\zlib;..;C:\LLVM\Release\include"
 				PreprocessorDefinitions="_USRDLL;Py_BUILD_CORE;Py_ENABLE_SHARED;WIN32;_SCL_SECURE_NO_WARNINGS"
 				ExceptionHandling="1"
 				RuntimeLibrary="2"
@@ -384,7 +384,7 @@
 				Name="VCLinkerTool"
 				AdditionalDependencies="getbuildinfo.o LLVMAnalysis.lib LLVMAsmPrinter.lib LLVMBitReader.lib LLVMCodeGen.lib LLVMCore.lib LLVMExecutionEngine.lib LLVMInstCombine.lib LLVMipa.lib LLVMipo.lib LLVMJIT.lib LLVMMC.lib LLVMScalarOpts.lib LLVMSelectionDAG.lib LLVMSupport.lib LLVMSystem.lib LLVMTarget.lib LLVMTransformUtils.lib LLVMX86AsmPrinter.lib LLVMX86CodeGen.lib LLVMX86Info.lib"
 				OutputFile="$(OutDir)\$(PyDllName).dll"
-				AdditionalLibraryDirectories="..\Util\llvm\obj\lib\Release"
+				AdditionalLibraryDirectories="C:\LLVM\Release\lib"
 				IgnoreDefaultLibraryNames="libc"
 				ProgramDatabaseFile="$(OutDir)$(PyDllName).pdb"
 				BaseAddress="0x1e000000"
@@ -438,7 +438,7 @@
 			<Tool
 				Name="VCCLCompilerTool"
 				AdditionalOptions="/Zm200 "
-				AdditionalIncludeDirectories="..\Python;..\Modules\zlib;..;$(IntDir);..\Util\llvm\include;..\Util\llvm\obj\include"
+				AdditionalIncludeDirectories="..\Python;..\Modules\zlib;..;C:\LLVM\Release64\include"
 				PreprocessorDefinitions="_USRDLL;Py_BUILD_CORE;Py_ENABLE_SHARED;WIN32;_SCL_SECURE_NO_WARNINGS"
 				ExceptionHandling="1"
 				RuntimeLibrary="2"
@@ -462,7 +462,7 @@
 				Name="VCLinkerTool"
 				AdditionalDependencies="getbuildinfo.o LLVMAnalysis.lib LLVMAsmPrinter.lib LLVMBitReader.lib LLVMCodeGen.lib LLVMCore.lib LLVMExecutionEngine.lib LLVMInstCombine.lib LLVMipa.lib LLVMipo.lib LLVMJIT.lib LLVMMC.lib LLVMScalarOpts.lib LLVMSelectionDAG.lib LLVMSupport.lib LLVMSystem.lib LLVMTarget.lib LLVMTransformUtils.lib LLVMX86AsmPrinter.lib LLVMX86CodeGen.lib LLVMX86Info.lib"
 				OutputFile="$(OutDir)\$(PyDllName).dll"
-				AdditionalLibraryDirectories="..\Util\llvm\obj-x64\lib\Release"
+				AdditionalLibraryDirectories="C:\LLVM\Release64\lib"
 				IgnoreDefaultLibraryNames="libc"
 				ProgramDatabaseFile="$(OutDir)$(PyDllName).pdb"
 				BaseAddress="0x1e000000"
@@ -516,7 +516,7 @@
 			<Tool
 				Name="VCCLCompilerTool"
 				AdditionalOptions="/Zm200 "
-				AdditionalIncludeDirectories="..\Python;..\Modules\zlib;..;$(IntDir);..\Util\llvm\include;..\Util\llvm\obj\include"
+				AdditionalIncludeDirectories="..\Python;..\Modules\zlib;..;C:\LLVM\Release\include"
 				PreprocessorDefinitions="_USRDLL;Py_BUILD_CORE;Py_ENABLE_SHARED;WIN32;_SCL_SECURE_NO_WARNINGS"
 				ExceptionHandling="1"
 				RuntimeLibrary="2"
@@ -540,7 +540,7 @@
 				Name="VCLinkerTool"
 				AdditionalDependencies="getbuildinfo.o LLVMAnalysis.lib LLVMAsmPrinter.lib LLVMBitReader.lib LLVMCodeGen.lib LLVMCore.lib LLVMExecutionEngine.lib LLVMInstCombine.lib LLVMipa.lib LLVMipo.lib LLVMJIT.lib LLVMMC.lib LLVMScalarOpts.lib LLVMSelectionDAG.lib LLVMSupport.lib LLVMSystem.lib LLVMTarget.lib LLVMTransformUtils.lib LLVMX86AsmPrinter.lib LLVMX86CodeGen.lib LLVMX86Info.lib"
 				OutputFile="$(OutDir)\$(PyDllName).dll"
-				AdditionalLibraryDirectories="..\Util\llvm\obj\lib\Release"
+				AdditionalLibraryDirectories="C:\LLVM\Release\lib"
 				IgnoreDefaultLibraryNames="libc"
 				ProgramDatabaseFile="$(OutDir)$(PyDllName).pdb"
 				BaseAddress="0x1e000000"
@@ -594,7 +594,7 @@
 			<Tool
 				Name="VCCLCompilerTool"
 				AdditionalOptions="/Zm200 "
-				AdditionalIncludeDirectories="..\Python;..\Modules\zlib;..;$(IntDir);..\Util\llvm\include;..\Util\llvm\obj\include"
+				AdditionalIncludeDirectories="..\Python;..\Modules\zlib;..;C:\LLVM\Release64\include"
 				PreprocessorDefinitions="_USRDLL;Py_BUILD_CORE;Py_ENABLE_SHARED;WIN32;_SCL_SECURE_NO_WARNINGS"
 				ExceptionHandling="1"
 				RuntimeLibrary="2"
@@ -618,7 +618,7 @@
 				Name="VCLinkerTool"
 				AdditionalDependencies="getbuildinfo.o LLVMAnalysis.lib LLVMAsmPrinter.lib LLVMBitReader.lib LLVMCodeGen.lib LLVMCore.lib LLVMExecutionEngine.lib LLVMInstCombine.lib LLVMipa.lib LLVMipo.lib LLVMJIT.lib LLVMMC.lib LLVMScalarOpts.lib LLVMSelectionDAG.lib LLVMSupport.lib LLVMSystem.lib LLVMTarget.lib LLVMTransformUtils.lib LLVMX86AsmPrinter.lib LLVMX86CodeGen.lib LLVMX86Info.lib"
 				OutputFile="$(OutDir)\$(PyDllName).dll"
-				AdditionalLibraryDirectories="..\Util\llvm\obj-x64\lib\Release"
+				AdditionalLibraryDirectories="C:\LLVM\Release64\lib"
 				IgnoreDefaultLibraryNames="libc"
 				ProgramDatabaseFile="$(OutDir)$(PyDllName).pdb"
 				BaseAddress="0x1e000000"
@@ -1994,6 +1994,14 @@
 			</File>
 			<File
 				RelativePath="..\Util\PyBytecodeIterator.h"
+				>
+			</File>
+			<File
+				RelativePath="..\Util\PySmallPtrSet.cc"
+				>
+			</File>
+			<File
+				RelativePath="..\Util\PySmallPtrSet.h"
 				>
 			</File>
 			<File
