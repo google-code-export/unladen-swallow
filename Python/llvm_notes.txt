@@ -475,3 +475,43 @@ Relevant files:
   functions.
 - Python/llvm_fbuilder.{h,cc}: special-casing for this kind of inlining during
   bytecode-to-LLVM IR compilation.
+
+
+Optimization: LLVM Metadata based type annotations
+--------------------------------------------------
+
+With Type-based Alias Analysis it's possible to generate extensive optimization
+opportunities. To access these, we implement three passes, which handle LLVM
+Metadata information.
+
+PyTypeMarkingPass:
+    This pass adds Metadata to certain function calls, which generate PyObjects
+    of a known subtype. This often occurs in Python/llvm_inline_functions.c,
+    where function calls like "PyInt_FromLong" are exposed to the JIT.
+    While the inliner does copy metadata, it would be more work to add Metadata
+    to the code loaded from a BC file.
+    Example:
+        PyInt_FromLong -> PyIntObject
+	PyFloat_FromDouble -> PyFloatObject
+
+PyTBAliasAnalysis:
+    Adds Type-based Alias Analysis to the Unladen Swallow optimization suite.
+    This analysis helps differentiating between Python stack traffic and
+    IncRef/DecRef.
+
+PyTypeGuardRemovalPass:
+    Removes type guards, which can be proven always true because
+    of type annotations. This currently works for intermediate values in
+    expressions optimized by binary operator inlining.
+    This does not work over stack push/pop so these have to be removed first
+    by other optimizations (GVN and SCCP).
+
+Future work:
+    - Add type annotations based on successfully passed type guards.
+    - Use precalculated stack positions to free the Alias Analysis from
+      removing stack traffic. This would allow us to run the guard removal
+      pass earlier during the optimizations.
+
+Relevant files:
+- Python/llvm_fbuilder.cc: Add Metadata to certain instructions.
+- Utils/PyTBAliasAnalysis.{h,cc}: Various passes to deal with type annotations.

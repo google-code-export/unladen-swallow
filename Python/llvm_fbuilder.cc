@@ -464,6 +464,7 @@ LlvmFunctionBuilder::LlvmFunctionBuilder(
     this->stack_bottom_ = this->builder_.CreateLoad(
         FrameTy::f_valuestack(this->builder_, this->frame_),
         "stack_bottom");
+    this->llvm_data_->tbaa_stack.MarkInstruction(this->stack_bottom_);
     if (this->is_generator_) {
         // When we're re-entering a generator, we have to copy the stack
         // pointer, block stack and locals from the frame.
@@ -534,6 +535,7 @@ LlvmFunctionBuilder::LlvmFunctionBuilder(
     // The next GEP-magic assigns &frame_[0].f_localsplus[0] to
     // this->fastlocals_.
     Value *localsplus = FrameTy::f_localsplus(this->builder_, this->frame_);
+    this->llvm_data_->tbaa_locals.MarkInstruction(localsplus);
     this->fastlocals_ = this->builder_.CreateStructGEP(
         localsplus, 0, "fastlocals");
     Value *nlocals = ConstantInt::get(PyTypeBuilder<int>::get(this->context_),
@@ -1050,6 +1052,8 @@ LlvmFunctionBuilder::PopAndDecrefTo(Value *target_stack_pointer)
 
     this->FallThroughTo(pop_loop);
     Value *stack_pointer = this->builder_.CreateLoad(this->stack_pointer_addr_);
+    this->llvm_data_->tbaa_stack.MarkInstruction(stack_pointer);
+
     Value *finished_popping = this->builder_.CreateICmpULE(
         stack_pointer, target_stack_pointer);
     this->builder_.CreateCondBr(finished_popping, pop_done, pop_block);
@@ -1162,6 +1166,8 @@ LlvmFunctionBuilder::CopyLocalsFromFrameObject()
     Value *locals =
         this->builder_.CreateStructGEP(
                  FrameTy::f_localsplus(this->builder_, this->frame_), 0);
+    this->llvm_data_->tbaa_locals.MarkInstruction(locals);
+
     Value *null = this->GetNull<PyObject*>();
 
     // Figure out how many total parameters we have.
@@ -2267,6 +2273,8 @@ LlvmFunctionBuilder::CALL_FUNCTION_fast(int oparg,
 #endif
     // Retrieve the function to call from the Python stack.
     Value *stack_pointer = this->builder_.CreateLoad(this->stack_pointer_addr_);
+    this->llvm_data_->tbaa_stack.MarkInstruction(stack_pointer);
+
     Value *actual_func = this->builder_.CreateLoad(
         this->builder_.CreateGEP(
             stack_pointer,
@@ -2429,6 +2437,8 @@ LlvmFunctionBuilder::CALL_FUNCTION_safe(int oparg)
     this->LogTscEvent(CALL_START_LLVM);
 #endif
     Value *stack_pointer = this->builder_.CreateLoad(this->stack_pointer_addr_);
+    this->llvm_data_->tbaa_stack.MarkInstruction(stack_pointer);
+
     int num_args = oparg & 0xff;
     int num_kwargs = (oparg>>8) & 0xff;
     Function *call_function = this->GetGlobalFunction<
@@ -2473,6 +2483,8 @@ LlvmFunctionBuilder::CallVarKwFunction(int oparg, int call_flag)
     this->LogTscEvent(CALL_START_LLVM);
 #endif
     Value *stack_pointer = this->builder_.CreateLoad(this->stack_pointer_addr_);
+    this->llvm_data_->tbaa_stack.MarkInstruction(stack_pointer);
+
     int num_args = oparg & 0xff;
     int num_kwargs = (oparg>>8) & 0xff;
     Function *call_function = this->GetGlobalFunction<
@@ -4236,6 +4248,8 @@ LlvmFunctionBuilder::UNPACK_SEQUENCE(int size)
         this->builder_.CreateLoad(this->stack_pointer_addr_),
         ConstantInt::getSigned(PyTypeBuilder<Py_ssize_t>::get(this->context_),
                                size));
+    this->llvm_data_->tbaa_stack.MarkInstruction(new_stack_pointer);
+
     Value *result = this->CreateCall(
         unpack_iterable, iterable,
         ConstantInt::get(PyTypeBuilder<int>::get(this->context_), size, true),
@@ -4279,9 +4293,13 @@ void
 LlvmFunctionBuilder::Push(Value *value)
 {
     Value *stack_pointer = this->builder_.CreateLoad(this->stack_pointer_addr_);
+    this->llvm_data_->tbaa_stack.MarkInstruction(stack_pointer);
+
     this->builder_.CreateStore(value, stack_pointer);
     Value *new_stack_pointer = this->builder_.CreateGEP(
         stack_pointer, ConstantInt::get(Type::getInt32Ty(this->context_), 1));
+    this->llvm_data_->tbaa_stack.MarkInstruction(stack_pointer);
+
     this->builder_.CreateStore(new_stack_pointer, this->stack_pointer_addr_);
 }
 
@@ -4289,9 +4307,13 @@ Value *
 LlvmFunctionBuilder::Pop()
 {
     Value *stack_pointer = this->builder_.CreateLoad(this->stack_pointer_addr_);
+    this->llvm_data_->tbaa_stack.MarkInstruction(stack_pointer);
+
     Value *new_stack_pointer = this->builder_.CreateGEP(
         stack_pointer, ConstantInt::getSigned(Type::getInt32Ty(this->context_),
                                               -1));
+    this->llvm_data_->tbaa_stack.MarkInstruction(new_stack_pointer);
+
     Value *former_top = this->builder_.CreateLoad(new_stack_pointer);
     this->builder_.CreateStore(new_stack_pointer, this->stack_pointer_addr_);
     return former_top;
@@ -4317,6 +4339,7 @@ LlvmFunctionBuilder::SetLocal(int locals_index, llvm::Value *new_value)
     Value *frame_local_slot = this->builder_.CreateGEP(
         this->fastlocals_, ConstantInt::get(Type::getInt32Ty(this->context_),
                                             locals_index));
+    this->llvm_data_->tbaa_locals.MarkInstruction(frame_local_slot);
     this->builder_.CreateStore(new_value, frame_local_slot);
 
     Value *llvm_local_slot = this->locals_[locals_index];

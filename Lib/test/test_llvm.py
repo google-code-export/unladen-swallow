@@ -4134,6 +4134,31 @@ class InliningTests(LlvmTestCase, ExtraAssertsTestCase):
         foo.__code__.co_optimization = 2
         self.assertNotContains("@_PyLlvm_WrapDecref", str(foo.__code__.co_llvm))
 
+class TypeBasedAnalysisTests(LlvmTestCase, ExtraAssertsTestCase):
+
+    def test_tbaa_metadata(self):
+        foo = compile_for_llvm("foo", "def foo(a,b,c): return a+b+c",
+                               optimization_level=None)
+
+        spin_until_hot(foo, [1, 2, 3])
+        self.assertContains("!PyTBAA", str(foo.__code__.co_llvm))
+
+        foo = compile_for_llvm("foo", "def foo(a,b,c): return a+b+c",
+                               optimization_level=None)
+
+        spin_until_hot(foo, [1.0, 2.0, 3.0])
+        self.assertContains("!PyTBAA", str(foo.__code__.co_llvm))
+
+    def test_guard_removal(self):
+        foo = compile_for_llvm("foo", "def foo(a,b,c): return a+b+c",
+                               optimization_level=None)
+
+        spin_until_hot(foo, [1, 2, 3])
+        # The type guard from the intermediate value should be removed,
+        # leaving 3 type checks in place.
+        # This currently breaks in debug builds, so skip the test.
+        if not hasattr(sys, "gettotalrefcount"):
+            self.assertEqual(str(foo.__code__.co_llvm).count("PyInt_Type"), 3)
 
 class LlvmRebindBuiltinsTests(test_dynamic.RebindBuiltinsTests):
 
@@ -4217,7 +4242,8 @@ def test_main():
     else:
         tests = [LoopExceptionInteractionTests, GeneralCompilationTests,
                  OperatorTests, LiteralsTests, BailoutTests, InliningTests,
-                 LlvmRebindBuiltinsTests, OptimizationTests, SetJitControlTests]
+                 LlvmRebindBuiltinsTests, OptimizationTests,
+                 SetJitControlTests, TypeBasedAnalysisTests]
     if sys.flags.optimize >= 1:
         print >>sys.stderr, "test_llvm -- skipping some tests due to -O flag."
         sys.stderr.flush()

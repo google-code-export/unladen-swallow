@@ -1,4 +1,5 @@
 #include "Util/PyAliasAnalysis.h"
+#include "Util/PyTBAliasAnalysis.h"
 
 #include "Python.h"
 #include "Python/global_llvm_data.h"
@@ -23,6 +24,7 @@ using llvm::FunctionPassManager;
 using llvm::GlobalValue;
 using llvm::GlobalVariable;
 using llvm::IRBuilder;
+using llvm::Instruction;
 using llvm::Pass;
 using llvm::Value;
 using llvm::cast;
@@ -264,6 +266,59 @@ TEST_F(AliasAnalysisTest, MutableType)
     EXPECT_TRUE(aa->pointsToConstantMemory(type_type))
         << "You can't change a (simple) type's type.";
     EXPECT_FALSE(aa->pointsToConstantMemory(type_repr));
+}
+
+TEST_F(AliasAnalysisTest, TBAliasAnalysis)
+{
+    // Unmarked PyObject*. Should be considered as marked with PyObject
+    // automatically by the analysis.
+    Value *pyobject_alloca = this->builder_.CreateAlloca(
+            PyTypeBuilder<PyObject*>::get(this->global_data_.context()));
+    Value *pyobject = this->builder_.CreateLoad(pyobject_alloca);
+
+    // Unmarked other pointer
+    Value *intptr_alloca = this->builder_.CreateAlloca(
+            PyTypeBuilder<int*>::get(this->global_data_.context()));
+    Value *intptr = this->builder_.CreateLoad(intptr_alloca);
+
+    // Marked #stack pointer
+    Value *stack_alloca = this->builder_.CreateAlloca(
+            PyTypeBuilder<PyObject**>::get(this->global_data_.context()));
+    Instruction *stack = this->builder_.CreateLoad(pyobject_alloca);
+    this->global_data_.tbaa_stack.MarkInstruction(stack);
+
+    // Marked PyObject*. This emulates the pointer having the subtype
+    // PyIntObject.
+    Value *pyintobject_alloca = this->builder_.CreateAlloca(
+            PyTypeBuilder<PyObject*>::get(this->global_data_.context()));
+    Instruction *pyintobject = this->builder_.CreateLoad(pyintobject_alloca);
+    this->global_data_.tbaa_PyIntObject.MarkInstruction(pyintobject);
+
+    // Marked PyObject* with GEP. This emulates the pointer having the subtype
+    // PyFloatObject hidden by a GEP instruction.
+    Value *pyfloatobject_alloca = this->builder_.CreateAlloca(
+            PyTypeBuilder<PyObject*>::get(this->global_data_.context()));
+    Instruction *pyfloatobject =
+        this->builder_.CreateLoad(pyfloatobject_alloca);
+    this->global_data_.tbaa_PyFloatObject.MarkInstruction(pyfloatobject);
+    Value *pyfloatobject_gep = this->builder_.CreateGEP(pyfloatobject,
+            llvm::ConstantInt::get(llvm::Type::getInt32Ty(
+                this->global_data_.context()), 0));
+
+    this->builder_.CreateRetVoid();
+
+    Pass *pass = CreatePyTBAliasAnalysis(this->global_data_);
+    AliasAnalysis *aa = static_cast<AliasAnalysis*>(
+        pass->getAdjustedAnalysisPointer(
+            Pass::getClassPassInfo<AliasAnalysis>()));
+    this->fpm_.add(pass);
+    this->fpm_.run(*this->function_);
+
+    EXPECT_EQ(AliasAnalysis::MayAlias, aa->alias(pyobject, 0, intptr, 0));
+    EXPECT_EQ(AliasAnalysis::NoAlias, aa->alias(pyobject, 0, stack, 0));
+    EXPECT_EQ(AliasAnalysis::MayAlias, aa->alias(pyobject, 0, pyintobject, 0));
+    EXPECT_EQ(AliasAnalysis::NoAlias,
+              aa->alias(pyintobject, 0, pyfloatobject_gep, 0));
 }
 
 }  // namespace

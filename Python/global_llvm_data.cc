@@ -7,6 +7,7 @@
 #include "Util/ConstantMirror.h"
 #include "Util/DeadGlobalElim.h"
 #include "Util/PyAliasAnalysis.h"
+#include "Util/PyTBAliasAnalysis.h"
 #include "Util/SingleFunctionInliner.h"
 #include "Util/Stats.h"
 #include "_llvmfunctionobject.h"
@@ -33,6 +34,8 @@
 #include "llvm/Transforms/Scalar.h"
 
 using llvm::FunctionPassManager;
+using llvm::MDNode;
+using llvm::MDString;
 using llvm::Module;
 using llvm::StringRef;
 
@@ -143,6 +146,8 @@ PyGlobalLlvmData::PyGlobalLlvmData()
 
     this->InstallInitialModule();
 
+    this->InitializeTBAA();
+
     this->InitializeOptimizations();
     this->gc_.add(PyCreateDeadGlobalElimPass(&this->bitcode_gvs_));
 }
@@ -200,20 +205,80 @@ PyGlobalLlvmData::InitializeOptimizations()
     O2->add(new llvm::TargetData(*engine_->getTargetData()));
     O2->add(llvm::createCFGSimplificationPass());
     O2->add(PyCreateSingleFunctionInliningPass());
+    O2->add(CreatePyTypeMarkingPass(*this));
     O2->add(llvm::createJumpThreadingPass());
     O2->add(llvm::createPromoteMemoryToRegisterPass());
     O2->add(llvm::createInstructionCombiningPass());
     O2->add(llvm::createCFGSimplificationPass());
     O2->add(llvm::createScalarReplAggregatesPass());
-    O2->add(CreatePyAliasAnalysis(*this));
+    this->AddPythonAliasAnalyses(O2);
     O2->add(llvm::createLICMPass());
     O2->add(llvm::createJumpThreadingPass());
-    O2->add(CreatePyAliasAnalysis(*this));
+    this->AddPythonAliasAnalyses(O2);
     O2->add(llvm::createGVNPass());
     O2->add(llvm::createSCCPPass());
+    // TypeGuardRemovale only works when most of the stack traffic is removed.
+    // LLVM does this for us, but relatively late in the optimization stack.
+    // This can be moved to an earlier position after switching to a register-
+    // machine-based IR generation.
+    O2->add(CreatePyTypeGuardRemovalPass(*this));
     O2->add(llvm::createAggressiveDCEPass());
     O2->add(llvm::createCFGSimplificationPass());
     O2->add(llvm::createVerifierPass());
+}
+
+void
+PyGlobalLlvmData::AddPythonAliasAnalyses(llvm::FunctionPassManager *mngr)
+{
+    mngr->add(CreatePyTBAliasAnalysis(*this));
+    mngr->add(CreatePyAliasAnalysis(*this));
+}
+
+bool
+PyGlobalLlvmData::IsTBAASubtype(llvm::MDNode *p, llvm::MDNode *c) const
+{
+    TBAAInheritanceMap::const_iterator iter = this->tbaa_inheritance_.find(p);
+
+    if (iter == this->tbaa_inheritance_.end())
+        return false;
+
+    return iter->second.count(c) > 0;
+}
+
+void
+PyGlobalLlvmData::AddTBAAInherits(PyTBAAType &p, PyTBAAType &c)
+{
+    this->tbaa_inheritance_[p.type()].insert(c.type());
+}
+
+void
+PyGlobalLlvmData::InitializeTBAA()
+{
+    // We have to generate a MDNode for every type we want the AliasAnalysis
+    // to know about. These are wrapped and identified by a PyTBAAType object.
+    // Instructions must be marked with a MDNode generated here.
+    // Pointers to PyObject* are marked automatically.
+    tbaa_stack = PyTBAAType(context(), "#stack");
+    tbaa_locals = PyTBAAType(context(), "#locals");
+    tbaa_PyObject = PyTBAAType(context(), "PyObject");
+    tbaa_PyIntObject = PyTBAAType(context(), "PyIntObject");
+    tbaa_PyFloatObject = PyTBAAType(context(), "PyFloatObject");
+    tbaa_PyStringObject = PyTBAAType(context(), "PyStringObject");
+    tbaa_PyUnicodeObject = PyTBAAType(context(), "PyUnicodeObject");
+    tbaa_PyListObject = PyTBAAType(context(), "PyListObject");
+    tbaa_PyTupleObject = PyTBAAType(context(), "PyTupleObject");
+
+    // Add one entry for every superclass
+    // e.g.: A->B->C => (A,C), (A,B) and (B,C)
+    // Does not support multiple inheritance
+    // The Alias Analysis needs to know about the inheritance between objects
+    // e.g.: A may alias B and C
+    AddTBAAInherits(tbaa_PyObject, tbaa_PyIntObject);
+    AddTBAAInherits(tbaa_PyObject, tbaa_PyFloatObject);
+    AddTBAAInherits(tbaa_PyObject, tbaa_PyStringObject);
+    AddTBAAInherits(tbaa_PyObject, tbaa_PyUnicodeObject);
+    AddTBAAInherits(tbaa_PyObject, tbaa_PyListObject);
+    AddTBAAInherits(tbaa_PyObject, tbaa_PyTupleObject);
 }
 
 PyGlobalLlvmData::~PyGlobalLlvmData()

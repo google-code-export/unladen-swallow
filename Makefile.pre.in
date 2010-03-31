@@ -332,6 +332,7 @@ ifneq ($(WITH_LLVM), 0)
 		Util/PyAliasAnalysis.o \
 		Util/PyBytecodeIterator.o \
 		Util/PySmallPtrSet.o \
+		Util/PyTBAliasAnalysis.o \
 		Util/PyTypeBuilder.o \
 		Util/RuntimeFeedback.o \
 		Util/SingleFunctionInliner.o \
@@ -730,6 +731,7 @@ PYTHON_HEADERS= \
 		Util/PyBytecodeIterator.h \
 		Util/PySmallPtrSet.h \
 		Util/PyTypeBuilder.h \
+		Util/PyTBAliasAnalysis.h \
 		Util/RuntimeFeedback.h \
 		Util/RuntimeFeedback_fwd.h \
 		Util/SingleFunctionInliner.h \

@@ -13,11 +13,15 @@
 #include "Python/global_llvm_data_fwd.h"
 
 #include "llvm/LLVMContext.h"
+#include "llvm/Metadata.h"
 #include "llvm/PassManager.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/OwningPtr.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/ValueMap.h"
 #include "llvm/Support/ValueHandle.h"
+#include "llvm/Instruction.h"
 
 #include <string>
 
@@ -26,11 +30,37 @@ class DIFactory;
 class ExecutionEngine;
 class GlobalValue;
 class GlobalVariable;
+class MDNode;
 class Module;
 class Value;
 }
 
 class PyConstantMirror;
+
+class PyTBAAType {
+    unsigned pytbaa_kind_;
+    llvm::TrackingVH<llvm::MDNode> type_metadata_;
+
+public:
+    PyTBAAType(llvm::LLVMContext &context, llvm::StringRef name) {
+        pytbaa_kind_ = context.getMDKindID("PyTBAA");
+        llvm::Value *tbaa_type_string = llvm::MDString::get(context, name);
+        type_metadata_ = llvm::MDNode::get(context, &tbaa_type_string, 1);
+    }
+
+    PyTBAAType() : pytbaa_kind_(), type_metadata_() {}
+
+    void MarkInstruction(llvm::Value *value) const {
+        if (llvm::Instruction *instruction = 
+            llvm::dyn_cast<llvm::Instruction>(value)) {
+            instruction->setMetadata(pytbaa_kind_, type_metadata_);
+        }
+    }
+
+    const llvm::TrackingVH<llvm::MDNode> &type() const {
+        return type_metadata_;
+    }
+};
 
 struct PyGlobalLlvmData {
 public:
@@ -54,9 +84,12 @@ public:
     // contexts later.
     llvm::LLVMContext &context() const { return llvm::getGlobalContext(); }
 
-    llvm::Module *module() { return this->module_; }
+    llvm::Module *module() const { return this->module_; }
 
-    PyConstantMirror &constant_mirror() { return *this->constant_mirror_; }
+    PyConstantMirror &constant_mirror() const 
+    { 
+        return *this->constant_mirror_; 
+    }
 
     /// Can be used to add debug info to LLVM functions.
     llvm::DIFactory &DebugInfo() { return *this->debug_info_; }
@@ -81,6 +114,28 @@ public:
     // value, only one global constant will be created in the Module.
     llvm::Value *GetGlobalStringPtr(const std::string &value);
 
+    // Used to store type inheritance for TBAA by mapping types to all
+    // possible subtypes.
+    typedef llvm::ValueMap<llvm::MDNode *,
+                llvm::SmallSet<
+                    llvm::TrackingVH<llvm::MDNode>, 4> > TBAAInheritanceMap;
+
+    unsigned GetTBAAKind() {
+        return context().getMDKindID("PyTBAA");
+    }
+
+    bool IsTBAASubtype(llvm::MDNode *p, llvm::MDNode *c) const;
+
+    PyTBAAType tbaa_stack;
+    PyTBAAType tbaa_locals;
+    PyTBAAType tbaa_PyObject;
+    PyTBAAType tbaa_PyIntObject;
+    PyTBAAType tbaa_PyFloatObject;
+    PyTBAAType tbaa_PyStringObject;
+    PyTBAAType tbaa_PyUnicodeObject;
+    PyTBAAType tbaa_PyListObject;
+    PyTBAAType tbaa_PyTupleObject;
+
 private:
     // We use Clang to compile a number of C functions to LLVM IR. Install
     // those functions and set up any special calling conventions or attributes
@@ -88,6 +143,12 @@ private:
     void InstallInitialModule();
 
     void InitializeOptimizations();
+
+    void InitializeTBAA();
+
+    void AddTBAAInherits(PyTBAAType &p, PyTBAAType &c);
+
+    void AddPythonAliasAnalyses(llvm::FunctionPassManager *mngr);
 
     // We have a single global module that holds all compiled code.
     // Any cached global object that function definitions use will be
@@ -110,6 +171,15 @@ private:
     llvm::OwningPtr<PyConstantMirror> constant_mirror_;
 
     unsigned num_globals_after_last_gc_;
+
+    // The MetadataKind we register our type information with
+    unsigned tbaa_metadata_kind_;
+
+    // All Metadata for TBAA types
+    llvm::StringMap<llvm::MDNode *> tbaa_types_;
+
+    // Metadata for TBAA inheritance
+    TBAAInheritanceMap tbaa_inheritance_;
 };
 #endif  /* WITH_LLVM */
 
