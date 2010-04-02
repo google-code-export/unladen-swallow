@@ -11,7 +11,7 @@
 #include "frameobject.h"
 #include "longintrepr.h"
 
-#include "Python/global_llvm_data.h"
+#include "JIT/global_llvm_data.h"
 
 #include "llvm/Module.h"
 #include "llvm/Support/IRBuilder.h"

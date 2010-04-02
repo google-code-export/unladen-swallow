@@ -8,7 +8,7 @@
 
 #include "Python.h"
 
-#include "Util/PyTypeBuilder.h"
+#include "JIT/PyTypeBuilder.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/StringRef.h"

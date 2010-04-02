@@ -6,9 +6,9 @@
 #error This header expects to be included only in C++ source
 #endif
 
+#include "JIT/PyTypeBuilder.h"
+#include "JIT/RuntimeFeedback.h"
 #include "Util/EventTimer.h"
-#include "Util/PyTypeBuilder.h"
-#include "Util/RuntimeFeedback.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SparseBitVector.h"
 #include "llvm/ADT/Twine.h"
@@ -333,7 +333,7 @@ private:
     // Returns a global variable that represents 'obj'.  These get
     // cached in the ExecutionEngine's global mapping table, and they
     // incref the object so its address doesn't get re-used while the
-    // GlobalVariable is still alive.  See Util/ConstantMirror.h for
+    // GlobalVariable is still alive.  See JIT/ConstantMirror.h for
     // more details.  Use this in preference to GetGlobalVariable()
     // for PyObjects that may be immutable.
     llvm::Constant *GetGlobalVariableFor(PyObject *obj);

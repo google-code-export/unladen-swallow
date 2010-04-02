@@ -1,15 +1,14 @@
-#include "Python/llvm_fbuilder.h"
+#include "JIT/llvm_fbuilder.h"
 
 #include "Python.h"
 #include "code.h"
 #include "opcode.h"
 #include "frameobject.h"
 
-#include "Python/global_llvm_data.h"
-
-#include "Util/ConstantMirror.h"
+#include "JIT/ConstantMirror.h"
+#include "JIT/global_llvm_data.h"
+#include "JIT/PyTypeBuilder.h"
 #include "Util/EventTimer.h"
-#include "Util/PyTypeBuilder.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"

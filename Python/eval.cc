@@ -17,20 +17,20 @@
 #include "code.h"
 #include "frameobject.h"
 #include "eval.h"
-#include "llvm_compile.h"
 #include "opcode.h"
 #include "structmember.h"
 
+#include "JIT/llvm_compile.h"
 #include "Util/EventTimer.h"
 #include <ctype.h>
 
 #ifdef WITH_LLVM
-#include "global_llvm_data.h"
 #include "_llvmfunctionobject.h"
 #include "llvm/Function.h"
 #include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/raw_ostream.h"
-#include "Util/RuntimeFeedback.h"
+#include "JIT/global_llvm_data.h"
+#include "JIT/RuntimeFeedback.h"
 #include "Util/Stats.h"
 
 #include <set>

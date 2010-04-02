@@ -1,10 +1,10 @@
-#include "Util/PyAliasAnalysis.h"
-#include "Util/PyTBAliasAnalysis.h"
+#include "JIT/PyAliasAnalysis.h"
+#include "JIT/PyTBAliasAnalysis.h"
 
 #include "Python.h"
-#include "Python/global_llvm_data.h"
-#include "Util/ConstantMirror.h"
-#include "Util/PyTypeBuilder.h"
+#include "JIT/global_llvm_data.h"
+#include "JIT/ConstantMirror.h"
+#include "JIT/PyTypeBuilder.h"
 
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/Verifier.h"

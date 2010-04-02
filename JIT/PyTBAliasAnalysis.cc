@@ -1,7 +1,7 @@
-#include "Util/PyTBAliasAnalysis.h"
+#include "JIT/PyTBAliasAnalysis.h"
 
-#include "Util/ConstantMirror.h"
-#include "Util/PyTypeBuilder.h"
+#include "JIT/ConstantMirror.h"
+#include "JIT/PyTypeBuilder.h"
 
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/ADT/SmallPtrSet.h"
@@ -426,5 +426,3 @@ CreatePyTypeGuardRemovalPass(PyGlobalLlvmData &global_data)
 {
     return new PyTypeGuardRemovalPass(global_data);
 }
-
-

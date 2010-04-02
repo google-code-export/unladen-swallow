@@ -1,4 +1,4 @@
-#include "Util/SingleFunctionInliner.h"
+#include "JIT/SingleFunctionInliner.h"
 
 #include "llvm/Attributes.h"
 #include "llvm/BasicBlock.h"

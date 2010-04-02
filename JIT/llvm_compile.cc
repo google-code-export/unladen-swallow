@@ -1,12 +1,12 @@
 #include "Python.h"
-#include "llvm_compile.h"
-#include "Python/llvm_fbuilder.h"
 #include "_llvmfunctionobject.h"
 #include "code.h"
 #include "global_llvm_data.h"
 #include "opcode.h"
 
-#include "Util/PyBytecodeIterator.h"
+#include "JIT/llvm_compile.h"
+#include "JIT/llvm_fbuilder.h"
+#include "JIT/PyBytecodeIterator.h"
 
 #include "llvm/ADT/OwningPtr.h"
 #include "llvm/Analysis/Verifier.h"

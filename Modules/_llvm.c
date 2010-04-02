@@ -8,9 +8,9 @@ LLVM-py.
 
 #include "Python.h"
 #include "_llvmfunctionobject.h"
-#include "llvm_compile.h"
-#include "Python/global_llvm_data_fwd.h"
-#include "Util/RuntimeFeedback_fwd.h"
+#include "JIT/global_llvm_data_fwd.h"
+#include "JIT/llvm_compile.h"
+#include "JIT/RuntimeFeedback_fwd.h"
 
 PyDoc_STRVAR(llvm_module_doc,
 "Defines thin wrappers around fundamental LLVM types.");

@@ -3,12 +3,12 @@
 
 #include "osdefs.h"
 #undef MAXPATHLEN  /* Conflicts with definition in LLVM's config.h */
-#include "Python/global_llvm_data.h"
-#include "Util/ConstantMirror.h"
-#include "Util/DeadGlobalElim.h"
-#include "Util/PyAliasAnalysis.h"
-#include "Util/PyTBAliasAnalysis.h"
-#include "Util/SingleFunctionInliner.h"
+#include "JIT/ConstantMirror.h"
+#include "JIT/DeadGlobalElim.h"
+#include "JIT/global_llvm_data.h"
+#include "JIT/PyAliasAnalysis.h"
+#include "JIT/PyTBAliasAnalysis.h"
+#include "JIT/SingleFunctionInliner.h"
 #include "Util/Stats.h"
 #include "_llvmfunctionobject.h"
 

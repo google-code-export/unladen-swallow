@@ -3,7 +3,7 @@
 
 #include "Python.h"
 
-#include "Python/global_llvm_data_fwd.h"
+#include "JIT/global_llvm_data_fwd.h"
 
 /* --------------------------------------------------------------------------
 CAUTION
@@ -653,5 +653,3 @@ PyGILState_Release(PyGILState_STATE oldstate)
 #endif
 
 #endif /* WITH_THREAD */
-
-

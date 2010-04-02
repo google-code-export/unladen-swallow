@@ -10,7 +10,7 @@
 #endif
 
 #ifdef WITH_LLVM
-#include "Python/global_llvm_data_fwd.h"
+#include "JIT/global_llvm_data_fwd.h"
 
 #include "llvm/LLVMContext.h"
 #include "llvm/Metadata.h"

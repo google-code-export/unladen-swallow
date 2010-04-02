@@ -1,6 +1,6 @@
-#include "Util/PyTypeBuilder.h"
+#include "JIT/PyTypeBuilder.h"
 
-#include "Python/global_llvm_data.h"
+#include "JIT/global_llvm_data.h"
 
 #include "llvm/ExecutionEngine/ExecutionEngine.h"
 #include "llvm/Target/TargetData.h"

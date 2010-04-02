@@ -17,7 +17,7 @@
 #include "ast.h"
 #include "eval.h"
 #include "marshal.h"
-#include "Python/global_llvm_data_fwd.h"
+#include "JIT/global_llvm_data_fwd.h"
 
 #ifdef HAVE_SIGNAL_H
 #include <signal.h>

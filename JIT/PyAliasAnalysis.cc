@@ -1,7 +1,7 @@
-#include "Util/PyAliasAnalysis.h"
+#include "JIT/PyAliasAnalysis.h"
 
-#include "Util/ConstantMirror.h"
-#include "Util/PyTypeBuilder.h"
+#include "JIT/ConstantMirror.h"
+#include "JIT/PyTypeBuilder.h"
 
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"

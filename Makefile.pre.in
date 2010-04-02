@@ -323,19 +323,19 @@ PYTHON_OBJS=	\
 
 ifneq ($(WITH_LLVM), 0)
 	PYTHON_OBJS +=	\
-		Python/global_llvm_data.o \
-		Python/llvm_fbuilder.o \
-		Python/llvm_compile.o \
-		Util/ConstantMirror.o \
-		Util/DeadGlobalElim.o \
+		JIT/ConstantMirror.o \
+		JIT/DeadGlobalElim.o \
+		JIT/global_llvm_data.o \
+		JIT/llvm_fbuilder.o \
+		JIT/llvm_compile.o \
+		JIT/PyAliasAnalysis.o \
+		JIT/PyBytecodeIterator.o \
+		JIT/PyTBAliasAnalysis.o \
+		JIT/PyTypeBuilder.o \
+		JIT/RuntimeFeedback.o \
+		JIT/SingleFunctionInliner.o \
 		Util/EventTimer.o \
-		Util/PyAliasAnalysis.o \
-		Util/PyBytecodeIterator.o \
 		Util/PySmallPtrSet.o \
-		Util/PyTBAliasAnalysis.o \
-		Util/PyTypeBuilder.o \
-		Util/RuntimeFeedback.o \
-		Util/SingleFunctionInliner.o \
 		Util/Stats.o
 endif
 
@@ -721,20 +721,20 @@ PYTHON_HEADERS= \
 		Include/warnings.h \
 		Include/weakrefobject.h \
 		Include/_llvmfunctionobject.h \
-		Python/global_llvm_data.h \
-		Python/global_llvm_data_fwd.h \
-		Python/llvm_fbuilder.h \
-		Include/llvm_compile.h \
-		Util/ConstantMirror.h \
-		Util/DeadGlobalElim.h \
+		JIT/ConstantMirror.h \
+		JIT/DeadGlobalElim.h \
+		JIT/global_llvm_data.h \
+		JIT/global_llvm_data_fwd.h \
+		JIT/llvm_compile.h \
+		JIT/llvm_fbuilder.h \
+		JIT/PyBytecodeIterator.h \
+		JIT/PyTypeBuilder.h \
+		JIT/PyTBAliasAnalysis.h \
+		JIT/RuntimeFeedback.h \
+		JIT/RuntimeFeedback_fwd.h \
+		JIT/SingleFunctionInliner.h \
 		Util/EventTimer.h \
-		Util/PyBytecodeIterator.h \
 		Util/PySmallPtrSet.h \
-		Util/PyTypeBuilder.h \
-		Util/PyTBAliasAnalysis.h \
-		Util/RuntimeFeedback.h \
-		Util/RuntimeFeedback_fwd.h \
-		Util/SingleFunctionInliner.h \
 		Util/Stats.h \
 		pyconfig.h \
 		$(PARSER_HEADERS)
@@ -746,7 +746,7 @@ $(LIBRARY_OBJS) $(MODOBJS) Modules/python.o: $(PYTHON_HEADERS)
 
 # LLVM-related generated files
 
-BCLIBRARY_OBJS := Python/llvm_inline_functions.bc
+BCLIBRARY_OBJS := JIT/llvm_inline_functions.bc
 
 $(BCLIBRARY:.bc=.unopt.bc): $(BCLIBRARY_OBJS)
 	$(LLVM_BIN_DIR)/llvm-link -o $@ $(filter %.bc, $^)
@@ -1278,8 +1278,8 @@ clean: pycremoval
 	find . -name '*.s[ol]' -exec rm -f {} ';'
 	find $(srcdir)/build -name 'fficonfig.h' -exec rm -f {} ';' || true
 	find $(srcdir)/build -name 'fficonfig.py' -exec rm -f {} ';' || true
-	rm -f Python/llvm_inline_functions.bc
 	rm -f sysconfig  # Our empty targets.
+	rm -f $(BCLIBRARY_OBJS)
 	rm -f $(BCLIBRARY)
 	-rm -f Lib/lib2to3/*Grammar*.pickle
 

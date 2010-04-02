@@ -1,6 +1,6 @@
-#include "Util/ConstantMirror.h"
+#include "JIT/ConstantMirror.h"
 
-#include "Util/PyTypeBuilder.h"
+#include "JIT/PyTypeBuilder.h"
 
 #include "llvm/Constants.h"
 #include "llvm/DerivedTypes.h"

@@ -1,7 +1,7 @@
 #include "Python.h"
 #include "opcode.h"
 
-#include "Util/PyBytecodeIterator.h"
+#include "JIT/PyBytecodeIterator.h"
 #include "llvm/ADT/STLExtras.h"
 
 #include "gtest/gtest.h"

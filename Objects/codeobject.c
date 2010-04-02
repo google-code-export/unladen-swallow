@@ -1,9 +1,9 @@
 #include "Python.h"
 #include "code.h"
-#include "llvm_compile.h"
 #include "structmember.h"
-#include "Python/global_llvm_data_fwd.h"
-#include "Util/RuntimeFeedback_fwd.h"
+#include "JIT/global_llvm_data_fwd.h"
+#include "JIT/llvm_compile.h"
+#include "JIT/RuntimeFeedback_fwd.h"
 
 #define NAME_CHARS \
 	"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz"

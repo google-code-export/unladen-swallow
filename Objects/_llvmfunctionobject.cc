@@ -5,7 +5,7 @@
 
 #include "frameobject.h"
 #include "structmember.h"
-#include "Python/global_llvm_data.h"
+#include "JIT/global_llvm_data.h"
 #include "Util/Stats.h"
 
 #include "llvm/BasicBlock.h"
