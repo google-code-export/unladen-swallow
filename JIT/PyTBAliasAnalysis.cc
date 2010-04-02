@@ -231,7 +231,18 @@ PyTypeMarkingPass::runOnFunction(Function &F)
         // This functions should get loaded with the BC file.
         addMark("PyInt_FromLong", llvm_data_->tbaa_PyIntObject);
         addMark("PyInt_FromSsize_t", llvm_data_->tbaa_PyIntObject);
+        // PyBoolObject is a subtype of PyIntObject
+        addMark("PyBool_FromLong", llvm_data_->tbaa_PyIntObject);
         addMark("PyFloat_FromDouble", llvm_data_->tbaa_PyFloatObject);
+        addMark("PyString_Format", llvm_data_->tbaa_PyStringObject);
+
+        // getFunction needs the real function name. Expand macros.
+#ifndef Py_UNICODE_WIDE
+        addMark("PyUnicodeUCS2_Format", llvm_data_->tbaa_PyUnicodeObject);
+#else
+        addMark("PyUnicodeUCS4_Format", llvm_data_->tbaa_PyUnicodeObject);
+#endif
+
     }
 
     bool changed = false;
