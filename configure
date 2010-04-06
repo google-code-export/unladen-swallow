@@ -4444,7 +4444,7 @@ fi
 
 # LINKCC is the command that links the python executable -- default is $(CXX).
 # This is altered for AIX in order to build the export list before
-# linking. If --without--lvm was specified, we use $(CC) to avoid depending on
+# linking. If --without-llvm was specified, we use $(CC) to avoid depending on
 # libstdc++.
 
 { echo "$as_me:$LINENO: checking LINKCC" >&5

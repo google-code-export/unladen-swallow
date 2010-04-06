@@ -645,8 +645,8 @@ AC_SUBST(LLVM_LDFLAGS)
 AC_SUBST(LLVM_LIB_PATHS)
 
 # LINKCC is the command that links the python executable -- default is $(CXX).
-# This is altered for AIX in order to build the export list before 
-# linking. If --without--lvm was specified, we use $(CC) to avoid depending on
+# This is altered for AIX in order to build the export list before
+# linking. If --without-llvm was specified, we use $(CC) to avoid depending on
 # libstdc++.
 AC_SUBST(LINKCC)
 AC_MSG_CHECKING(LINKCC)
