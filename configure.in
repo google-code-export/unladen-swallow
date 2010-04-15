@@ -463,10 +463,139 @@ then
 (it is also a good idea to do 'make clean' before compiling)])
 fi
 
-AC_PROG_CC
+# Check for --with-llvm=DIRECTORY or --without-llvm.
+#
+# Check for this really early so we can use it to toggle LINKCC.
+#
+# Expected behaviour:
+#   - Omit --with-llvm: use llvm-config we find in the path or $LLVM_CONFIG
+#   - --with-llvm (no DIRECTORY): Same
+#   - --with-llvm=DIRECTORY: use the LLVM installed in DIRECTORY
+#   - --without-llvm: disable everything that requires LLVM
+dnl quadrigraphs "@<:@" and "@:>@" produce "[" and "]" in the output
+AC_ARG_VAR(LLVM_CONFIG, [LLVM configuration script])
+AC_MSG_CHECKING(for --with(out)-llvm)
+AC_ARG_WITH(llvm, 
+            AC_HELP_STRING(--with(out)-llvm@<:@=DIRECTORY@:>@,
+                           build against a preinstalled LLVM
+                           or disable LLVM integration entirely. Note that
+                           Python built with --without-llvm cannot load
+                           extension modules built with --with-llvm or
+                           vice-versa.),
+            [with_llvm=$withval],
+            [with_llvm=yes])
 
+if test "$with_llvm" = "no"
+then
+    AC_MSG_RESULT(disabled)
+    WITH_LLVM=0
+else
+    AC_MSG_RESULT($with_llvm)
+    WITH_LLVM=1
+    if test "$with_llvm" = "yes"
+    then
+        AC_PATH_PROG(LLVM_CONFIG, llvm-config)
+        if test -z "$LLVM_CONFIG"
+        then
+            AC_MSG_ERROR([cannot find llvm-config on the PATH])
+        fi
+    else
+        AC_PATH_PROG(LLVM_CONFIG, llvm-config, [], [$with_llvm/bin])
+        if test -z "$LLVM_CONFIG"
+        then
+            AC_MSG_ERROR([cannot find llvm-config in $with_llvm/bin])
+        fi
+    fi
+
+    LLVM_INC_DIR=`$LLVM_CONFIG --includedir`
+    LLVM_BIN_DIR=`$LLVM_CONFIG --bindir`
+    LLVM_CXXFLAGS=`$LLVM_CONFIG jit bitreader backend --cxxflags`
+    LLVM_LDFLAGS=`$LLVM_CONFIG jit bitreader backend --ldflags --libs | awk '{ORS=" "} {print $0}'`
+    LLVM_LIB_PATHS=`$LLVM_CONFIG jit bitreader backend --libfiles`
+
+    AC_CHECK_FILE("$LLVM_BIN_DIR/clang",
+        [], [AC_MSG_ERROR([Did not find clang in $LLVM_BIN_DIR])])
+    AC_CHECK_FILE("$LLVM_BIN_DIR/opt",
+        [], [AC_MSG_ERROR([Did not find opt in $LLVM_BIN_DIR])])
+    AC_CHECK_FILE("$LLVM_BIN_DIR/llvm-link",
+        [], [AC_MSG_ERROR([Did not find llvm-link in $LLVM_BIN_DIR])])
+    AC_CHECK_FILE("$LLVM_BIN_DIR/llvm-dis",
+        [], [AC_MSG_ERROR([Did not find llvm-dis in $LLVM_BIN_DIR])])
+
+    AC_DEFINE(WITH_LLVM, 1,
+        [Use LLVM for code generation. This makes things fast.])
+fi
+AC_SUBST(WITH_LLVM)
+AC_SUBST(LLVM_INC_DIR)
+AC_SUBST(LLVM_BIN_DIR)
+AC_SUBST(LLVM_CXXFLAGS)
+AC_SUBST(LLVM_LDFLAGS)
+AC_SUBST(LLVM_LIB_PATHS)
+
+
+save_CFLAGS=$CFLAGS
+AC_PROG_CC
+CFLAGS=$save_CFLAGS
+
+AC_SUBST(CXX)
+AC_SUBST(MAINCC)
+AC_MSG_CHECKING(for --with-cxx-main=<compiler>)
+AC_ARG_WITH(cxx_main,
+            AC_HELP_STRING([--with-cxx-main=<compiler>],
+                           [compile main() and link python executable with C++ compiler]),
+[
+	case $withval in
+	no)	with_cxx_main=no
+		MAINCC='$(CC)';;
+	yes)	with_cxx_main=yes
+		MAINCC='$(CXX)';;
+	*)	with_cxx_main=yes
+		MAINCC=$withval
+		if test -z "$CXX"
+		then
+			CXX=$withval
+		fi;;
+	esac
+], [
+	case "$with_llvm" in
+	no)	with_cxx_main=no
+		MAINCC='$(CC)';;
+	*)	with_cxx_main=yes
+		MAINCC='$(CXX)';;
+	esac
+])
+AC_MSG_RESULT($with_cxx_main)
+
+if test "$with_cxx_main" = "no"
+then
+	if test "$with_llvm" != "no"
+	then
+		AC_MSG_ERROR("Cannot specify both --without-cxx-main and --with-llvm");
+	fi
+fi
+
+# Use this in preference to AC_PROG_CXX, since --with-cxx-main=foo will override
+# CXX.
 preset_cxx="$CXX"
-AC_PROG_CXX
+if test -z "$CXX"
+then
+        case "$CC" in
+        gcc)    AC_PATH_PROG(CXX, [g++], [g++], [notfound]) ;;
+        cc)     AC_PATH_PROG(CXX, [c++], [c++], [notfound]) ;;
+        esac
+	if test "$CXX" = "notfound"
+	then
+		CXX=""
+	fi
+fi
+if test -z "$CXX"
+then
+	AC_CHECK_PROGS(CXX, $CCC c++ g++ gcc CC cxx cc++ cl, notfound)
+	if test "$CXX" = "notfound"
+	then
+		CXX=""
+	fi
+fi
 if test "$preset_cxx" != "$CXX"
 then
         AC_MSG_WARN([
@@ -575,76 +704,8 @@ DLLLIBRARY=''
 LDLIBRARYDIR=''
 RUNSHARED=''
 
-# Check for --with-llvm=DIRECTORY or --without-llvm.
-#
-# Check for this really early so we can use it to toggle LINKCC.
-#
-# Expected behaviour:
-#   - Omit --with-llvm: use llvm-config we find in the path or $LLVM_CONFIG
-#   - --with-llvm (no DIRECTORY): Same
-#   - --with-llvm=DIRECTORY: use the LLVM installed in DIRECTORY
-#   - --without-llvm: disable everything that requires LLVM
-dnl quadrigraphs "@<:@" and "@:>@" produce "[" and "]" in the output
-AC_ARG_VAR(LLVM_CONFIG, [LLVM configuration script])
-AC_MSG_CHECKING(for --with(out)-llvm)
-AC_ARG_WITH(llvm, 
-            AC_HELP_STRING(--with(out)-llvm@<:@=DIRECTORY@:>@,
-                           build against a preinstalled LLVM
-                           or disable LLVM integration entirely. Note that
-                           Python built with --without-llvm cannot load
-                           extension modules built with --with-llvm or
-                           vice-versa.),
-            [with_llvm=$withval],
-            [with_llvm=yes])
-
-if test "$with_llvm" = "no"
-then
-    AC_MSG_RESULT(disabled)
-    WITH_LLVM=0
-else
-    AC_MSG_RESULT($with_llvm)
-    WITH_LLVM=1
-    if test "$with_llvm" = "yes"
-    then
-        AC_PATH_PROG(LLVM_CONFIG, llvm-config)
-        if test -z "$LLVM_CONFIG"
-        then
-            AC_MSG_ERROR([cannot find llvm-config on the PATH])
-        fi
-    else
-        AC_PATH_PROG(LLVM_CONFIG, llvm-config, [], [$with_llvm/bin])
-        if test -z "$LLVM_CONFIG"
-        then
-            AC_MSG_ERROR([cannot find llvm-config in $with_llvm/bin])
-        fi
-    fi
-
-    LLVM_INC_DIR=`$LLVM_CONFIG --includedir`
-    LLVM_BIN_DIR=`$LLVM_CONFIG --bindir`
-    LLVM_CXXFLAGS=`$LLVM_CONFIG jit bitreader backend --cxxflags`
-    LLVM_LDFLAGS=`$LLVM_CONFIG jit bitreader backend --ldflags --libs | awk '{ORS=" "} {print $0}'`
-    LLVM_LIB_PATHS=`$LLVM_CONFIG jit bitreader backend --libfiles`
-
-    AC_CHECK_FILE("$LLVM_BIN_DIR/clang",
-        [], [AC_MSG_ERROR([Did not find clang in $LLVM_BIN_DIR])])
-    AC_CHECK_FILE("$LLVM_BIN_DIR/opt",
-        [], [AC_MSG_ERROR([Did not find opt in $LLVM_BIN_DIR])])
-    AC_CHECK_FILE("$LLVM_BIN_DIR/llvm-link",
-        [], [AC_MSG_ERROR([Did not find llvm-link in $LLVM_BIN_DIR])])
-    AC_CHECK_FILE("$LLVM_BIN_DIR/llvm-dis",
-        [], [AC_MSG_ERROR([Did not find llvm-dis in $LLVM_BIN_DIR])])
-
-    AC_DEFINE(WITH_LLVM, 1,
-        [Use LLVM for code generation. This makes things fast.])
-fi
-AC_SUBST(WITH_LLVM)
-AC_SUBST(LLVM_INC_DIR)
-AC_SUBST(LLVM_BIN_DIR)
-AC_SUBST(LLVM_CXXFLAGS)
-AC_SUBST(LLVM_LDFLAGS)
-AC_SUBST(LLVM_LIB_PATHS)
-
-# LINKCC is the command that links the python executable -- default is $(CXX).
+# LINKCC is the command that links the python executable -- this depends on
+# the values of --with-llvm and --with-cxx-main.
 # This is altered for AIX in order to build the export list before
 # linking. If --without-llvm was specified, we use $(CC) to avoid depending on
 # libstdc++.
@@ -652,10 +713,7 @@ AC_SUBST(LINKCC)
 AC_MSG_CHECKING(LINKCC)
 if test -z "$LINKCC"
 then
-	LINKCC='$(PURIFY) $(CXX)'
-	if test "$with_llvm" == "no" ; then
-		LINKCC='$(PURIFY) $(CC)'
-	fi
+	LINKCC='$(PURIFY) $(MAINCC)'
 	case $ac_sys_system in
 	AIX*)
 	   exp_extra="\"\""

@@ -30,6 +30,7 @@ VPATH=		@srcdir@
 
 CC=		@CC@
 CXX=		@CXX@
+MAINCC=		@MAINCC@
 LINKCC=		@LINKCC@
 AR=		@AR@
 RANLIB=		@RANLIB@
@@ -560,11 +561,7 @@ Modules/getpath.o: $(srcdir)/Modules/getpath.c Makefile
 		-o $@ $(srcdir)/Modules/getpath.c
 
 Modules/python.o: $(srcdir)/Modules/python.c
-ifeq ($(WITH_LLVM), 0)
-	$(CC) -c $(PY_CFLAGS) -o $@ $(srcdir)/Modules/python.c
-else
-	$(CXX) -c $(PY_CFLAGS) -o $@ $(srcdir)/Modules/python.c
-endif
+	$(MAINCC) -c $(PY_CFLAGS) -o $@ $(srcdir)/Modules/python.c
 
 
 $(GRAMMAR_H) $(GRAMMAR_C): $(PGEN) $(GRAMMAR_INPUT)
