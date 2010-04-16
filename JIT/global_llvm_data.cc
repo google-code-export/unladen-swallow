@@ -104,7 +104,8 @@ find_stdlib_bc()
 }
 
 PyGlobalLlvmData::PyGlobalLlvmData()
-    : optimizations_(3, (FunctionPassManager*)NULL),
+    : optimized_ops(),
+      optimizations_(3, (FunctionPassManager*)NULL),
       num_globals_after_last_gc_(0)
 {
     std::string error;

@@ -124,18 +124,20 @@ public:
 
 static llvm::ManagedStatic<CondBranchStats> cond_branch_stats;
 
-class BinaryOpStats {
+template<const char* full_name, const char* short_name>
+class OpStats {
 public:
-    BinaryOpStats()
+    OpStats()
         : total(0), optimized(0), unpredictable(0), omitted(0) {
     }
 
-    ~BinaryOpStats() {
-        errs() << "\nBinary operator inlining:\n";
-        errs() << "Total binops: " << this->total << "\n";
-        errs() << "Optimized binops: " << this->optimized << "\n";
+    ~OpStats() {
+        errs() << "\n" << full_name << " inlining:\n";
+        errs() << "Total " << short_name << ": " << this->total << "\n";
+        errs() << "Optimized " << short_name << ": " << this->optimized << "\n";
         errs() << "Unpredictable types: " << this->unpredictable << "\n";
-        errs() << "Binops without inline version: " << this->omitted << "\n";
+        errs() << short_name << " without inline version: " <<
+            this->omitted << "\n";
     }
 
     // Total number of binary opcodes compiled.
@@ -148,29 +150,21 @@ public:
     unsigned omitted;
 };
 
-static llvm::ManagedStatic<BinaryOpStats> binary_operator_stats;
+// These are used as template parameter and are required to have external
+// linkage. As const char[] default to static in C++, we have to force it.
+extern const char binop_full[], binop_short[];
+const char binop_full[] = "Binary operators";
+const char binop_short[] = "binops";
 
-class CmpOpStats {
-public:
-    ~CmpOpStats() {
-        errs() << "\nCompare operations inlining:\n";
-        errs() << "Total compare ops: " << this->total << "\n";
-        errs() << "Optimized compare ops: " << this->optimized << "\n";
-        errs() << "Unpredictable compare ops: " << this->unpredictable << "\n";
-        errs() << "Ommitted compare ops: " << this->omitted << "\n";
-    }
+static llvm::ManagedStatic<
+    OpStats<binop_full, binop_short> > binary_operator_stats;
 
-    // Total number of comparison opcodes compiled.
-    unsigned total;
-    // Total number of comparison opcodes inlined.
-    unsigned optimized;
-    // Total number of comparison opcodes with unpredictable types.
-    unsigned unpredictable;
-    // Total number of comparison opcodes without inline-able functions.
-    unsigned omitted;
-};
+extern const char cmpop_full[], cmpop_short[];
+const char cmpop_full[] = "Compare operators";
+const char cmpop_short[] = "compare";
 
-static llvm::ManagedStatic<CmpOpStats> compare_operator_stats;
+static llvm::ManagedStatic<
+    OpStats<cmpop_full, cmpop_short> > compare_operator_stats;
 
 class AccessAttrStats {
 public:
@@ -260,83 +254,6 @@ static llvm::ManagedStatic<ImportNameStats> import_name_stats;
 #define ACCESS_ATTR_INC_STATS(field)
 #define IMPORT_NAME_INC_STATS(field)
 #endif  /* Py_WITH_INSTRUMENTATION */
-
-namespace {
-
-// A struct to associate functions and types with optimized functions
-// for inlining. This supports inlining of binary operator implementations that
-// have been compiled with Clang.
-struct InlineOperatorEntry {
-    const char *binop;
-    const PyTypeObject *lhs_type;
-    const PyTypeObject *rhs_type;
-};
-
-// Indicate that we don't care about the specialization argument's type.
-static const PyTypeObject *Wildcard = NULL;
-
-}  // anonymous namespace
-
-
-namespace llvm {
-
-template<>
-struct DenseMapInfo<InlineOperatorEntry> {
-    typedef DenseMapInfo<const char *> ConstCharStarInfo;
-    typedef DenseMapInfo<const PyTypeObject *> PyTypeObjectInfo;
-
-    static inline InlineOperatorEntry getEmptyKey() {
-        InlineOperatorEntry e;
-        e.binop = ConstCharStarInfo::getEmptyKey();
-        e.lhs_type = e.rhs_type = PyTypeObjectInfo::getEmptyKey();
-        return e;
-    }
-
-    static inline InlineOperatorEntry getTombstoneKey() {
-        InlineOperatorEntry e;
-        e.binop = ConstCharStarInfo::getTombstoneKey();
-        e.lhs_type = e.rhs_type = PyTypeObjectInfo::getEmptyKey();
-        return e;
-    }
-
-    static unsigned getHashValue(const InlineOperatorEntry& Val) {
-        // From http://burtleburtle.net/bob/hash/doobs.html.
-        uint64_t key =
-            (uint64_t)PyTypeObjectInfo::getHashValue(Val.lhs_type) << 32
-          | (uint64_t)PyTypeObjectInfo::getHashValue(Val.rhs_type);
-        key += ~(key << 32);
-        key ^= (key >> 22);
-        key += ~(key << 13);
-        key ^= (key >> 8);
-        key += (key << 3);
-        key ^= (key >> 15);
-        key += ~(key << 27);
-        key ^= (key >> 31);
-
-        key = key | (uint64_t)ConstCharStarInfo::getHashValue(Val.binop) << 32;
-        key += ~(key << 32);
-        key ^= (key >> 22);
-        key += ~(key << 13);
-        key ^= (key >> 8);
-        key += (key << 3);
-        key ^= (key >> 15);
-        key += ~(key << 27);
-        key ^= (key >> 31);
-
-        return (unsigned)key;
-    }
-
-    static bool isPod() { return true; }
-
-    static bool isEqual(const InlineOperatorEntry& LHS,
-                        const InlineOperatorEntry& RHS) {
-        return LHS.binop == RHS.binop &&
-               LHS.lhs_type == RHS.lhs_type &&
-               LHS.rhs_type == RHS.rhs_type;
-    }
-};
-
-}  // namespace llvm
 
 
 namespace py {
@@ -3432,96 +3349,6 @@ LlvmFunctionBuilder::GenericBinOp(const char *apifunc)
     this->Push(result);
 }
 
-
-// Static mapping of binop name -> inlinable LLVM function.
-class OptimizedBinOps {
-public:
-    // Map default binary operations and type information to optimized versions.
-    typedef llvm::DenseMap<InlineOperatorEntry, const char*> InlinableBinopMap;
-
-    OptimizedBinOps() {
-#define INLINABLE_BINOP(OP, LHS, RHS, OPT) { \
-        InlineOperatorEntry e; \
-        e.binop = #OP; \
-        e.lhs_type = &LHS; e.rhs_type = &RHS; \
-        this->optimized_operations_[e] = #OPT; \
-    }
-    // Int specializations.
-    INLINABLE_BINOP(PyNumber_Add, PyInt_Type, PyInt_Type,
-                    _PyLlvm_BinAdd_Int);
-    INLINABLE_BINOP(PyNumber_Subtract, PyInt_Type, PyInt_Type,
-                    _PyLlvm_BinSub_Int);
-    INLINABLE_BINOP(PyNumber_Multiply, PyInt_Type, PyInt_Type,
-                    _PyLlvm_BinMult_Int);
-    INLINABLE_BINOP(PyNumber_Divide, PyInt_Type, PyInt_Type,
-                    _PyLlvm_BinDiv_Int);
-    INLINABLE_BINOP(PyNumber_Remainder, PyInt_Type, PyInt_Type,
-                    _PyLlvm_BinMod_Int);
-
-    // Float specializations
-    INLINABLE_BINOP(PyNumber_Add, PyFloat_Type, PyFloat_Type,
-                    _PyLlvm_BinAdd_Float);
-    INLINABLE_BINOP(PyNumber_Subtract, PyFloat_Type, PyFloat_Type,
-                    _PyLlvm_BinSub_Float);
-    INLINABLE_BINOP(PyNumber_Multiply, PyFloat_Type, PyFloat_Type,
-                    _PyLlvm_BinMult_Float);
-    INLINABLE_BINOP(PyNumber_Divide, PyFloat_Type, PyFloat_Type,
-                    _PyLlvm_BinDiv_Float);
-
-    // Int combined with float
-    INLINABLE_BINOP(PyNumber_Multiply, PyFloat_Type, PyInt_Type,
-                    _PyLlvm_BinMul_FloatInt);
-    INLINABLE_BINOP(PyNumber_Divide, PyFloat_Type, PyInt_Type,
-                    _PyLlvm_BinDiv_FloatInt);
-
-    // List specializations
-    INLINABLE_BINOP(PyObject_GetItem, PyList_Type, PyInt_Type,
-                    _PyLlvm_BinSubscr_List);
-
-    // Tuple specializations
-    INLINABLE_BINOP(PyObject_GetItem, PyTuple_Type, PyInt_Type,
-                    _PyLlvm_BinSubscr_Tuple);
-
-    // String specializations
-    INLINABLE_BINOP(PyNumber_Remainder, PyString_Type, *Wildcard,
-                    _PyLlvm_BinMod_Str);
-    INLINABLE_BINOP(PyNumber_Remainder, PyUnicode_Type, *Wildcard,
-                    _PyLlvm_BinMod_Unicode);
-
-    // Cmpop Integer specializations
-    INLINABLE_BINOP(PyCmp_LT, PyInt_Type, PyInt_Type, _PyLlvm_BinLt_Int);
-    INLINABLE_BINOP(PyCmp_LE, PyInt_Type, PyInt_Type, _PyLlvm_BinLe_Int);
-    INLINABLE_BINOP(PyCmp_EQ, PyInt_Type, PyInt_Type, _PyLlvm_BinEq_Int);
-    INLINABLE_BINOP(PyCmp_NE, PyInt_Type, PyInt_Type, _PyLlvm_BinNe_Int);
-    INLINABLE_BINOP(PyCmp_GT, PyInt_Type, PyInt_Type, _PyLlvm_BinGt_Int);
-    INLINABLE_BINOP(PyCmp_GE, PyInt_Type, PyInt_Type, _PyLlvm_BinGe_Int);
-
-    // Cmpop Float specialization
-    INLINABLE_BINOP(PyCmp_GT, PyFloat_Type, PyFloat_Type, _PyLlvm_BinGt_Float);
-
-#undef INLINABLE_BINOP
-    }
-
-    const char *Find(const char *binop, const PyTypeObject *lhs,
-                     const PyTypeObject *rhs) const {
-        InlineOperatorEntry key;
-        key.binop = binop;
-        key.lhs_type = lhs;
-        key.rhs_type = rhs;
-
-        const_iterator iter = this->optimized_operations_.find(key);
-        if (iter == this->optimized_operations_.end())
-            return NULL;
-        return iter->second;
-    }
-
-private:
-    InlinableBinopMap optimized_operations_;
-    typedef InlinableBinopMap::const_iterator const_iterator;
-};
-
-static llvm::ManagedStatic<OptimizedBinOps> optimized_binops;
-
 void
 LlvmFunctionBuilder::OptimizedBinOp(const char *apifunc)
 {
@@ -3535,9 +3362,12 @@ LlvmFunctionBuilder::OptimizedBinOp(const char *apifunc)
 
     // We're always specializing the receiver, so don't check the lhs for
     // wildcards.
-    const char *name = optimized_binops->Find(apifunc, lhs_type, rhs_type);
+    const char *name = this->llvm_data_->optimized_ops.
+        Find(apifunc, lhs_type, rhs_type);
+
     if (name == NULL) {
-        name = optimized_binops->Find(apifunc, lhs_type, Wildcard);
+        name = this->llvm_data_->optimized_ops.
+            Find(apifunc, lhs_type, Wildcard);
         if (name == NULL) {
             BINOP_INC_STATS(omitted);
             this->GenericBinOp(apifunc);
@@ -3840,7 +3670,9 @@ LlvmFunctionBuilder::COMPARE_OP_fast(int cmp_op, const PyTypeObject *lhs_type,
 #undef CMPOP_NAME
     }
 
-    const char *name = optimized_binops->Find(api_func, lhs_type, rhs_type);
+    const char *name = this->llvm_data_->optimized_ops.
+        Find(api_func, lhs_type, rhs_type);
+
     if (name == NULL) {
         return false;
     }
