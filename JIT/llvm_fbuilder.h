@@ -14,6 +14,9 @@
 #include "llvm/ADT/Twine.h"
 #include "llvm/Analysis/DebugInfo.h"
 #include "llvm/Constants.h"
+#include "llvm/ExecutionEngine/ExecutionEngine.h"
+#include "llvm/GlobalVariable.h"
+#include "llvm/Type.h"
 #include "llvm/Support/IRBuilder.h"
 #include "llvm/Support/TargetFolder.h"
 
@@ -25,12 +28,22 @@ struct PyGlobalLlvmData;
 
 namespace py {
 
+class OpcodeBinops;
+class OpcodeCmpops;
+class OpcodeGlobals;
+class OpcodeLocals;
+
 /// Helps the compiler build LLVM functions corresponding to Python
 /// functions.  This class maintains the IRBuilder and several Value*s
 /// set up in the entry block.
 class LlvmFunctionBuilder {
     LlvmFunctionBuilder(const LlvmFunctionBuilder &);  // Not implemented.
     void operator=(const LlvmFunctionBuilder &);  // Not implemented.
+
+    friend class OpcodeBinops;
+    friend class OpcodeCmpops;
+    friend class OpcodeGlobals;
+    friend class OpcodeLocals;
 
 public:
     LlvmFunctionBuilder(PyGlobalLlvmData *global_data, PyCodeObject *code);
@@ -188,10 +201,6 @@ public:
     void IMPORT_NAME();
 
     void COMPARE_OP(int cmp_op);
-    bool COMPARE_OP_fast(int cmp_op,
-                         const PyTypeObject *lhs_type,
-                         const PyTypeObject *rhs_type);
-    void COMPARE_OP_safe(int cmp_op);
     
     void CALL_FUNCTION(int num_args);
     void CALL_FUNCTION_VAR(int num_args);
@@ -205,11 +214,6 @@ public:
     void BUILD_SLICE_THREE();
     void UNPACK_SEQUENCE(int size);
 
-    /* LOAD_GLOBAL comes in two flavors: the safe version (a port of the eval
-       loop that's guaranteed to work) and a fast version, which uses dict
-       versioning to cache pointers as immediates in the generated IR. */
-    void LOAD_GLOBAL_safe(int index);
-    void LOAD_GLOBAL_fast(int index);
     void LOAD_GLOBAL(int index);
     void STORE_GLOBAL(int index);
     void DELETE_GLOBAL(int index);
@@ -287,11 +291,6 @@ private:
     const PyRuntimeFeedback *GetFeedback(unsigned arg_index) const;
     const PyTypeObject *GetTypeFeedback(unsigned arg_index) const;
 
-    // Replaces a local variable with the PyObject* stored in
-    // new_value.  Decrements the original value's refcount after
-    // replacing it.
-    void SetLocal(int locals_index, llvm::Value *new_value);
-
     // Adds handler to the switch for unwind targets and then sets up
     // a call to PyFrame_BlockSetup() with the block type, handler
     // index, and current stack level.
@@ -322,13 +321,20 @@ private:
     // and name 'name'.  If the ExecutionEngine already knows of a
     // variable with the given address, we name and return it.
     // Otherwise the variable will be looked up in Python's C runtime.
-    template<typename T>
+    template<typename VariableType>
     llvm::Constant *GetGlobalVariable(
         void *var_address, const std::string &name);
+
     // Returns the global function with type T and name 'name'. The
     // function will be looked up in Python's C runtime.
-    template<typename T>
-    llvm::Function *GetGlobalFunction(const std::string &name);
+    template<typename FunctionType>
+    llvm::Function *GetGlobalFunction(const std::string &name)
+    {
+        return llvm::cast<llvm::Function>(
+            this->module_->getOrInsertFunction(
+                name, PyTypeBuilder<FunctionType>::get(this->context_)));
+    }
+
 
     // Returns a global variable that represents 'obj'.  These get
     // cached in the ExecutionEngine's global mapping table, and they
@@ -404,7 +410,12 @@ private:
 
     /// Get the LLVM NULL Value for the given type.
     template<typename T>
-    llvm::Value *GetNull();
+    llvm::Value *GetNull()
+    {
+        return llvm::Constant::getNullValue(
+            PyTypeBuilder<T>::get(this->context_));
+    }
+
 
     // Returns an i1, true if value represents a NULL pointer.
     llvm::Value *IsNull(llvm::Value *value);
@@ -486,26 +497,8 @@ private:
 
     // Helper methods for binary and unary operators, passing the name
     // of the Python/C API function that implements the operation.
-    // GenericBinOp's apifunc is "PyObject *(*)(PyObject *, PyObject *)"
-    void GenericBinOp(const char *apifunc);
-    // Like GenericBinOp(), but uses an optimized version if available.
-    void OptimizedBinOp(const char *apifunc);
-    // GenericPowOp's is "PyObject *(*)(PyObject *, PyObject *, PyObject *)"
-    void GenericPowOp(const char *apifunc);
     // GenericUnaryOp's is "PyObject *(*)(PyObject *)"
     void GenericUnaryOp(const char *apifunc);
-
-    // Call PyObject_RichCompare(lhs, rhs, cmp_op), pushing the result
-    // onto the stack. cmp_op is one of Py_EQ, Py_NE, Py_LT, Py_LE, Py_GT
-    // or Py_GE as defined in Python/object.h. Steals both references.
-    void RichCompare(llvm::Value *lhs, llvm::Value *rhs, int cmp_op);
-    // Call PySequence_Contains(seq, item), returning the result as an i1.
-    // Steals both references.
-    llvm::Value *ContainerContains(llvm::Value *seq, llvm::Value *item);
-    // Check whether exc (a thrown exception) matches exc_type
-    // (a class or tuple of classes) for the purpose of catching
-    // exc in an except clause. Returns an i1. Steals both references.
-    llvm::Value *ExceptionMatches(llvm::Value *exc, llvm::Value *exc_type);
 
     // If 'value' represents NULL, propagates the exception.
     // Otherwise, falls through.
@@ -668,11 +661,6 @@ private:
         void MakeLlvmValues();
     };
 
-    // A safe version that always works, and a fast version that omits NULL
-    // checks where we know the local cannot be NULL.
-    void LOAD_FAST_safe(int index);
-    void LOAD_FAST_fast(int index);
-
     // A fast version that avoids the import machinery if sys.modules and other
     // modules haven't changed. Returns false if the attempt to optimize failed;
     // the safe version in IMPORT_NAME() will be used.
@@ -693,7 +681,15 @@ private:
 
     /// Embed a pointer of some type directly into the LLVM IR.
     template <typename T>
-    llvm::Value *EmbedPointer(void *ptr);
+    llvm::Value *EmbedPointer(void *ptr)
+    {
+        // We assume that the caller has ensured that ptr will stay live for the
+        // life of this native code object.
+        return this->builder_.CreateIntToPtr(
+            llvm::ConstantInt::get(llvm::Type::getInt64Ty(this->context_),
+                             reinterpret_cast<intptr_t>(ptr)),
+            PyTypeBuilder<T>::get(this->context_));
+    }
 
     /// Return the BasicBlock we should jump to in order to bail to the
     /// interpreter.
@@ -780,6 +776,31 @@ private:
 
     llvm::SmallPtrSet<PyTypeObject*, 5> types_used_;
 };
+
+template<typename VariableType> llvm::Constant *
+LlvmFunctionBuilder::GetGlobalVariable(
+    void *var_address, const std::string &name)
+{
+    const llvm::Type *expected_type =
+        PyTypeBuilder<VariableType>::get(this->context_);
+    if (llvm::GlobalVariable *global = this->module_->getNamedGlobal(name)) {
+        assert (expected_type == global->getType()->getElementType());
+        return global;
+    }
+    if (llvm::GlobalValue *global = const_cast<llvm::GlobalValue*>(
+            this->llvm_data_->getExecutionEngine()->
+            getGlobalValueAtAddress(var_address))) {
+        assert (expected_type == global->getType()->getElementType());
+        if (!global->hasName())
+            global->setName(name);
+        return global;
+    }
+    return new llvm::GlobalVariable(*this->module_, expected_type,
+                                    /*isConstant=*/false,
+                                    llvm::GlobalValue::ExternalLinkage,
+                                    NULL, name);
+}
+
 
 }  // namespace py
 

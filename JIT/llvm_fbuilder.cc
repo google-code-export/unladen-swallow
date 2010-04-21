@@ -10,6 +10,11 @@
 #include "JIT/PyTypeBuilder.h"
 #include "Util/EventTimer.h"
 
+#include "JIT/opcodes/binops.h"
+#include "JIT/opcodes/cmpops.h"
+#include "JIT/opcodes/globals.h"
+#include "JIT/opcodes/locals.h"
+
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Twine.h"
@@ -124,48 +129,6 @@ public:
 
 static llvm::ManagedStatic<CondBranchStats> cond_branch_stats;
 
-template<const char* full_name, const char* short_name>
-class OpStats {
-public:
-    OpStats()
-        : total(0), optimized(0), unpredictable(0), omitted(0) {
-    }
-
-    ~OpStats() {
-        errs() << "\n" << full_name << " inlining:\n";
-        errs() << "Total " << short_name << ": " << this->total << "\n";
-        errs() << "Optimized " << short_name << ": " << this->optimized << "\n";
-        errs() << "Unpredictable types: " << this->unpredictable << "\n";
-        errs() << short_name << " without inline version: " <<
-            this->omitted << "\n";
-    }
-
-    // Total number of binary opcodes compiled.
-    unsigned total;
-    // Number of opcodes inlined.
-    unsigned optimized;
-    // Number of opcodes with unpredictable types.
-    unsigned unpredictable;
-    // Number of opcodes without inline-able functions.
-    unsigned omitted;
-};
-
-// These are used as template parameter and are required to have external
-// linkage. As const char[] default to static in C++, we have to force it.
-extern const char binop_full[], binop_short[];
-const char binop_full[] = "Binary operators";
-const char binop_short[] = "binops";
-
-static llvm::ManagedStatic<
-    OpStats<binop_full, binop_short> > binary_operator_stats;
-
-extern const char cmpop_full[], cmpop_short[];
-const char cmpop_full[] = "Compare operators";
-const char cmpop_short[] = "compare";
-
-static llvm::ManagedStatic<
-    OpStats<cmpop_full, cmpop_short> > compare_operator_stats;
-
 class AccessAttrStats {
 public:
     AccessAttrStats()
@@ -242,15 +205,11 @@ static llvm::ManagedStatic<ImportNameStats> import_name_stats;
 
 #define CF_INC_STATS(field) call_function_stats->field++
 #define COND_BRANCH_INC_STATS(field) cond_branch_stats->field++
-#define BINOP_INC_STATS(field) binary_operator_stats->field++
-#define CMPOP_INC_STATS(field) compare_operator_stats->field++
 #define ACCESS_ATTR_INC_STATS(field) access_attr_stats->field++
 #define IMPORT_NAME_INC_STATS(field) import_name_stats->field++
 #else
 #define CF_INC_STATS(field)
 #define COND_BRANCH_INC_STATS(field)
-#define BINOP_INC_STATS(field)
-#define CMPOP_INC_STATS(field)
 #define ACCESS_ATTR_INC_STATS(field)
 #define IMPORT_NAME_INC_STATS(field)
 #endif  /* Py_WITH_INSTRUMENTATION */
@@ -1264,166 +1223,29 @@ LlvmFunctionBuilder::GetTypeFeedback(unsigned arg_index) const
 void
 LlvmFunctionBuilder::LOAD_CONST(int index)
 {
-    PyObject *co_consts = this->code_object_->co_consts;
-    Value *const_ = this->builder_.CreateBitCast(
-        this->GetGlobalVariableFor(PyTuple_GET_ITEM(co_consts, index)),
-        PyTypeBuilder<PyObject*>::get(this->context_));
-    this->IncRef(const_);
-    this->Push(const_);
-}
-
-void
-LlvmFunctionBuilder::LOAD_GLOBAL_safe(int name_index)
-{
-    BasicBlock *global_missing =
-            this->CreateBasicBlock("LOAD_GLOBAL_global_missing");
-    BasicBlock *global_success =
-            this->CreateBasicBlock("LOAD_GLOBAL_global_success");
-    BasicBlock *builtin_missing =
-            this->CreateBasicBlock("LOAD_GLOBAL_builtin_missing");
-    BasicBlock *builtin_success =
-            this->CreateBasicBlock("LOAD_GLOBAL_builtin_success");
-    BasicBlock *done = this->CreateBasicBlock("LOAD_GLOBAL_done");
-#ifdef WITH_TSC
-    this->LogTscEvent(LOAD_GLOBAL_ENTER_LLVM);
-#endif
-    Value *name = this->LookupName(name_index);
-    Function *pydict_getitem = this->GetGlobalFunction<
-        PyObject *(PyObject *, PyObject *)>("PyDict_GetItem");
-    Value *global = this->CreateCall(
-        pydict_getitem, this->globals_, name, "global_variable");
-    this->builder_.CreateCondBr(this->IsNull(global),
-                                global_missing, global_success);
-
-    this->builder_.SetInsertPoint(global_success);
-    this->IncRef(global);
-    this->Push(global);
-    this->builder_.CreateBr(done);
-
-    this->builder_.SetInsertPoint(global_missing);
-    // This ignores any exception set by PyDict_GetItem (and similarly
-    // for the builtins dict below,) but this is what ceval does too.
-    Value *builtin = this->CreateCall(
-        pydict_getitem, this->builtins_, name, "builtin_variable");
-    this->builder_.CreateCondBr(this->IsNull(builtin),
-                                builtin_missing, builtin_success);
-
-    this->builder_.SetInsertPoint(builtin_missing);
-    Function *do_raise = this->GetGlobalFunction<
-        void(PyObject *)>("_PyEval_RaiseForGlobalNameError");
-    this->CreateCall(do_raise, name);
-    this->PropagateException();
-
-    this->builder_.SetInsertPoint(builtin_success);
-    this->IncRef(builtin);
-    this->Push(builtin);
-    this->builder_.CreateBr(done);
-
-    this->builder_.SetInsertPoint(done);
-#ifdef WITH_TSC
-    this->LogTscEvent(LOAD_GLOBAL_EXIT_LLVM);
-#endif
-}
-
-void
-LlvmFunctionBuilder::LOAD_GLOBAL_fast(int name_index)
-{
-    PyCodeObject *code = this->code_object_;
-    assert(code->co_watching != NULL);
-    assert(code->co_watching[WATCHING_GLOBALS]);
-    assert(code->co_watching[WATCHING_BUILTINS]);
-
-    PyObject *name = PyTuple_GET_ITEM(code->co_names, name_index);
-    PyObject *obj = PyDict_GetItem(code->co_watching[WATCHING_GLOBALS], name);
-    if (obj == NULL) {
-        obj = PyDict_GetItem(code->co_watching[WATCHING_BUILTINS], name);
-        if (obj == NULL) {
-            /* This isn't necessarily an error: it's legal Python code to refer
-               to globals that aren't yet defined at compilation time. Is it a
-               bad idea? Almost certainly. Is it legal? Unfortunatley. */
-            this->LOAD_GLOBAL_safe(name_index);
-            return;
-        }
-    }
-    this->uses_watched_dicts_.set(WATCHING_GLOBALS);
-    this->uses_watched_dicts_.set(WATCHING_BUILTINS);
-
-    BasicBlock *keep_going = this->CreateBasicBlock("LOAD_GLOBAL_keep_going");
-    BasicBlock *invalid_assumptions =
-        this->CreateBasicBlock("LOAD_GLOBAL_invalid_assumptions");
-
-#ifdef WITH_TSC
-    this->LogTscEvent(LOAD_GLOBAL_ENTER_LLVM);
-#endif
-    Value *use_jit = this->builder_.CreateLoad(this->use_jit_addr_,
-                                               "co_use_jit");
-    this->builder_.CreateCondBr(this->IsNonZero(use_jit),
-                                keep_going,
-                                invalid_assumptions);
-
-    /* Our assumptions about the state of the globals/builtins no longer hold;
-       bail back to the interpreter. */
-    this->builder_.SetInsertPoint(invalid_assumptions);
-    this->CreateBailPoint(_PYFRAME_FATAL_GUARD_FAIL);
-
-    /* Our assumptions are still valid; encode the result of the lookups as an
-       immediate in the IR. */
-    this->builder_.SetInsertPoint(keep_going);
-    Value *global = this->EmbedPointer<PyObject*>(obj);
-    this->IncRef(global);
-    this->Push(global);
-
-#ifdef WITH_TSC
-    this->LogTscEvent(LOAD_GLOBAL_EXIT_LLVM);
-#endif
+    OpcodeLocals locals(this);
+    locals.LOAD_CONST(index);
 }
 
 void
 LlvmFunctionBuilder::LOAD_GLOBAL(int name_index)
 {
-    // A code object might not have co_watching set if
-    // a) it was compiled by setting co_optimization, or
-    // b) we couldn't watch the globals/builtins dicts.
-    PyObject **watching = this->code_object_->co_watching;
-    if (watching && watching[WATCHING_GLOBALS] && watching[WATCHING_BUILTINS])
-        this->LOAD_GLOBAL_fast(name_index);
-    else
-        this->LOAD_GLOBAL_safe(name_index);
+    OpcodeGlobals globals(this);
+    globals.LOAD_GLOBAL(name_index);
 }
 
 void
 LlvmFunctionBuilder::STORE_GLOBAL(int name_index)
 {
-    Value *name = this->LookupName(name_index);
-    Value *value = this->Pop();
-    Function *pydict_setitem = this->GetGlobalFunction<
-        int(PyObject *, PyObject *, PyObject *)>("PyDict_SetItem");
-    Value *result = this->CreateCall(
-        pydict_setitem, this->globals_, name, value,
-        "STORE_GLOBAL_result");
-    this->DecRef(value);
-    this->PropagateExceptionOnNonZero(result);
+    OpcodeGlobals globals(this);
+    globals.STORE_GLOBAL(name_index);
 }
 
 void
 LlvmFunctionBuilder::DELETE_GLOBAL(int name_index)
 {
-    BasicBlock *failure = this->CreateBasicBlock("DELETE_GLOBAL_failure");
-    BasicBlock *success = this->CreateBasicBlock("DELETE_GLOBAL_success");
-    Value *name = this->LookupName(name_index);
-    Function *pydict_setitem = this->GetGlobalFunction<
-        int(PyObject *, PyObject *)>("PyDict_DelItem");
-    Value *result = this->CreateCall(
-        pydict_setitem, this->globals_, name, "STORE_GLOBAL_result");
-    this->builder_.CreateCondBr(this->IsNonZero(result), failure, success);
-
-    this->builder_.SetInsertPoint(failure);
-    Function *do_raise = this->GetGlobalFunction<
-        void(PyObject *)>("_PyEval_RaiseForGlobalNameError");
-    this->CreateCall(do_raise, name);
-    this->PropagateException();
-
-    this->builder_.SetInsertPoint(success);
+    OpcodeGlobals globals(this);
+    globals.DELETE_GLOBAL(name_index);
 }
 
 void
@@ -1780,67 +1602,10 @@ LlvmFunctionBuilder::DELETE_ATTR(int index)
 }
 
 void
-LlvmFunctionBuilder::LOAD_FAST_fast(int index)
-{
-    Value *local = this->builder_.CreateLoad(
-        this->locals_[index], "FAST_loaded");
-#ifndef NDEBUG
-    Value *frame_local_slot = this->builder_.CreateGEP(
-        this->fastlocals_, ConstantInt::get(Type::getInt32Ty(this->context_),
-                                            index));
-    Value *frame_local = this->builder_.CreateLoad(frame_local_slot);
-    Value *sane_locals = this->builder_.CreateICmpEQ(frame_local, local);
-    this->Assert(sane_locals, "alloca locals do not match frame locals!");
-#endif  /* NDEBUG */
-    this->IncRef(local);
-    this->Push(local);
-}
-
-void
-LlvmFunctionBuilder::LOAD_FAST_safe(int index)
-{
-    BasicBlock *unbound_local =
-        this->CreateBasicBlock("LOAD_FAST_unbound");
-    BasicBlock *success =
-        this->CreateBasicBlock("LOAD_FAST_success");
-
-    Value *local = this->builder_.CreateLoad(
-        this->locals_[index], "FAST_loaded");
-#ifndef NDEBUG
-    Value *frame_local_slot = this->builder_.CreateGEP(
-        this->fastlocals_, ConstantInt::get(Type::getInt32Ty(this->context_),
-                                            index));
-    Value *frame_local = this->builder_.CreateLoad(frame_local_slot);
-    Value *sane_locals = this->builder_.CreateICmpEQ(frame_local, local);
-    this->Assert(sane_locals, "alloca locals do not match frame locals!");
-#endif  /* NDEBUG */
-    this->builder_.CreateCondBr(this->IsNull(local), unbound_local, success);
-
-    this->builder_.SetInsertPoint(unbound_local);
-    Function *do_raise =
-        this->GetGlobalFunction<void(PyFrameObject*, int)>(
-            "_PyEval_RaiseForUnboundLocal");
-    this->CreateCall(do_raise, this->frame_, this->GetSigned<int>(index));
-    this->PropagateException();
-
-    this->builder_.SetInsertPoint(success);
-    this->IncRef(local);
-    this->Push(local);
-}
-
-// TODO(collinwinter): we'd like to implement this by simply marking the load
-// as "cannot be NULL" and let LLVM's constant propgation optimizers remove the
-// conditional branch for us. That is currently not supported, so we do this
-// manually.
-void
 LlvmFunctionBuilder::LOAD_FAST(int index)
 {
-    // Simple check: if DELETE_FAST is never used, function parameters cannot
-    // be NULL.
-    if (!this->uses_delete_fast && index < this->GetParamCount())
-        this->LOAD_FAST_fast(index);
-    else
-        this->LOAD_FAST_safe(index);
+    OpcodeLocals locals(this);
+    locals.LOAD_FAST(index);
 }
 
 void
@@ -2825,38 +2590,15 @@ LlvmFunctionBuilder::CreateGuardBailPoint(unsigned bail_idx, char reason)
 void
 LlvmFunctionBuilder::STORE_FAST(int index)
 {
-    this->SetLocal(index, this->Pop());
+    OpcodeLocals locals(this);
+    locals.STORE_FAST(index);
 }
 
 void
 LlvmFunctionBuilder::DELETE_FAST(int index)
 {
-    BasicBlock *failure =
-        this->CreateBasicBlock("DELETE_FAST_failure");
-    BasicBlock *success =
-        this->CreateBasicBlock("DELETE_FAST_success");
-    Value *local_slot = this->locals_[index];
-    Value *orig_value = this->builder_.CreateLoad(
-        local_slot, "DELETE_FAST_old_reference");
-    this->builder_.CreateCondBr(this->IsNull(orig_value), failure, success);
-
-    this->builder_.SetInsertPoint(failure);
-    Function *do_raise = this->GetGlobalFunction<
-        void(PyFrameObject *, int)>("_PyEval_RaiseForUnboundLocal");
-    this->CreateCall(
-        do_raise, this->frame_,
-        ConstantInt::getSigned(PyTypeBuilder<int>::get(this->context_), index));
-    this->PropagateException();
-
-    /* We clear both the LLVM-visible locals and the PyFrameObject's locals to
-       make vars(), dir() and locals() happy. */
-    this->builder_.SetInsertPoint(success);
-    Value *frame_local_slot = this->builder_.CreateGEP(
-        this->fastlocals_, ConstantInt::get(Type::getInt32Ty(this->context_),
-                                            index));
-    this->builder_.CreateStore(this->GetNull<PyObject*>(), frame_local_slot);
-    this->builder_.CreateStore(this->GetNull<PyObject*>(), local_slot);
-    this->DecRef(orig_value);
+    OpcodeLocals locals(this);
+    locals.DELETE_FAST(index);
 }
 
 void
@@ -3303,18 +3045,18 @@ LlvmFunctionBuilder::STORE_SUBSCR_safe()
 void
 LlvmFunctionBuilder::STORE_SUBSCR()
 {
-    BINOP_INC_STATS(total);
+    OpcodeBinops::IncStatsTotal();
 
     const PyTypeObject *lhs_type = this->GetTypeFeedback(0);
     const PyTypeObject *rhs_type = this->GetTypeFeedback(1);
 
     if (lhs_type == &PyList_Type && rhs_type == &PyInt_Type) {
-        BINOP_INC_STATS(optimized);
+        OpcodeBinops::IncStatsOptimized();
         this->STORE_SUBSCR_list_int();
         return;
     }
     else {
-        BINOP_INC_STATS(omitted);
+        OpcodeBinops::IncStatsOmitted();
         this->STORE_SUBSCR_safe();
         return;
     }
@@ -3334,151 +3076,56 @@ LlvmFunctionBuilder::DELETE_SUBSCR()
     this->PropagateExceptionOnNonZero(result);
 }
 
-// Common code for almost all binary operations
-void
-LlvmFunctionBuilder::GenericBinOp(const char *apifunc)
-{
-    Value *rhs = this->Pop();
-    Value *lhs = this->Pop();
-    Function *op =
-        this->GetGlobalFunction<PyObject*(PyObject*, PyObject*)>(apifunc);
-    Value *result = this->CreateCall(op, lhs, rhs, "binop_result");
-    this->DecRef(lhs);
-    this->DecRef(rhs);
-    this->PropagateExceptionOnNull(result);
-    this->Push(result);
-}
-
-void
-LlvmFunctionBuilder::OptimizedBinOp(const char *apifunc)
-{
-    const PyTypeObject *lhs_type = this->GetTypeFeedback(0);
-    const PyTypeObject *rhs_type = this->GetTypeFeedback(1);
-    if (lhs_type == NULL || rhs_type == NULL) {
-        BINOP_INC_STATS(unpredictable);
-        this->GenericBinOp(apifunc);
-        return;
-    }
-
-    // We're always specializing the receiver, so don't check the lhs for
-    // wildcards.
-    const char *name = this->llvm_data_->optimized_ops.
-        Find(apifunc, lhs_type, rhs_type);
-
-    if (name == NULL) {
-        name = this->llvm_data_->optimized_ops.
-            Find(apifunc, lhs_type, Wildcard);
-        if (name == NULL) {
-            BINOP_INC_STATS(omitted);
-            this->GenericBinOp(apifunc);
-            return;
-        }
-    }
-
-    BINOP_INC_STATS(optimized);
-    BasicBlock *success = this->CreateBasicBlock("BINOP_OPT_success");
-    BasicBlock *bailpoint = this->CreateBasicBlock("BINOP_OPT_bail");
-
-    Value *rhs = this->Pop();
-    Value *lhs = this->Pop();
-
-    // This strategy of bailing may duplicate the work (once in the inlined
-    // version, once again in the eval loop). This is generally (in a Halting
-    // Problem kind of way) unsafe, but works since we're dealing with a known
-    // subset of all possible types where we control the semantics of __add__,
-    // etc.
-    Function *op =
-        this->GetGlobalFunction<PyObject*(PyObject*, PyObject*)>(name);
-    Value *result = this->CreateCall(op, lhs, rhs, "binop_result");
-    this->builder_.CreateCondBr(this->IsNull(result), bailpoint, success);
-
-    this->builder_.SetInsertPoint(bailpoint);
-    this->Push(lhs);
-    this->Push(rhs);
-    this->CreateGuardBailPoint(_PYGUARD_BINOP);
-
-    this->builder_.SetInsertPoint(success);
-    this->DecRef(lhs);
-    this->DecRef(rhs);
-    this->Push(result);
-}
-
-#define BINOP_METH(OPCODE, APIFUNC)     \
+#define BINOP_METH(OPCODE)              \
 void                                    \
 LlvmFunctionBuilder::OPCODE()           \
 {                                       \
-    BINOP_INC_STATS(total);             \
-    BINOP_INC_STATS(omitted);           \
-    this->GenericBinOp(#APIFUNC);       \
+    OpcodeBinops binops(this);          \
+    binops.OPCODE();                    \
 }
 
-#define BINOP_OPT(OPCODE, APIFUNC)      \
-void                                    \
-LlvmFunctionBuilder::OPCODE()           \
-{                                       \
-    BINOP_INC_STATS(total);             \
-    this->OptimizedBinOp(#APIFUNC);     \
-}
+BINOP_METH(BINARY_ADD)
+BINOP_METH(BINARY_SUBTRACT)
+BINOP_METH(BINARY_MULTIPLY)
+BINOP_METH(BINARY_DIVIDE)
+BINOP_METH(BINARY_MODULO)
+BINOP_METH(BINARY_SUBSCR)
 
-BINOP_OPT(BINARY_ADD, PyNumber_Add)
-BINOP_OPT(BINARY_SUBTRACT, PyNumber_Subtract)
-BINOP_OPT(BINARY_MULTIPLY, PyNumber_Multiply)
-BINOP_OPT(BINARY_DIVIDE, PyNumber_Divide)
-BINOP_OPT(BINARY_MODULO, PyNumber_Remainder)
-BINOP_OPT(BINARY_SUBSCR, PyObject_GetItem)
+BINOP_METH(BINARY_TRUE_DIVIDE)
+BINOP_METH(BINARY_LSHIFT)
+BINOP_METH(BINARY_RSHIFT)
+BINOP_METH(BINARY_OR)
+BINOP_METH(BINARY_XOR)
+BINOP_METH(BINARY_AND)
+BINOP_METH(BINARY_FLOOR_DIVIDE)
 
-BINOP_METH(BINARY_TRUE_DIVIDE, PyNumber_TrueDivide)
-BINOP_METH(BINARY_LSHIFT, PyNumber_Lshift)
-BINOP_METH(BINARY_RSHIFT, PyNumber_Rshift)
-BINOP_METH(BINARY_OR, PyNumber_Or)
-BINOP_METH(BINARY_XOR, PyNumber_Xor)
-BINOP_METH(BINARY_AND, PyNumber_And)
-BINOP_METH(BINARY_FLOOR_DIVIDE, PyNumber_FloorDivide)
-
-BINOP_METH(INPLACE_ADD, PyNumber_InPlaceAdd)
-BINOP_METH(INPLACE_SUBTRACT, PyNumber_InPlaceSubtract)
-BINOP_METH(INPLACE_MULTIPLY, PyNumber_InPlaceMultiply)
-BINOP_METH(INPLACE_TRUE_DIVIDE, PyNumber_InPlaceTrueDivide)
-BINOP_METH(INPLACE_DIVIDE, PyNumber_InPlaceDivide)
-BINOP_METH(INPLACE_MODULO, PyNumber_InPlaceRemainder)
-BINOP_METH(INPLACE_LSHIFT, PyNumber_InPlaceLshift)
-BINOP_METH(INPLACE_RSHIFT, PyNumber_InPlaceRshift)
-BINOP_METH(INPLACE_OR, PyNumber_InPlaceOr)
-BINOP_METH(INPLACE_XOR, PyNumber_InPlaceXor)
-BINOP_METH(INPLACE_AND, PyNumber_InPlaceAnd)
-BINOP_METH(INPLACE_FLOOR_DIVIDE, PyNumber_InPlaceFloorDivide)
+BINOP_METH(INPLACE_ADD)
+BINOP_METH(INPLACE_SUBTRACT)
+BINOP_METH(INPLACE_MULTIPLY)
+BINOP_METH(INPLACE_TRUE_DIVIDE)
+BINOP_METH(INPLACE_DIVIDE)
+BINOP_METH(INPLACE_MODULO)
+BINOP_METH(INPLACE_LSHIFT)
+BINOP_METH(INPLACE_RSHIFT)
+BINOP_METH(INPLACE_OR)
+BINOP_METH(INPLACE_XOR)
+BINOP_METH(INPLACE_AND)
+BINOP_METH(INPLACE_FLOOR_DIVIDE)
 
 #undef BINOP_METH
-#undef BINOP_OPT
-
-// PyNumber_Power() and PyNumber_InPlacePower() take three arguments, the
-// third should be Py_None when calling from BINARY_POWER/INPLACE_POWER.
-void
-LlvmFunctionBuilder::GenericPowOp(const char *apifunc)
-{
-    Value *rhs = this->Pop();
-    Value *lhs = this->Pop();
-    Function *op = this->GetGlobalFunction<PyObject*(PyObject*, PyObject*,
-        PyObject *)>(apifunc);
-    Value *pynone = this->GetGlobalVariableFor(&_Py_NoneStruct);
-    Value *result = this->CreateCall(op, lhs, rhs, pynone,
-                                               "powop_result");
-    this->DecRef(lhs);
-    this->DecRef(rhs);
-    this->PropagateExceptionOnNull(result);
-    this->Push(result);
-}
 
 void
 LlvmFunctionBuilder::BINARY_POWER()
 {
-    this->GenericPowOp("PyNumber_Power");
+    OpcodeBinops binops(this);
+    binops.BINARY_POWER();
 }
 
 void
 LlvmFunctionBuilder::INPLACE_POWER()
 {
-    this->GenericPowOp("PyNumber_InPlacePower");
+    OpcodeBinops binops(this);
+    binops.INPLACE_POWER();
 }
 
 // Implementation of almost all unary operations
@@ -3599,181 +3246,10 @@ LlvmFunctionBuilder::ROT_FOUR()
 }
 
 void
-LlvmFunctionBuilder::RichCompare(Value *lhs, Value *rhs, int cmp_op)
-{
-    Function *pyobject_richcompare = this->GetGlobalFunction<
-        PyObject *(PyObject *, PyObject *, int)>("PyObject_RichCompare");
-    Value *result = this->CreateCall(
-        pyobject_richcompare, lhs, rhs,
-        ConstantInt::get(PyTypeBuilder<int>::get(this->context_), cmp_op),
-        "COMPARE_OP_RichCompare_result");
-    this->DecRef(lhs);
-    this->DecRef(rhs);
-    this->PropagateExceptionOnNull(result);
-    this->Push(result);
-}
-
-Value *
-LlvmFunctionBuilder::ContainerContains(Value *container, Value *item)
-{
-    Function *contains =
-        this->GetGlobalFunction<int(PyObject *, PyObject *)>(
-            "PySequence_Contains");
-    Value *result = this->CreateCall(
-        contains, container, item, "ContainerContains_result");
-    this->DecRef(item);
-    this->DecRef(container);
-    this->PropagateExceptionOnNegative(result);
-    return this->IsPositive(result);
-}
-
-// TODO(twouters): test this (used in exception handling.)
-Value *
-LlvmFunctionBuilder::ExceptionMatches(Value *exc, Value *exc_type)
-{
-    Function *exc_matches = this->GetGlobalFunction<
-        int(PyObject *, PyObject *)>("_PyEval_CheckedExceptionMatches");
-    Value *result = this->CreateCall(
-        exc_matches, exc, exc_type, "ExceptionMatches_result");
-    this->DecRef(exc_type);
-    this->DecRef(exc);
-    this->PropagateExceptionOnNegative(result);
-    return this->IsPositive(result);
-}
-
-bool
-LlvmFunctionBuilder::COMPARE_OP_fast(int cmp_op, const PyTypeObject *lhs_type,
-                                     const PyTypeObject *rhs_type)
-{
-    const char *api_func = NULL;
-
-    switch (cmp_op) {
-#define CMPOP_NAME(op) { \
-    case op: \
-        api_func = #op; \
-        break; \
-}
-        CMPOP_NAME(PyCmp_IS)
-        CMPOP_NAME(PyCmp_IS_NOT)
-        CMPOP_NAME(PyCmp_IN)
-        CMPOP_NAME(PyCmp_NOT_IN)
-        CMPOP_NAME(PyCmp_EXC_MATCH)
-        CMPOP_NAME(PyCmp_EQ)
-        CMPOP_NAME(PyCmp_NE)
-        CMPOP_NAME(PyCmp_LT)
-        CMPOP_NAME(PyCmp_LE)
-        CMPOP_NAME(PyCmp_GT)
-        CMPOP_NAME(PyCmp_GE)
-        default:
-            Py_FatalError("unknown COMPARE_OP oparg");
-            return false;  // Not reached.
-#undef CMPOP_NAME
-    }
-
-    const char *name = this->llvm_data_->optimized_ops.
-        Find(api_func, lhs_type, rhs_type);
-
-    if (name == NULL) {
-        return false;
-    }
-
-    CMPOP_INC_STATS(optimized);
-
-    BasicBlock *success = this->CreateBasicBlock("CMPOP_OPT_success");
-    BasicBlock *bailpoint = this->CreateBasicBlock("CMPOP_OPT_bail");
-
-    Value *rhs = this->Pop();
-    Value *lhs = this->Pop();
-
-    Function *op =
-        this->GetGlobalFunction<PyObject*(PyObject*, PyObject*)>(name);
-    Value *result = this->CreateCall(op, lhs, rhs, "cmpop_result");
-    this->builder_.CreateCondBr(this->IsNull(result), bailpoint, success);
-
-    this->builder_.SetInsertPoint(bailpoint);
-    this->Push(lhs);
-    this->Push(rhs);
-    this->CreateBailPoint(_PYFRAME_GUARD_FAIL);
-
-    this->builder_.SetInsertPoint(success);
-    this->DecRef(lhs);
-    this->DecRef(rhs);
-    this->Push(result);
-    return true;
-}
-
-void
 LlvmFunctionBuilder::COMPARE_OP(int cmp_op)
 {
-    CMPOP_INC_STATS(total);
-    const PyTypeObject *lhs_type = this->GetTypeFeedback(0);
-    const PyTypeObject *rhs_type = this->GetTypeFeedback(1);
-    if (lhs_type != NULL && rhs_type != NULL) {
-        // Returning true means the op was successfully optimized.
-        if (this->COMPARE_OP_fast(cmp_op, lhs_type, rhs_type)) {
-            return;
-        }
-        CMPOP_INC_STATS(omitted);
-    }
-    else {
-        CMPOP_INC_STATS(unpredictable);
-    }
-
-    this->COMPARE_OP_safe(cmp_op);
-}
-
-void
-LlvmFunctionBuilder::COMPARE_OP_safe(int cmp_op)
-{
-    Value *rhs = this->Pop();
-    Value *lhs = this->Pop();
-    Value *result;
-    switch (cmp_op) {
-    case PyCmp_IS:
-        result = this->builder_.CreateICmpEQ(lhs, rhs, "COMPARE_OP_is_same");
-        this->DecRef(lhs);
-        this->DecRef(rhs);
-        break;
-    case PyCmp_IS_NOT:
-        result = this->builder_.CreateICmpNE(lhs, rhs,
-                                             "COMPARE_OP_is_not_same");
-        this->DecRef(lhs);
-        this->DecRef(rhs);
-        break;
-    case PyCmp_IN:
-        // item in seq -> ContainerContains(seq, item)
-        result = this->ContainerContains(rhs, lhs);
-        break;
-    case PyCmp_NOT_IN:
-    {
-        Value *inverted_result = this->ContainerContains(rhs, lhs);
-        result = this->builder_.CreateICmpEQ(
-            inverted_result, ConstantInt::get(inverted_result->getType(), 0),
-            "COMPARE_OP_not_in_result");
-        break;
-    }
-    case PyCmp_EXC_MATCH:
-        result = this->ExceptionMatches(lhs, rhs);
-        break;
-    case PyCmp_EQ:
-    case PyCmp_NE:
-    case PyCmp_LT:
-    case PyCmp_LE:
-    case PyCmp_GT:
-    case PyCmp_GE:
-        this->RichCompare(lhs, rhs, cmp_op);
-        return;
-    default:
-        Py_FatalError("unknown COMPARE_OP oparg");
-        return;  // Not reached.
-    }
-    Value *value = this->builder_.CreateSelect(
-        result,
-        this->GetGlobalVariableFor((PyObject*)&_Py_TrueStruct),
-        this->GetGlobalVariableFor((PyObject*)&_Py_ZeroStruct),
-        "COMPARE_OP_result");
-    this->IncRef(value);
-    this->Push(value);
+    OpcodeCmpops cmpops(this);
+    cmpops.COMPARE_OP(cmp_op);
 }
 
 void
@@ -4163,24 +3639,6 @@ LlvmFunctionBuilder::GetStackLevel()
 }
 
 void
-LlvmFunctionBuilder::SetLocal(int locals_index, llvm::Value *new_value)
-{
-    // We write changes twice: once to our LLVM-visible locals, and again to the
-    // PyFrameObject. This makes vars(), locals() and dir() happy.
-    Value *frame_local_slot = this->builder_.CreateGEP(
-        this->fastlocals_, ConstantInt::get(Type::getInt32Ty(this->context_),
-                                            locals_index));
-    this->llvm_data_->tbaa_locals.MarkInstruction(frame_local_slot);
-    this->builder_.CreateStore(new_value, frame_local_slot);
-
-    Value *llvm_local_slot = this->locals_[locals_index];
-    Value *orig_value =
-        this->builder_.CreateLoad(llvm_local_slot, "llvm_local_overwritten");
-    this->builder_.CreateStore(new_value, llvm_local_slot);
-    this->XDecRef(orig_value);
-}
-
-void
 LlvmFunctionBuilder::CallBlockSetup(int block_type, llvm::BasicBlock *handler,
                                     int handler_opindex)
 {
@@ -4249,37 +3707,6 @@ LlvmFunctionBuilder::Abort(const std::string &failure_message)
         GetGlobalFunction<int(const char*)>("puts"),
         this->llvm_data_->GetGlobalStringPtr(failure_message));
     this->CreateCall(GetGlobalFunction<void()>("abort"));
-}
-
-template<typename FunctionType> Function *
-LlvmFunctionBuilder::GetGlobalFunction(const std::string &name)
-{
-    return llvm::cast<Function>(
-        this->module_->getOrInsertFunction(
-            name, PyTypeBuilder<FunctionType>::get(this->context_)));
-}
-
-template<typename VariableType> Constant *
-LlvmFunctionBuilder::GetGlobalVariable(void *var_address,
-                                       const std::string &name)
-{
-    const Type *expected_type =
-        PyTypeBuilder<VariableType>::get(this->context_);
-    if (GlobalVariable *global = this->module_->getNamedGlobal(name)) {
-        assert (expected_type == global->getType()->getElementType());
-        return global;
-    }
-    if (llvm::GlobalValue *global =
-        const_cast<llvm::GlobalValue*>(this->llvm_data_->getExecutionEngine()->
-                                       getGlobalValueAtAddress(var_address))) {
-        assert (expected_type == global->getType()->getElementType());
-        if (!global->hasName())
-            global->setName(name);
-        return global;
-    }
-    return new GlobalVariable(
-        *this->module_, expected_type, /*isConstant=*/false,
-        llvm::GlobalValue::ExternalLinkage, NULL, name);
 }
 
 Constant *
@@ -4366,12 +3793,6 @@ llvm::BasicBlock *
 LlvmFunctionBuilder::CreateBasicBlock(const llvm::Twine &name)
 {
     return BasicBlock::Create(this->context_, name, this->function_);
-}
-
-template<typename T> Value *
-LlvmFunctionBuilder::GetNull()
-{
-    return Constant::getNullValue(PyTypeBuilder<T>::get(this->context_));
 }
 
 Value *
@@ -4521,17 +3942,6 @@ LlvmFunctionBuilder::IsPythonTrue(Value *value)
 
     this->builder_.SetInsertPoint(done);
     return this->builder_.CreateLoad(result_addr);
-}
-
-template<typename T> Value *
-LlvmFunctionBuilder::EmbedPointer(void *ptr)
-{
-    // We assume that the caller has ensured that ptr will stay live for the
-    // life of this native code object.
-    return this->builder_.CreateIntToPtr(
-        ConstantInt::get(Type::getInt64Ty(this->context_),
-                         reinterpret_cast<intptr_t>(ptr)),
-        PyTypeBuilder<T>::get(this->context_));
 }
 
 int

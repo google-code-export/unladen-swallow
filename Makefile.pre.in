@@ -335,6 +335,10 @@ ifneq ($(WITH_LLVM), 0)
 		JIT/PyTypeBuilder.o \
 		JIT/RuntimeFeedback.o \
 		JIT/SingleFunctionInliner.o \
+		JIT/opcodes/binops.o \
+		JIT/opcodes/cmpops.o \
+		JIT/opcodes/globals.o \
+		JIT/opcodes/locals.o \
 		Util/EventTimer.o \
 		Util/PySmallPtrSet.o \
 		Util/Stats.o
@@ -730,9 +734,14 @@ PYTHON_HEADERS= \
 		JIT/RuntimeFeedback.h \
 		JIT/RuntimeFeedback_fwd.h \
 		JIT/SingleFunctionInliner.h \
+		JIT/opcodes/binops.h \
+		JIT/opcodes/cmpops.h \
+		JIT/opcodes/globals.h \
+		JIT/opcodes/locals.h \
 		Util/EventTimer.h \
 		Util/PySmallPtrSet.h \
 		Util/Stats.h \
+		Util/Instrumentation.h \
 		pyconfig.h \
 		$(PARSER_HEADERS)
 
