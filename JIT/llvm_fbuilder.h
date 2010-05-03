@@ -28,10 +28,24 @@ struct PyGlobalLlvmData;
 
 namespace py {
 
+class OpcodeAttributes;
 class OpcodeBinops;
+class OpcodeBlock;
+class OpcodeCall;
+class OpcodeClosure;
 class OpcodeCmpops;
+class OpcodeContainer;
+class OpcodeControl;
 class OpcodeGlobals;
 class OpcodeLocals;
+class OpcodeLoop;
+class OpcodeName;
+class OpcodeSlice;
+class OpcodeStack;
+class OpcodeUnaryops;
+
+llvm::CallInst *
+TransferAttributes(llvm::CallInst *callsite, const llvm::Value* callee);
 
 /// Helps the compiler build LLVM functions corresponding to Python
 /// functions.  This class maintains the IRBuilder and several Value*s
@@ -40,10 +54,21 @@ class LlvmFunctionBuilder {
     LlvmFunctionBuilder(const LlvmFunctionBuilder &);  // Not implemented.
     void operator=(const LlvmFunctionBuilder &);  // Not implemented.
 
+    friend class OpcodeAttributes;
     friend class OpcodeBinops;
+    friend class OpcodeBlock;
+    friend class OpcodeCall;
+    friend class OpcodeClosure;
     friend class OpcodeCmpops;
+    friend class OpcodeContainer;
+    friend class OpcodeControl;
     friend class OpcodeGlobals;
     friend class OpcodeLocals;
+    friend class OpcodeLoop;
+    friend class OpcodeName;
+    friend class OpcodeSlice;
+    friend class OpcodeStack;
+    friend class OpcodeUnaryops;
 
 public:
     LlvmFunctionBuilder(PyGlobalLlvmData *global_data, PyCodeObject *code);
@@ -291,12 +316,6 @@ private:
     const PyRuntimeFeedback *GetFeedback(unsigned arg_index) const;
     const PyTypeObject *GetTypeFeedback(unsigned arg_index) const;
 
-    // Adds handler to the switch for unwind targets and then sets up
-    // a call to PyFrame_BlockSetup() with the block type, handler
-    // index, and current stack level.
-    void CallBlockSetup(int block_type,
-                        llvm::BasicBlock *handler, int handler_opindex);
-
     // Look up a name in the function's names list, returning the
     // PyStringObject for the name_index.
     llvm::Value *LookupName(int name_index);
@@ -352,31 +371,6 @@ private:
     // new block if it's NULL) and leaves the insertion point there.
     void CheckPyTicker(llvm::BasicBlock *next_block = NULL);
 
-    // Helper function for the POP_JUMP_IF_{TRUE,FALSE} and
-    // JUMP_IF_{TRUE,FALSE}_OR_POP, used for omitting untake branches.
-    // If sufficient data is availble, we made decide to omit one side of a
-    // conditional branch, replacing that code with a jump to the interpreter.
-    // If sufficient data is available:
-    //      - set true_block or false_block to a bail-to-interpreter block.
-    //      - set bail_idx and bail_block to handle bailing.
-    // If sufficient data is available or we decide not to optimize:
-    //      - leave true_block and false_block alone.
-    //      - bail_idx will be 0, bail_block will be NULL.
-    //
-    // Out parameters: true_block, false_block, bail_idx, bail_block.
-    void GetPyCondBranchBailBlock(unsigned true_idx,
-                                  llvm::BasicBlock **true_block,
-                                  unsigned false_idx,
-                                  llvm::BasicBlock **false_block,
-                                  unsigned *bail_idx,
-                                  llvm::BasicBlock **bail_block);
-
-    // Helper function for the POP_JUMP_IF_{TRUE,FALSE} and
-    // JUMP_IF_{TRUE,FALSE}_OR_POP. Fill in the bail block for these opcodes
-    // that was obtained from GetPyCondBranchBailBlock().
-    void FillPyCondBranchBailBlock(llvm::BasicBlock *bail_to,
-                                   unsigned bail_idx);
-
     // These are just like the CreateCall* calls on IRBuilder, except they also
     // apply callee's calling convention and attributes to the call site.
     llvm::CallInst *CreateCall(llvm::Value *callee,
@@ -403,7 +397,13 @@ private:
     llvm::CallInst *CreateCall(llvm::Value *callee,
                                InputIterator begin,
                                InputIterator end,
-                               const char *name = "");
+                               const char *name = "")
+    {
+        llvm::CallInst *call =
+            this->builder_.CreateCall(callee, begin, end, name);
+        return TransferAttributes(call, callee);
+    }
+
 
     /// Marks the end of the function and inserts a return instruction.
     llvm::ReturnInst *CreateRet(llvm::Value *retval);
@@ -489,17 +489,6 @@ private:
         llvm::Value *array_size,
         const char *name);
 
-    // Set exception information and jump to exception handling. The
-    // arguments can be Value*'s representing NULL to implement the
-    // four forms of the 'raise' statement. Steals all references.
-    void DoRaise(llvm::Value *exc_type, llvm::Value *exc_inst,
-                 llvm::Value *exc_tb);
-
-    // Helper methods for binary and unary operators, passing the name
-    // of the Python/C API function that implements the operation.
-    // GenericUnaryOp's is "PyObject *(*)(PyObject *)"
-    void GenericUnaryOp(const char *apifunc);
-
     // If 'value' represents NULL, propagates the exception.
     // Otherwise, falls through.
     void PropagateExceptionOnNull(llvm::Value *value);
@@ -513,158 +502,11 @@ private:
     // Get the address of the idx'th item in a list or tuple object.
     llvm::Value *GetListItemSlot(llvm::Value *lst, int idx);
     llvm::Value *GetTupleItemSlot(llvm::Value *tup, int idx);
-    // Helper method for building a new sequence from items on the stack.
-    // 'size' is the number of items to build, 'createname' the Python/C API
-    // function to call to create the sequence, and 'getitemslot' is called
-    // to get each item's address (GetListItemSlot or GetTupleItemSlot.)
-    void BuildSequenceLiteral(
-        int size, const char *createname,
-        llvm::Value *(LlvmFunctionBuilder::*getitemslot)(llvm::Value *, int));
-
-    // Apply a classic slice to a sequence, pushing the result onto the
-    // stack.  'start' and 'stop' can be Value*'s representing NULL to
-    // indicate missing arguments, and all references are stolen.
-    void ApplySlice(llvm::Value *seq, llvm::Value *start, llvm::Value *stop);
-    // Assign to or delete a slice of a sequence. 'start' and 'stop' can be
-    // Value*'s representing NULL to indicate missing arguments, and
-    // 'source' can be a Value* representing NULL to indicate slice
-    // deletion. All references are stolen.
-    void AssignSlice(llvm::Value *seq, llvm::Value *start, llvm::Value *stop,
-                     llvm::Value *source);
 
 #ifdef WITH_TSC
     // Emit code to record a given event with the TSC EventTimer.h system.
     void LogTscEvent(_PyTscEventId event_id);
 #endif
-
-    // Helper method for CALL_FUNCTION_(VAR|KW|VAR_KW); calls
-    // _PyEval_CallFunctionVarKw() with the given flags and the current
-    // stack pointer.
-    void CallVarKwFunction(int num_args, int call_flag);
-
-    // CALL_FUNCTION comes in two flavors: CALL_FUNCTION_safe is guaranteed to
-    // work, while CALL_FUNCTION_fast takes advantage of data gathered while
-    // running through the eval loop to omit as much flexibility as possible.
-    void CALL_FUNCTION_safe(int num_args);
-    void CALL_FUNCTION_fast(int num_args, const PyRuntimeFeedback *);
-
-    // Specialized version of CALL_FUNCTION for len() on certain types.
-    void CALL_FUNCTION_fast_len(llvm::Value *actual_func,
-                                llvm::Value *stack_pointer,
-                                llvm::BasicBlock *invalid_assumptions,
-                                const char *function_name);
-
-    // LOAD/STORE_ATTR_safe always works, while LOAD/STORE_ATTR_fast is
-    // optimized to skip the descriptor/method lookup on the type if the object
-    // type matches.  It will return false if it fails.
-    void LOAD_ATTR_safe(int names_index);
-    bool LOAD_ATTR_fast(int names_index);
-    void STORE_ATTR_safe(int names_index);
-    bool STORE_ATTR_fast(int names_index);
-
-    // _safe is guaranteed to work; _list_int is specialized for indexing a list
-    // with an int.
-    void STORE_SUBSCR_safe();
-    void STORE_SUBSCR_list_int();
-
-    // Specifies which kind of attribute access we are performing, either load
-    // or store.  Eventually we may support delete, but they are rare enough
-    // that it is unlikely to be worth it.
-    enum AttrAccessKind {
-        ATTR_ACCESS_LOAD,
-        ATTR_ACCESS_STORE
-    };
-
-    // This class encapsulates the common data and code for doing optimized
-    // attribute access.  This object helps perform checks, generate guard
-    // code, and register invalidation listeners when generating an optimized
-    // LOAD_ATTR or STORE_ATTR opcode.
-    class AttributeAccessor {
-    public:
-        // Construct an attribute accessor object.  "name" is a reference to
-        // the attribute to access borrowed from co_names, and access_kind
-        // determines whether we are generating a LOAD_ATTR or STORE_ATTR
-        // opcode.
-        AttributeAccessor(LlvmFunctionBuilder *fbuilder, PyObject *name,
-                          AttrAccessKind kind)
-            : fbuilder_(fbuilder),
-              access_kind_(kind),
-              guard_type_(0),
-              name_(name),
-              dictoffset_(0),
-              descr_(0),
-              guard_descr_type_(0),
-              is_data_descr_(false),
-              descr_get_(0),
-              descr_set_(0),
-              guard_type_v_(0),
-              name_v_(0),
-              dictoffset_v_(0),
-              descr_v_(0),
-              is_data_descr_v_(0) { }
-
-        // This helper method returns false if a LOAD_ATTR or STORE_ATTR opcode
-        // cannot be optimized.  If the opcode can be optimized, it fills in
-        // all of the fields of this object by reading the feedback from the
-        // code object.
-        bool CanOptimizeAttrAccess();
-
-        // This helper method emits the common type guards for an optimized
-        // LOAD_ATTR or STORE_ATTR.
-        void GuardAttributeAccess(llvm::Value *obj_v,
-                                  llvm::BasicBlock *do_access);
-
-        LlvmFunctionBuilder *fbuilder_;
-        AttrAccessKind access_kind_;
-
-        // This is the type we have chosen to guard on from the feedback.  All
-        // of the other attributes hold references borrowed from this type
-        // reference.  The validity of this type reference is ensured by
-        // listening for type modification and destruction.
-        PyTypeObject *guard_type_;
-
-        PyObject *name_;
-        long dictoffset_;
-
-        // This is the descriptor cached from the type object.  It may be NULL
-        // if the type has no attribute with the name we're looking up.
-        PyObject *descr_;
-        // This is the type of the descriptor, if it exists, at compile time.
-        // We guard that the type of the descriptor is the same at run time as
-        // it is at compile time.
-        PyTypeObject *guard_descr_type_;
-        // These fields mirror the descriptor accessor fields if they are
-        // available.
-        bool is_data_descr_;
-        descrgetfunc descr_get_;
-        descrsetfunc descr_set_;
-
-        // llvm::Value versions of the above data created with EmbedPointer or
-        // ConstantInt::get.
-        llvm::Value *guard_type_v_;
-        llvm::Value *name_v_;
-        llvm::Value *dictoffset_v_;
-        llvm::Value *descr_v_;
-        llvm::Value *is_data_descr_v_;
-
-    private:
-        // Cache all of the data required to do attribute access.  This fills
-        // in all of the non-llvm::Value fields of this object.
-        void CacheTypeLookup();
-
-        // Make LLVM Value versions of all the data we're caching in the IR.
-        // Note that we borrow references to the descriptor from the type
-        // object.  If the type object is modified to drop its references, this
-        // code will be invalidated.  Furthermore, if the type object itself is
-        // freed, this code will be invalidated, which will safely drop our
-        // references.
-        void MakeLlvmValues();
-    };
-
-    // A fast version that avoids the import machinery if sys.modules and other
-    // modules haven't changed. Returns false if the attempt to optimize failed;
-    // the safe version in IMPORT_NAME() will be used.
-    bool IMPORT_NAME_fast();
 
     /// Emits code to conditionally bail out to the interpreter loop
     /// if a line tracing function is installed.  If the line tracing

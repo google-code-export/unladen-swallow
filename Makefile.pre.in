@@ -335,10 +335,21 @@ ifneq ($(WITH_LLVM), 0)
 		JIT/PyTypeBuilder.o \
 		JIT/RuntimeFeedback.o \
 		JIT/SingleFunctionInliner.o \
+		JIT/opcodes/attributes.o \
 		JIT/opcodes/binops.o \
+		JIT/opcodes/block.o \
+		JIT/opcodes/call.o \
+		JIT/opcodes/closure.o \
 		JIT/opcodes/cmpops.o \
+		JIT/opcodes/container.o \
+		JIT/opcodes/control.o \
 		JIT/opcodes/globals.o \
 		JIT/opcodes/locals.o \
+		JIT/opcodes/loop.o \
+		JIT/opcodes/name.o \
+		JIT/opcodes/slice.o \
+		JIT/opcodes/stack.o \
+		JIT/opcodes/unaryops.o \
 		Util/EventTimer.o \
 		Util/PySmallPtrSet.o \
 		Util/Stats.o
@@ -734,10 +745,21 @@ PYTHON_HEADERS= \
 		JIT/RuntimeFeedback.h \
 		JIT/RuntimeFeedback_fwd.h \
 		JIT/SingleFunctionInliner.h \
+		JIT/opcodes/attributes.h \
 		JIT/opcodes/binops.h \
+		JIT/opcodes/block.h \
+		JIT/opcodes/call.h \
+		JIT/opcodes/closure.h \
 		JIT/opcodes/cmpops.h \
+		JIT/opcodes/container.h \
+		JIT/opcodes/control.h \
 		JIT/opcodes/globals.h \
 		JIT/opcodes/locals.h \
+		JIT/opcodes/loop.h \
+		JIT/opcodes/name.h \
+		JIT/opcodes/slice.h \
+		JIT/opcodes/stack.h \
+		JIT/opcodes/unaryops.h \
 		Util/EventTimer.h \
 		Util/PySmallPtrSet.h \
 		Util/Stats.h \

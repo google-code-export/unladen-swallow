@@ -17,6 +17,8 @@ Here are the primary files that you'll be working on as part of Unladen Swallow:
 
 - JIT/llvm_fbuilder.{h,cc} - The heart of the compiler. These files take care
   of converting CPython bytecode to LLVM IR.
+- JIT/opcodes/* - These files contain the code to implement an opcode
+  in LLVM IR.
 - JIT/llvm_inline_functions.c - Special-cased C functions to be inlined.
 - Lib/test/test_llvm.py - Tests for the JIT compiler. All code generation and
   optimization changes need tests. Tests should include both positive and
@@ -114,6 +116,23 @@ Instrumentation:
 Relevant Files:
 - Python/eval.cc - definition, use of the hotness model.
 
+Infrastructure: JIT/opcodes/*
+-----------------------------
+
+All opcode implementations are now grouped together by their effect in the
+JIT/opcodes directory. One class corresponds to every opcode group. It should
+expose a method for each opcode it implements. These methods should be named
+after the opcode name (eg. OP_NAME) and should apply the standard range of
+optimizations for the opcode.
+
+If the opcode has optimizations, each class should also expose a safe variant,
+usually denoted by OP_NAME_safe.
+It may also expose optimized variants of the opcodes, using the same nameing
+scheme. If the optimization can not be applied, the method must return false
+and may not generate any LLVM IR.
+
+Relevant Files:
+- JIT/opcodes/*
 
 Infrastructure: Watching dictionaries for changes
 -------------------------------------------------
@@ -475,7 +494,7 @@ specialization system will be required to meet or ideally exceed.
 Relevant files:
 - JIT/llvm_inline_functions.c: definition of the manually-specialized
   functions.
-- JIT/llvm_fbuilder.{h,cc}: special-casing for this kind of inlining during
+- JIT/opcodes/call.{cc,h}: special-casing for this kind of inlining during
   bytecode-to-LLVM IR compilation.
 
 
@@ -515,5 +534,5 @@ Future work:
       pass earlier during the optimizations.
 
 Relevant files:
-- JIT/llvm_fbuilder.cc: Add Metadata to certain instructions.
+- JIT/llvm_fbuilder.cc JIT/opcodes/*: Add Metadata to certain instructions.
 - JIT/PyTBAliasAnalysis.{h,cc}: Various passes to deal with type annotations.

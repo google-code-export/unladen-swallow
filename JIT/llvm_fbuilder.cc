@@ -10,10 +10,21 @@
 #include "JIT/PyTypeBuilder.h"
 #include "Util/EventTimer.h"
 
+#include "JIT/opcodes/attributes.h"
 #include "JIT/opcodes/binops.h"
+#include "JIT/opcodes/block.h"
+#include "JIT/opcodes/call.h"
+#include "JIT/opcodes/closure.h"
 #include "JIT/opcodes/cmpops.h"
+#include "JIT/opcodes/container.h"
+#include "JIT/opcodes/control.h"
 #include "JIT/opcodes/globals.h"
 #include "JIT/opcodes/locals.h"
+#include "JIT/opcodes/loop.h"
+#include "JIT/opcodes/name.h"
+#include "JIT/opcodes/slice.h"
+#include "JIT/opcodes/stack.h"
+#include "JIT/opcodes/unaryops.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
@@ -59,161 +70,6 @@ using llvm::errs;
 // Use like "this->GET_GLOBAL_VARIABLE(Type, variable)".
 #define GET_GLOBAL_VARIABLE(TYPE, VARIABLE) \
     GetGlobalVariable<TYPE>(&VARIABLE, #VARIABLE)
-
-#ifdef Py_WITH_INSTRUMENTATION
-class CallFunctionStats {
-public:
-    CallFunctionStats()
-        : total(0), direct_calls(0), inlined(0),
-          no_opt_kwargs(0), no_opt_params(0),
-          no_opt_no_data(0), no_opt_polymorphic(0) {
-    }
-
-    ~CallFunctionStats() {
-        errs() << "\nCALL_FUNCTION optimization:\n";
-        errs() << "Total opcodes: " << this->total << "\n";
-        errs() << "Direct C calls: " << this->direct_calls << "\n";
-        errs() << "Inlined: " << this->inlined << "\n";
-        errs() << "No opt: callsite kwargs: " << this->no_opt_kwargs << "\n";
-        errs() << "No opt: function params: " << this->no_opt_params << "\n";
-        errs() << "No opt: no data: " << this->no_opt_no_data << "\n";
-        errs() << "No opt: polymorphic: " << this->no_opt_polymorphic << "\n";
-    }
-
-    // How many CALL_FUNCTION opcodes were compiled.
-    unsigned total;
-    // How many CALL_FUNCTION opcodes were optimized to direct calls to C
-    // functions.
-    unsigned direct_calls;
-    // How many calls were inlined into the caller.
-    unsigned inlined;
-    // We only optimize call sites without keyword, *args or **kwargs arguments.
-    unsigned no_opt_kwargs;
-    // We only optimize METH_ARG_RANGE functions so far.
-    unsigned no_opt_params;
-    // We only optimize callsites where we've collected data. Note that since
-    // we record only PyCFunctions, any call to a Python function will show up
-    // as having no data.
-    unsigned no_opt_no_data;
-    // We only optimize monomorphic callsites so far.
-    unsigned no_opt_polymorphic;
-};
-
-static llvm::ManagedStatic<CallFunctionStats> call_function_stats;
-
-class CondBranchStats {
-public:
-    CondBranchStats()
-        : total(0), optimized(0), not_enough_data(0), unpredictable(0) {
-    }
-
-
-    ~CondBranchStats() {
-        errs() << "\nConditional branch optimization:\n";
-        errs() << "Total cond branches: " << this->total << "\n";
-        errs() << "Optimized branches: " << this->optimized << "\n";
-        errs() << "Insufficient data: " << this->not_enough_data << "\n";
-        errs() << "Unpredictable branches: " << this->unpredictable << "\n";
-    }
-
-    // Total number of conditional branch opcodes compiled.
-    unsigned total;
-    // Number of predictable conditional branches we were able to optimize.
-    unsigned optimized;
-    // Number of single-direction branches we don't feel comfortable predicting.
-    unsigned not_enough_data;
-    // Number of unpredictable conditional branches (both directions
-    // taken frequently; unable to be optimized).
-    unsigned unpredictable;
-};
-
-static llvm::ManagedStatic<CondBranchStats> cond_branch_stats;
-
-class AccessAttrStats {
-public:
-    AccessAttrStats()
-        : loads(0), stores(0), optimized_loads(0), optimized_stores(0),
-          no_opt_no_data(0), no_opt_no_mcache(0), no_opt_overrode_access(0),
-          no_opt_polymorphic(0), no_opt_nonstring_name(0) {
-    }
-
-    ~AccessAttrStats() {
-        errs() << "\nLOAD/STORE_ATTR optimization:\n";
-        errs() << "Total opcodes: " << (this->loads + this->stores) << "\n";
-        errs() << "Optimized opcodes: "
-               << (this->optimized_loads + this->optimized_stores) << "\n";
-        errs() << "LOAD_ATTR opcodes: " << this->loads << "\n";
-        errs() << "Optimized LOAD_ATTR opcodes: "
-               << this->optimized_loads << "\n";
-        errs() << "STORE_ATTR opcodes: " << this->stores << "\n";
-        errs() << "Optimized STORE_ATTR opcodes: "
-               << this->optimized_stores << "\n";
-        errs() << "No opt: no data: " << this->no_opt_no_data << "\n";
-        errs() << "No opt: no mcache support: "
-               << this->no_opt_no_mcache << "\n";
-        errs() << "No opt: overrode getattr: "
-               << this->no_opt_overrode_access << "\n";
-        errs() << "No opt: polymorphic: " << this->no_opt_polymorphic << "\n";
-        errs() << "No opt: non-string name: "
-               << this->no_opt_nonstring_name << "\n";
-    }
-
-    // Total number of LOAD_ATTR opcodes compiled.
-    unsigned loads;
-    // Total number of STORE_ATTR opcodes compiled.
-    unsigned stores;
-    // Number of loads we optimized.
-    unsigned optimized_loads;
-    // Number of stores we optimized.
-    unsigned optimized_stores;
-    // Number of opcodes we were unable to optimize due to missing data.
-    unsigned no_opt_no_data;
-    // Number of opcodes we were unable to optimize because the type didn't
-    // support the method cache.
-    unsigned no_opt_no_mcache;
-    // Number of opcodes we were unable to optimize because the type overrode
-    // tp_getattro.
-    unsigned no_opt_overrode_access;
-    // Number of opcodes we were unable to optimize due to polymorphism.
-    unsigned no_opt_polymorphic;
-    // Number of opcodes we were unable to optimize because the attribute name
-    // was not a string.
-    unsigned no_opt_nonstring_name;
-};
-
-static llvm::ManagedStatic<AccessAttrStats> access_attr_stats;
-
-class ImportNameStats {
-public:
-    ImportNameStats()
-        : total(0), optimized(0) {
-    }
-
-    ~ImportNameStats() {
-        errs() << "\nIMPORT_NAME opcodes:\n";
-        errs() << "Total: " << this->total << "\n";
-        errs() << "Optimized: " << this->optimized << "\n";
-    }
-
-    // Total number of IMPORT_NAME opcodes compiled.
-    unsigned total;
-    // Number of imports successfully optimized.
-    unsigned optimized;
-};
-
-static llvm::ManagedStatic<ImportNameStats> import_name_stats;
-
-#define CF_INC_STATS(field) call_function_stats->field++
-#define COND_BRANCH_INC_STATS(field) cond_branch_stats->field++
-#define ACCESS_ATTR_INC_STATS(field) access_attr_stats->field++
-#define IMPORT_NAME_INC_STATS(field) import_name_stats->field++
-#else
-#define CF_INC_STATS(field)
-#define COND_BRANCH_INC_STATS(field)
-#define ACCESS_ATTR_INC_STATS(field)
-#define IMPORT_NAME_INC_STATS(field)
-#endif  /* Py_WITH_INSTRUMENTATION */
-
 
 namespace py {
 
@@ -1251,354 +1107,43 @@ LlvmFunctionBuilder::DELETE_GLOBAL(int name_index)
 void
 LlvmFunctionBuilder::LOAD_NAME(int index)
 {
-    Value *result = this->CreateCall(
-        this->GetGlobalFunction<PyObject *(PyFrameObject*, int)>(
-            "_PyEval_LoadName"),
-        this->frame_,
-        ConstantInt::get(PyTypeBuilder<int>::get(this->context_), index));
-    PropagateExceptionOnNull(result);
-    Push(result);
+    OpcodeName name(this);
+    name.LOAD_NAME(index);
 }
 
 void
 LlvmFunctionBuilder::STORE_NAME(int index)
 {
-    Value *to_store = this->Pop();
-    Value *err = this->CreateCall(
-        this->GetGlobalFunction<int(PyFrameObject*, int, PyObject*)>(
-            "_PyEval_StoreName"),
-        this->frame_,
-        ConstantInt::get(PyTypeBuilder<int>::get(this->context_), index),
-        to_store);
-    PropagateExceptionOnNonZero(err);
+    OpcodeName name(this);
+    name.STORE_NAME(index);
 }
 
 void
 LlvmFunctionBuilder::DELETE_NAME(int index)
 {
-    Value *err = this->CreateCall(
-        this->GetGlobalFunction<int(PyFrameObject*, int)>(
-            "_PyEval_DeleteName"),
-        this->frame_,
-        ConstantInt::get(PyTypeBuilder<int>::get(this->context_), index));
-    PropagateExceptionOnNonZero(err);
+    OpcodeName name(this);
+    name.DELETE_NAME(index);
 }
 
 void
 LlvmFunctionBuilder::LOAD_ATTR(int names_index)
 {
-    ACCESS_ATTR_INC_STATS(loads);
-    if (!this->LOAD_ATTR_fast(names_index)) {
-        this->LOAD_ATTR_safe(names_index);
-    }
-}
-
-void
-LlvmFunctionBuilder::LOAD_ATTR_safe(int names_index)
-{
-    Value *attr = this->LookupName(names_index);
-    Value *obj = this->Pop();
-    Function *pyobj_getattr = this->GetGlobalFunction<
-        PyObject *(PyObject *, PyObject *)>("PyObject_GetAttr");
-    Value *result = this->CreateCall(
-        pyobj_getattr, obj, attr, "LOAD_ATTR_result");
-    this->DecRef(obj);
-    this->PropagateExceptionOnNull(result);
-    this->Push(result);
-}
-
-bool
-LlvmFunctionBuilder::LOAD_ATTR_fast(int names_index)
-{
-    PyObject *name =
-        PyTuple_GET_ITEM(this->code_object_->co_names, names_index);
-    AttributeAccessor accessor(this, name, ATTR_ACCESS_LOAD);
-
-    // Check that we can optimize this load.
-    if (!accessor.CanOptimizeAttrAccess()) {
-        return false;
-    }
-    ACCESS_ATTR_INC_STATS(optimized_loads);
-
-    // Emit the appropriate guards.
-    Value *obj_v = this->Pop();
-    BasicBlock *do_load = this->CreateBasicBlock("LOAD_ATTR_do_load");
-    accessor.GuardAttributeAccess(obj_v, do_load);
-
-    // Call the inline function that deals with the lookup.  LLVM propagates
-    // these constant arguments through the body of the function.
-    this->builder_.SetInsertPoint(do_load);
-    PyConstantMirror &mirror = this->llvm_data_->constant_mirror();
-    Value *descr_get_v = mirror.GetGlobalForFunctionPointer<descrgetfunc>(
-            (void*)accessor.descr_get_, "");
-    Value *getattr_func = this->GetGlobalFunction<
-        PyObject *(PyObject *obj, PyTypeObject *type, PyObject *name,
-                   long dictoffset, PyObject *descr, descrgetfunc descr_get,
-                   char is_data_descr)>("_PyLlvm_Object_GenericGetAttr");
-    Value *args[] = {
-        obj_v,
-        accessor.guard_type_v_,
-        accessor.name_v_,
-        accessor.dictoffset_v_,
-        accessor.descr_v_,
-        descr_get_v,
-        accessor.is_data_descr_v_
-    };
-    Value *result = this->CreateCall(getattr_func, args, array_endof(args));
-
-    // Put the result on the stack and possibly propagate an exception.
-    this->DecRef(obj_v);
-    this->PropagateExceptionOnNull(result);
-    this->Push(result);
-    return true;
+    OpcodeAttributes attr(this);
+    attr.LOAD_ATTR(names_index);
 }
 
 void
 LlvmFunctionBuilder::STORE_ATTR(int names_index)
 {
-    ACCESS_ATTR_INC_STATS(stores);
-    if (!this->STORE_ATTR_fast(names_index)) {
-        this->STORE_ATTR_safe(names_index);
-    }
-}
-
-void
-LlvmFunctionBuilder::STORE_ATTR_safe(int names_index)
-{
-    Value *attr = this->LookupName(names_index);
-    Value *obj = this->Pop();
-    Value *value = this->Pop();
-    Function *pyobj_setattr = this->GetGlobalFunction<
-        int(PyObject *, PyObject *, PyObject *)>("PyObject_SetAttr");
-    Value *result = this->CreateCall(
-        pyobj_setattr, obj, attr, value, "STORE_ATTR_result");
-    this->DecRef(obj);
-    this->DecRef(value);
-    this->PropagateExceptionOnNonZero(result);
-}
-
-bool
-LlvmFunctionBuilder::STORE_ATTR_fast(int names_index)
-{
-    PyObject *name =
-        PyTuple_GET_ITEM(this->code_object_->co_names, names_index);
-    AttributeAccessor accessor(this, name, ATTR_ACCESS_STORE);
-
-    // Check that we can optimize this store.
-    if (!accessor.CanOptimizeAttrAccess()) {
-        return false;
-    }
-    ACCESS_ATTR_INC_STATS(optimized_stores);
-
-    // Emit appropriate guards.
-    Value *obj_v = this->Pop();
-    BasicBlock *do_store = this->CreateBasicBlock("STORE_ATTR_do_store");
-    accessor.GuardAttributeAccess(obj_v, do_store);
-
-    // Call the inline function that deals with the lookup.  LLVM propagates
-    // these constant arguments through the body of the function.
-    this->builder_.SetInsertPoint(do_store);
-    Value *val_v = this->Pop();
-    PyConstantMirror &mirror = this->llvm_data_->constant_mirror();
-    Value *descr_set_v = mirror.GetGlobalForFunctionPointer<descrsetfunc>(
-        (void*)accessor.descr_set_, "");
-    Value *setattr_func = this->GetGlobalFunction<
-        int (PyObject *obj, PyObject *val, PyTypeObject *type, PyObject *name,
-             long dictoffset, PyObject *descr, descrsetfunc descr_set,
-             char is_data_descr)>("_PyLlvm_Object_GenericSetAttr");
-    Value *args[] = {
-        obj_v,
-        val_v,
-        accessor.guard_type_v_,
-        accessor.name_v_,
-        accessor.dictoffset_v_,
-        accessor.descr_v_,
-        descr_set_v,
-        accessor.is_data_descr_v_
-    };
-    Value *result = this->CreateCall(setattr_func, args, array_endof(args));
-
-    this->DecRef(obj_v);
-    this->DecRef(val_v);
-    this->PropagateExceptionOnNonZero(result);
-    return true;
-}
-
-bool
-LlvmFunctionBuilder::AttributeAccessor::CanOptimizeAttrAccess()
-{
-    // Only optimize string attribute loads.  This leaves unicode hanging for
-    // now, but most objects are still constructed with string objects.  If it
-    // becomes a problem, our instrumentation will detect it.
-    if (!PyString_Check(this->name_)) {
-        ACCESS_ATTR_INC_STATS(no_opt_nonstring_name);
-        return false;
-    }
-
-    // Only optimize monomorphic load sites with data.
-    const PyRuntimeFeedback *feedback = this->fbuilder_->GetFeedback();
-    if (feedback == NULL) {
-        ACCESS_ATTR_INC_STATS(no_opt_no_data);
-        return false;
-    }
-
-    if (feedback->ObjectsOverflowed()) {
-        ACCESS_ATTR_INC_STATS(no_opt_polymorphic);
-        return false;
-    }
-    llvm::SmallVector<PyObject*, 3> types_seen;
-    feedback->GetSeenObjectsInto(types_seen);
-    if (types_seen.size() != 1) {
-        ACCESS_ATTR_INC_STATS(no_opt_polymorphic);
-        return false;
-    }
-
-    // During the course of the compilation, we borrow a reference to the type
-    // object from the feedback.  When compilation finishes, we listen for type
-    // object modifications.  When a type object is freed, it notifies its
-    // listeners, and the code object will be invalidated.  All other
-    // references are borrowed from the type object, which cannot change
-    // without invalidating the code.
-    PyObject *type_obj = types_seen[0];
-    assert(PyType_Check(type_obj));
-    PyTypeObject *type = this->guard_type_ = (PyTypeObject*)type_obj;
-
-    // The type must support the method cache so we can listen for
-    // modifications to it.
-    if (!PyType_HasFeature(type, Py_TPFLAGS_HAVE_VERSION_TAG)) {
-        ACCESS_ATTR_INC_STATS(no_opt_no_mcache);
-        return false;
-    }
-
-    // Don't optimize attribute lookup for types that override tp_getattro or
-    // tp_getattr.
-    bool overridden = true;
-    if (this->access_kind_ == ATTR_ACCESS_LOAD) {
-        overridden = (type->tp_getattro != &PyObject_GenericGetAttr);
-    } else if (this->access_kind_ == ATTR_ACCESS_STORE) {
-        overridden = (type->tp_setattro != &PyObject_GenericSetAttr);
-    } else {
-        assert(0 && "invalid enum!");
-    }
-    if (overridden) {
-        ACCESS_ATTR_INC_STATS(no_opt_overrode_access);
-        return false;
-    }
-
-    // Do the lookups on the type.
-    this->CacheTypeLookup();
-
-    // If we find a descriptor with a getter, make sure its type supports the
-    // method cache, or we won't be able to receive updates.
-    if (this->descr_get_ != NULL &&
-        !PyType_HasFeature(this->guard_descr_type_,
-                           Py_TPFLAGS_HAVE_VERSION_TAG)) {
-        ACCESS_ATTR_INC_STATS(no_opt_no_mcache);
-        return false;
-    }
-
-    // Now that we know for sure that we are going to optimize this lookup, add
-    // the type to the list of types we need to listen for modifications from
-    // and make the llvm::Values.
-    this->fbuilder_->types_used_.insert(type);
-    MakeLlvmValues();
-
-    return true;
-}
-
-void
-LlvmFunctionBuilder::AttributeAccessor::CacheTypeLookup()
-{
-    this->dictoffset_ = this->guard_type_->tp_dictoffset;
-    this->descr_ = _PyType_Lookup(this->guard_type_, this->name_);
-    if (this->descr_ != NULL) {
-        this->guard_descr_type_ = this->descr_->ob_type;
-        if (PyType_HasFeature(this->guard_descr_type_, Py_TPFLAGS_HAVE_CLASS)) {
-            this->descr_get_ = this->guard_descr_type_->tp_descr_get;
-            this->descr_set_ = this->guard_descr_type_->tp_descr_set;
-            if (this->descr_get_ != NULL && PyDescr_IsData(this->descr_)) {
-                this->is_data_descr_ = true;
-            }
-        }
-    }
-}
-
-void
-LlvmFunctionBuilder::AttributeAccessor::MakeLlvmValues()
-{
-    this->guard_type_v_ =
-        this->fbuilder_->EmbedPointer<PyTypeObject*>(this->guard_type_);
-    this->name_v_ = this->fbuilder_->EmbedPointer<PyObject*>(this->name_);
-    this->dictoffset_v_ =
-        ConstantInt::get(PyTypeBuilder<long>::get(this->fbuilder_->context_),
-                         this->dictoffset_);
-    this->descr_v_ = this->fbuilder_->EmbedPointer<PyObject*>(this->descr_);
-    this->is_data_descr_v_ =
-        ConstantInt::get(PyTypeBuilder<char>::get(this->fbuilder_->context_),
-                         this->is_data_descr_);
-}
-
-void
-LlvmFunctionBuilder::AttributeAccessor::GuardAttributeAccess(
-    Value *obj_v, BasicBlock *do_access)
-{
-    LlvmFunctionBuilder *fbuilder = this->fbuilder_;
-    BuilderT &builder = this->fbuilder_->builder();
-
-    BasicBlock *bail_block = fbuilder->CreateBasicBlock("ATTR_bail_block");
-    BasicBlock *guard_type = fbuilder->CreateBasicBlock("ATTR_check_valid");
-    BasicBlock *guard_descr = fbuilder->CreateBasicBlock("ATTR_check_descr");
-
-    // Make sure that the code object is still valid.  This may fail if the
-    // code object is invalidated inside of a call to the code object.
-    Value *use_jit = builder.CreateLoad(fbuilder->use_jit_addr_,
-                                        "co_use_jit");
-    builder.CreateCondBr(fbuilder->IsNonZero(use_jit), guard_type, bail_block);
-
-    // Compare ob_type against type and bail if it's the wrong type.  Since
-    // we've subscribed to the type object for modification updates, the code
-    // will be invalidated before the type object is freed.  Therefore we don't
-    // need to incref it, or any of its members.
-    builder.SetInsertPoint(guard_type);
-    Value *type_v = builder.CreateLoad(ObjectTy::ob_type(builder, obj_v));
-    Value *is_right_type = builder.CreateICmpEQ(type_v, this->guard_type_v_);
-    builder.CreateCondBr(is_right_type, guard_descr, bail_block);
-
-    // If there is a descriptor, we need to guard on the descriptor type.  This
-    // means emitting one more guard as well as subscribing to changes in the
-    // descriptor type.
-    builder.SetInsertPoint(guard_descr);
-    if (this->descr_ != NULL) {
-        fbuilder->types_used_.insert(this->guard_descr_type_);
-        Value *descr_type_v =
-            builder.CreateLoad(ObjectTy::ob_type(builder, this->descr_v_));
-        Value *guard_descr_type_v =
-            fbuilder->EmbedPointer<PyTypeObject*>(this->guard_descr_type_);
-        Value *is_right_descr_type =
-            builder.CreateICmpEQ(descr_type_v, guard_descr_type_v);
-        builder.CreateCondBr(is_right_descr_type, do_access, bail_block);
-    } else {
-        builder.CreateBr(do_access);
-    }
-
-    // Fill in the bail bb.
-    builder.SetInsertPoint(bail_block);
-    fbuilder->Push(obj_v);
-    fbuilder->CreateGuardBailPoint(_PYGUARD_ATTR);
+    OpcodeAttributes attr(this);
+    attr.STORE_ATTR(names_index);
 }
 
 void
 LlvmFunctionBuilder::DELETE_ATTR(int index)
 {
-    Value *attr = this->LookupName(index);
-    Value *obj = this->Pop();
-    Value *value = this->GetNull<PyObject*>();
-    Function *pyobj_setattr = this->GetGlobalFunction<
-        int(PyObject *, PyObject *, PyObject *)>("PyObject_SetAttr");
-    Value *result = this->CreateCall(
-        pyobj_setattr, obj, attr, value, "DELETE_ATTR_result");
-    this->DecRef(obj);
-    this->PropagateExceptionOnNonZero(result);
+    OpcodeAttributes attr(this);
+    attr.DELETE_ATTR(index);
 }
 
 void
@@ -1611,250 +1156,22 @@ LlvmFunctionBuilder::LOAD_FAST(int index)
 void
 LlvmFunctionBuilder::WITH_CLEANUP()
 {
-    /* At the top of the stack are 1-3 values indicating
-       how/why we entered the finally clause:
-       - TOP = None
-       - (TOP, SECOND) = (WHY_{RETURN,CONTINUE}), retval
-       - TOP = WHY_*; no retval below it
-       - (TOP, SECOND, THIRD) = exc_info()
-       Below them is EXIT, the context.__exit__ bound method.
-       In the last case, we must call
-       EXIT(TOP, SECOND, THIRD)
-       otherwise we must call
-       EXIT(None, None, None)
-
-       In all cases, we remove EXIT from the stack, leaving
-       the rest in the same order.
-
-       In addition, if the stack represents an exception,
-       *and* the function call returns a 'true' value, we
-       "zap" this information, to prevent END_FINALLY from
-       re-raising the exception. (But non-local gotos
-       should still be resumed.)
-    */
-
-    Value *exc_type = this->CreateAllocaInEntryBlock(
-        PyTypeBuilder<PyObject*>::get(this->context_),
-        NULL, "WITH_CLEANUP_exc_type");
-    Value *exc_value = this->CreateAllocaInEntryBlock(
-        PyTypeBuilder<PyObject*>::get(this->context_),
-        NULL, "WITH_CLEANUP_exc_value");
-    Value *exc_traceback = this->CreateAllocaInEntryBlock(
-        PyTypeBuilder<PyObject*>::get(this->context_),
-        NULL, "WITH_CLEANUP_exc_traceback");
-    Value *exit_func = this->CreateAllocaInEntryBlock(
-        PyTypeBuilder<PyObject*>::get(this->context_),
-        NULL, "WITH_CLEANUP_exit_func");
-
-    BasicBlock *handle_none =
-        this->CreateBasicBlock("WITH_CLEANUP_handle_none");
-    BasicBlock *check_int =
-        this->CreateBasicBlock("WITH_CLEANUP_check_int");
-    BasicBlock *handle_int =
-        this->CreateBasicBlock("WITH_CLEANUP_handle_int");
-    BasicBlock *handle_ret_cont =
-        this->CreateBasicBlock("WITH_CLEANUP_handle_ret_cont");
-    BasicBlock *handle_default =
-        this->CreateBasicBlock("WITH_CLEANUP_handle_default");
-    BasicBlock *handle_else =
-        this->CreateBasicBlock("WITH_CLEANUP_handle_else");
-    BasicBlock *main_block =
-        this->CreateBasicBlock("WITH_CLEANUP_main_block");
-
-    Value *none = this->GetGlobalVariableFor(&_Py_NoneStruct);
-    this->builder_.CreateStore(this->Pop(), exc_type);
-
-    Value *is_none = this->builder_.CreateICmpEQ(
-        this->builder_.CreateLoad(exc_type), none,
-        "reason_is_none");
-    this->builder_.CreateCondBr(is_none, handle_none, check_int);
-
-    this->builder_.SetInsertPoint(handle_none);
-    this->builder_.CreateStore(this->Pop(), exit_func);
-    this->Push(this->builder_.CreateLoad(exc_type));
-    this->builder_.CreateStore(none, exc_value);
-    this->builder_.CreateStore(none, exc_traceback);
-    this->builder_.CreateBr(main_block);
-
-    this->builder_.SetInsertPoint(check_int);
-    Value *is_int = this->CreateCall(
-        this->GetGlobalFunction<int(PyObject *)>("_PyLlvm_WrapIntCheck"),
-        this->builder_.CreateLoad(exc_type),
-        "WITH_CLEANUP_pyint_check");
-    this->builder_.CreateCondBr(this->IsNonZero(is_int),
-                                handle_int, handle_else);
-
-    this->builder_.SetInsertPoint(handle_int);
-    Value *unboxed = this->builder_.CreateTrunc(
-        this->CreateCall(
-            this->GetGlobalFunction<long(PyObject *)>("PyInt_AsLong"),
-            this->builder_.CreateLoad(exc_type)),
-        Type::getInt8Ty(this->context_),
-        "unboxed_unwind_reason");
-    // The LLVM equivalent of
-    // switch (reason)
-    //   case UNWIND_RETURN:
-    //   case UNWIND_CONTINUE:
-    //     ...
-    //     break;
-    //   default:
-    //     break;
-    llvm::SwitchInst *unwind_kind =
-        this->builder_.CreateSwitch(unboxed, handle_default, 2);
-    unwind_kind->addCase(ConstantInt::get(Type::getInt8Ty(this->context_),
-                                          UNWIND_RETURN),
-                         handle_ret_cont);
-    unwind_kind->addCase(ConstantInt::get(Type::getInt8Ty(this->context_),
-                                          UNWIND_CONTINUE),
-                         handle_ret_cont);
-
-    this->builder_.SetInsertPoint(handle_ret_cont);
-    Value *retval = this->Pop();
-    this->builder_.CreateStore(this->Pop(), exit_func);
-    this->Push(retval);
-    this->Push(this->builder_.CreateLoad(exc_type));
-    this->builder_.CreateStore(none, exc_type);
-    this->builder_.CreateStore(none, exc_value);
-    this->builder_.CreateStore(none, exc_traceback);
-    this->builder_.CreateBr(main_block);
-
-    this->builder_.SetInsertPoint(handle_default);
-    this->builder_.CreateStore(this->Pop(), exit_func);
-    this->Push(this->builder_.CreateLoad(exc_type));
-    this->builder_.CreateStore(none, exc_type);
-    this->builder_.CreateStore(none, exc_value);
-    this->builder_.CreateStore(none, exc_traceback);
-    this->builder_.CreateBr(main_block);
-
-    // This is the (TOP, SECOND, THIRD) = exc_info() case above.
-    this->builder_.SetInsertPoint(handle_else);
-    this->builder_.CreateStore(this->Pop(), exc_value);
-    this->builder_.CreateStore(this->Pop(), exc_traceback);
-    this->builder_.CreateStore(this->Pop(), exit_func);
-    this->Push(this->builder_.CreateLoad(exc_traceback));
-    this->Push(this->builder_.CreateLoad(exc_value));
-    this->Push(this->builder_.CreateLoad(exc_type));
-    this->builder_.CreateBr(main_block);
-
-    this->builder_.SetInsertPoint(main_block);
-    // Build a vector because there is no CreateCall5().
-    // This is easier than building the tuple ourselves, but doing so would
-    // probably be faster.
-    std::vector<Value*> args;
-    args.push_back(this->builder_.CreateLoad(exit_func));
-    args.push_back(this->builder_.CreateLoad(exc_type));
-    args.push_back(this->builder_.CreateLoad(exc_value));
-    args.push_back(this->builder_.CreateLoad(exc_traceback));
-    args.push_back(this->GetNull<PyObject*>());
-    Value *ret = this->CreateCall(
-        this->GetGlobalFunction<PyObject *(PyObject *, ...)>(
-            "PyObject_CallFunctionObjArgs"),
-        args.begin(), args.end());
-    this->DecRef(this->builder_.CreateLoad(exit_func));
-    this->PropagateExceptionOnNull(ret);
-
-    BasicBlock *check_silence =
-        this->CreateBasicBlock("WITH_CLEANUP_check_silence");
-    BasicBlock *no_silence =
-        this->CreateBasicBlock("WITH_CLEANUP_no_silence");
-    BasicBlock *cleanup =
-        this->CreateBasicBlock("WITH_CLEANUP_cleanup");
-    BasicBlock *next =
-        this->CreateBasicBlock("WITH_CLEANUP_next");
-
-    // Don't bother checking whether to silence the exception if there's
-    // no exception to silence.
-    this->builder_.CreateCondBr(
-        this->builder_.CreateICmpEQ(this->builder_.CreateLoad(exc_type), none),
-        no_silence, check_silence);
-
-    this->builder_.SetInsertPoint(no_silence);
-    this->DecRef(ret);
-    this->builder_.CreateBr(next);
-
-    this->builder_.SetInsertPoint(check_silence);
-    this->builder_.CreateCondBr(this->IsPythonTrue(ret), cleanup, next);
-
-    this->builder_.SetInsertPoint(cleanup);
-    // There was an exception and a true return. Swallow the exception.
-    this->Pop();
-    this->Pop();
-    this->Pop();
-    this->IncRef(none);
-    this->Push(none);
-    this->DecRef(this->builder_.CreateLoad(exc_type));
-    this->DecRef(this->builder_.CreateLoad(exc_value));
-    this->DecRef(this->builder_.CreateLoad(exc_traceback));
-    this->builder_.CreateBr(next);
-
-    this->builder_.SetInsertPoint(next);
+    OpcodeBlock block(this);
+    block.WITH_CLEANUP();
 }
 
 void
 LlvmFunctionBuilder::LOAD_CLOSURE(int freevars_index)
 {
-    Value *cell = this->builder_.CreateLoad(
-        this->builder_.CreateGEP(
-            this->freevars_,
-            ConstantInt::get(Type::getInt32Ty(this->context_),
-                             freevars_index)));
-    this->IncRef(cell);
-    this->Push(cell);
+    OpcodeClosure closure(this);
+    closure.LOAD_CLOSURE(freevars_index);
 }
 
 void
 LlvmFunctionBuilder::MAKE_CLOSURE(int num_defaults)
 {
-    Value *code_object = this->Pop();
-    Function *pyfunction_new = this->GetGlobalFunction<
-        PyObject *(PyObject *, PyObject *)>("PyFunction_New");
-    Value *func_object = this->CreateCall(
-        pyfunction_new, code_object, this->globals_, "MAKE_CLOSURE_result");
-    this->DecRef(code_object);
-    this->PropagateExceptionOnNull(func_object);
-    Value *closure = this->Pop();
-    Function *pyfunction_setclosure = this->GetGlobalFunction<
-        int(PyObject *, PyObject *)>("PyFunction_SetClosure");
-    Value *setclosure_result = this->CreateCall(
-        pyfunction_setclosure, func_object, closure,
-        "MAKE_CLOSURE_setclosure_result");
-    this->DecRef(closure);
-    this->PropagateExceptionOnNonZero(setclosure_result);
-    if (num_defaults > 0) {
-        // Effectively inline BuildSequenceLiteral and
-        // PropagateExceptionOnNull so we can DecRef func_object on error.
-        BasicBlock *failure = this->CreateBasicBlock("MAKE_CLOSURE_failure");
-        BasicBlock *success = this->CreateBasicBlock("MAKE_CLOSURE_success");
-
-        Value *tupsize = ConstantInt::get(
-            PyTypeBuilder<Py_ssize_t>::get(this->context_), num_defaults);
-        Function *pytuple_new =
-            this->GetGlobalFunction<PyObject *(Py_ssize_t)>("PyTuple_New");
-        Value *defaults = this->CreateCall(pytuple_new, tupsize,
-                                                    "MAKE_CLOSURE_defaults");
-        this->builder_.CreateCondBr(this->IsNull(defaults),
-                                    failure, success);
-
-        this->builder_.SetInsertPoint(failure);
-        this->DecRef(func_object);
-        this->PropagateException();
-
-        this->builder_.SetInsertPoint(success);
-        // XXX(twouters): do this with a memcpy?
-        while (--num_defaults >= 0) {
-            Value *itemslot = this->GetTupleItemSlot(defaults, num_defaults);
-            this->builder_.CreateStore(this->Pop(), itemslot);
-        }
-        // End of inlining.
-        Function *pyfunction_setdefaults = this->GetGlobalFunction<
-            int(PyObject *, PyObject *)>("PyFunction_SetDefaults");
-        Value *setdefaults_result = this->CreateCall(
-            pyfunction_setdefaults, func_object, defaults,
-            "MAKE_CLOSURE_setdefaults_result");
-        this->DecRef(defaults);
-        this->PropagateExceptionOnNonZero(setdefaults_result);
-    }
-    this->Push(func_object);
+    OpcodeClosure closure(this);
+    closure.MAKE_CLOSURE(num_defaults);
 }
 
 #ifdef WITH_TSC
@@ -1879,588 +1196,60 @@ LlvmFunctionBuilder::GetFeedback(unsigned arg_index) const
 }
 
 void
-LlvmFunctionBuilder::CALL_FUNCTION_fast(int oparg,
-                                        const PyRuntimeFeedback *feedback)
-{
-    CF_INC_STATS(total);
-
-    // Check for keyword arguments; we only optimize callsites with positional
-    // arguments.
-    if ((oparg >> 8) & 0xff) {
-        CF_INC_STATS(no_opt_kwargs);
-        this->CALL_FUNCTION_safe(oparg);
-        return;
-    }
-
-    // Only optimize monomorphic callsites.
-    llvm::SmallVector<PyMethodDef*, 3> fdo_data;
-    feedback->GetSeenFuncsInto(fdo_data);
-    if (fdo_data.size() != 1) {
-#ifdef Py_WITH_INSTRUMENTATION
-        if (fdo_data.size() == 0)
-            CF_INC_STATS(no_opt_no_data);
-        else
-            CF_INC_STATS(no_opt_polymorphic);
-#endif
-        this->CALL_FUNCTION_safe(oparg);
-        return;
-    }
-
-    PyMethodDef *func_record = fdo_data[0];
-
-    // Only optimize calls to C functions with a known number of parameters,
-    // where the number of arguments we have is in that range.
-    int flags = func_record->ml_flags;
-    int min_arity = func_record->ml_min_arity;
-    int max_arity = func_record->ml_max_arity;
-    int num_args = oparg & 0xff;
-    if (!(flags & METH_ARG_RANGE &&
-                min_arity <= num_args && num_args <= max_arity)) {
-        CF_INC_STATS(no_opt_params);
-        this->CALL_FUNCTION_safe(oparg);
-        return;
-    }
-    assert(num_args <= PY_MAX_ARITY);
-
-    PyCFunction cfunc_ptr = func_record->ml_meth;
-
-    // Expose the C function pointer to LLVM. This is what will actually get
-    // called.
-    Constant *llvm_func =
-        this->llvm_data_->constant_mirror().GetGlobalForCFunction(
-            cfunc_ptr,
-            max_arity,
-            func_record->ml_name);
-
-    BasicBlock *not_profiling =
-        this->CreateBasicBlock("CALL_FUNCTION_not_profiling");
-    BasicBlock *check_is_same_func =
-        this->CreateBasicBlock("CALL_FUNCTION_check_is_same_func");
-    BasicBlock *invalid_assumptions =
-        this->CreateBasicBlock("CALL_FUNCTION_invalid_assumptions");
-    BasicBlock *all_assumptions_valid =
-        this->CreateBasicBlock("CALL_FUNCTION_all_assumptions_valid");
-
-    this->BailIfProfiling(not_profiling);
-
-    // Handle bailing back to the interpreter if the assumptions below don't
-    // hold.
-    this->builder_.SetInsertPoint(invalid_assumptions);
-    this->CreateGuardBailPoint(_PYGUARD_CFUNC);
-
-    this->builder_.SetInsertPoint(not_profiling);
-#ifdef WITH_TSC
-    this->LogTscEvent(CALL_START_LLVM);
-#endif
-    // Retrieve the function to call from the Python stack.
-    Value *stack_pointer = this->builder_.CreateLoad(this->stack_pointer_addr_);
-    this->llvm_data_->tbaa_stack.MarkInstruction(stack_pointer);
-
-    Value *actual_func = this->builder_.CreateLoad(
-        this->builder_.CreateGEP(
-            stack_pointer,
-            ConstantInt::getSigned(
-                Type::getInt64Ty(this->context_),
-                -num_args - 1)));
-
-    // Make sure it's a PyCFunction; if not, bail.
-    Value *is_cfunction = this->CreateCall(
-        this->GetGlobalFunction<int(PyObject *)>("_PyLlvm_WrapCFunctionCheck"),
-        actual_func,
-        "is_cfunction");
-    Value *is_cfunction_guard = this->builder_.CreateICmpEQ(
-        is_cfunction, ConstantInt::get(is_cfunction->getType(), 1),
-        "is_cfunction_guard");
-    this->builder_.CreateCondBr(is_cfunction_guard, check_is_same_func,
-                                invalid_assumptions);
-
-    // Make sure we got the same underlying function pointer; if not, bail.
-    this->builder_.SetInsertPoint(check_is_same_func);
-    Value *actual_as_pycfunc = this->builder_.CreateBitCast(
-        actual_func, PyTypeBuilder<PyCFunctionObject *>::get(this->context_));
-    Value *actual_method_def = this->builder_.CreateLoad(
-        CFunctionTy::m_ml(this->builder_, actual_as_pycfunc),
-        "CALL_FUNCTION_actual_method_def");
-    Value *actual_func_ptr = this->builder_.CreateLoad(
-        MethodDefTy::ml_meth(this->builder_, actual_method_def),
-        "CALL_FUNCTION_actual_func_ptr");
-    Value *is_same = this->builder_.CreateICmpEQ(
-        // TODO(jyasskin): change this to "llvm_func" when
-        // http://llvm.org/PR5126 is fixed.
-        this->EmbedPointer<PyCFunction>((void*)cfunc_ptr),
-        actual_func_ptr);
-    this->builder_.CreateCondBr(is_same,
-        all_assumptions_valid, invalid_assumptions);
-
-    // Once we get to this point, we know we can make some kind of fast call,
-    // either, a) a specialized inline version, or b) a direct call to a C
-    // function, bypassing the CPython function call machinery. We check them
-    // in that order.
-    this->builder_.SetInsertPoint(all_assumptions_valid);
-
-    // Check if we are calling a built-in function that can be specialized.
-    if (cfunc_ptr == _PyBuiltin_Len) {
-        // Feedback index 0 is the function itself, index 1 is the first
-        // argument.
-        const PyTypeObject *arg1_type = GetTypeFeedback(1);
-        const char *function_name = NULL;
-        if (arg1_type == &PyString_Type)
-            function_name = "_PyLlvm_BuiltinLen_String";
-        else if (arg1_type == &PyUnicode_Type)
-            function_name = "_PyLlvm_BuiltinLen_Unicode";
-        else if (arg1_type == &PyList_Type)
-            function_name = "_PyLlvm_BuiltinLen_List";
-        else if (arg1_type == &PyTuple_Type)
-            function_name = "_PyLlvm_BuiltinLen_Tuple";
-        else if (arg1_type == &PyDict_Type)
-            function_name = "_PyLlvm_BuiltinLen_Dict";
-
-        if (function_name != NULL) {
-            this->CALL_FUNCTION_fast_len(actual_func, stack_pointer,
-                                         invalid_assumptions,
-                                         function_name);
-            CF_INC_STATS(inlined);
-            return;
-        }
-    }
-
-    // If we get here, we know we have a C function pointer
-    // that takes some number of arguments: first the invocant, then some
-    // PyObject *s. If the underlying function is nullary, we use NULL for the
-    // second argument. Because "the invocant" differs between built-in
-    // functions like len() and C-level methods like list.append(), we pull the
-    // invocant (called m_self) from the PyCFunction object we popped
-    // off the stack. Once the function returns, we patch up the stack pointer.
-    Value *self = this->builder_.CreateLoad(
-        CFunctionTy::m_self(this->builder_, actual_as_pycfunc),
-        "CALL_FUNCTION_actual_self");
-    llvm::SmallVector<Value*, PY_MAX_ARITY + 1> args;  // +1 for self.
-    args.push_back(self);
-    if (num_args == 0 && max_arity == 0) {
-        args.push_back(this->GetNull<PyObject *>());
-    }
-    for (int i = num_args; i >= 1; --i) {
-        args.push_back(
-            this->builder_.CreateLoad(
-                this->builder_.CreateGEP(
-                    stack_pointer,
-                    ConstantInt::getSigned(
-                        Type::getInt64Ty(this->context_), -i))));
-    }
-    for(int i = 0; i < (max_arity - num_args); ++i) {
-        args.push_back(this->GetNull<PyObject *>());
-    }
-
-#ifdef WITH_TSC
-    this->LogTscEvent(CALL_ENTER_C);
-#endif
-    Value *result = this->CreateCall(llvm_func, args.begin(), args.end());
-
-    this->DecRef(actual_func);
-    // Decrefing args[0] will cause self to be double-decrefed, so avoid that.
-    for (int i = 1; i <= num_args; ++i) {
-        this->DecRef(args[i]);
-    }
-    Value *new_stack_pointer = this->builder_.CreateGEP(
-        stack_pointer,
-        ConstantInt::getSigned(
-            Type::getInt64Ty(this->context_),
-            -num_args - 1));
-    this->builder_.CreateStore(new_stack_pointer, this->stack_pointer_addr_);
-    this->PropagateExceptionOnNull(result);
-    this->Push(result);
-
-    // Check signals and maybe switch threads after each function call.
-    this->CheckPyTicker();
-    CF_INC_STATS(direct_calls);
-}
-
-
-void
-LlvmFunctionBuilder::CALL_FUNCTION_fast_len(Value *actual_func,
-                                            Value *stack_pointer,
-                                            BasicBlock *invalid_assumptions,
-                                            const char *function_name)
-{
-    BasicBlock *success = this->CreateBasicBlock("BUILTIN_LEN_success");
-
-    Value *obj = this->Pop();
-    Function *builtin_len =
-        this->GetGlobalFunction<PyObject *(PyObject *)>(function_name);
-
-    Value *result = this->CreateCall(builtin_len, obj,
-                                     "BUILTIN_LEN_result");
-    this->builder_.CreateCondBr(this->IsNonZero(result),
-                                success, invalid_assumptions);
-
-    this->builder_.SetInsertPoint(success);
-    this->DecRef(actual_func);
-    this->DecRef(obj);
-
-    Value *new_stack_pointer = this->builder_.CreateGEP(
-        stack_pointer,
-        ConstantInt::getSigned(
-            Type::getInt64Ty(this->context_),
-            -2));  // -1 for the function, -1 for the argument.
-    this->builder_.CreateStore(new_stack_pointer, this->stack_pointer_addr_);
-
-    this->Push(result);
-
-    // Check signals and maybe switch threads after each function call.
-    this->CheckPyTicker();
-}
-
-
-void
-LlvmFunctionBuilder::CALL_FUNCTION_safe(int oparg)
-{
-#ifdef WITH_TSC
-    this->LogTscEvent(CALL_START_LLVM);
-#endif
-    Value *stack_pointer = this->builder_.CreateLoad(this->stack_pointer_addr_);
-    this->llvm_data_->tbaa_stack.MarkInstruction(stack_pointer);
-
-    int num_args = oparg & 0xff;
-    int num_kwargs = (oparg>>8) & 0xff;
-    Function *call_function = this->GetGlobalFunction<
-        PyObject *(PyObject **, int, int)>("_PyEval_CallFunction");
-    Value *result = this->CreateCall(
-        call_function,
-        stack_pointer,
-        ConstantInt::get(PyTypeBuilder<int>::get(this->context_), num_args),
-        ConstantInt::get(PyTypeBuilder<int>::get(this->context_), num_kwargs),
-        "CALL_FUNCTION_result");
-    Value *new_stack_pointer = this->builder_.CreateGEP(
-        stack_pointer,
-        ConstantInt::getSigned(Type::getInt64Ty(this->context_),
-                               -num_args - 2*num_kwargs - 1));
-    this->builder_.CreateStore(new_stack_pointer, this->stack_pointer_addr_);
-    this->PropagateExceptionOnNull(result);
-    this->Push(result);
-
-    // Check signals and maybe switch threads after each function call.
-    this->CheckPyTicker();
-}
-
-void
 LlvmFunctionBuilder::CALL_FUNCTION(int oparg)
 {
-    const PyRuntimeFeedback *feedback = this->GetFeedback();
-    if (feedback == NULL || feedback->FuncsOverflowed())
-        this->CALL_FUNCTION_safe(oparg);
-    else
-        this->CALL_FUNCTION_fast(oparg, feedback);
-}
-
-
-// Keep this in sync with eval.cc
-#define CALL_FLAG_VAR 1
-#define CALL_FLAG_KW 2
-
-void
-LlvmFunctionBuilder::CallVarKwFunction(int oparg, int call_flag)
-{
-#ifdef WITH_TSC
-    this->LogTscEvent(CALL_START_LLVM);
-#endif
-    Value *stack_pointer = this->builder_.CreateLoad(this->stack_pointer_addr_);
-    this->llvm_data_->tbaa_stack.MarkInstruction(stack_pointer);
-
-    int num_args = oparg & 0xff;
-    int num_kwargs = (oparg>>8) & 0xff;
-    Function *call_function = this->GetGlobalFunction<
-        PyObject *(PyObject **, int, int, int)>("_PyEval_CallFunctionVarKw");
-    Value *result = this->CreateCall(
-        call_function,
-        stack_pointer,
-        ConstantInt::get(PyTypeBuilder<int>::get(this->context_), num_args),
-        ConstantInt::get(PyTypeBuilder<int>::get(this->context_), num_kwargs),
-        ConstantInt::get(PyTypeBuilder<int>::get(this->context_), call_flag),
-        "CALL_FUNCTION_VAR_KW_result");
-    int stack_items = num_args + 2 * num_kwargs + 1;
-    if (call_flag & CALL_FLAG_VAR) {
-        ++stack_items;
-    }
-    if (call_flag & CALL_FLAG_KW) {
-        ++stack_items;
-    }
-    Value *new_stack_pointer = this->builder_.CreateGEP(
-        stack_pointer,
-        ConstantInt::getSigned(Type::getInt64Ty(this->context_), -stack_items));
-    this->builder_.CreateStore(new_stack_pointer, this->stack_pointer_addr_);
-    this->PropagateExceptionOnNull(result);
-    this->Push(result);
-
-    // Check signals and maybe switch threads after each function call.
-    this->CheckPyTicker();
+    OpcodeCall call(this);
+    call.CALL_FUNCTION(oparg);
 }
 
 void
 LlvmFunctionBuilder::CALL_FUNCTION_VAR(int oparg)
 {
-#ifdef WITH_TSC
-    this->LogTscEvent(CALL_START_LLVM);
-#endif
-    this->CallVarKwFunction(oparg, CALL_FLAG_VAR);
+    OpcodeCall call(this);
+    call.CALL_FUNCTION_VAR(oparg);
 }
 
 void
 LlvmFunctionBuilder::CALL_FUNCTION_KW(int oparg)
 {
-#ifdef WITH_TSC
-    this->LogTscEvent(CALL_START_LLVM);
-#endif
-    this->CallVarKwFunction(oparg, CALL_FLAG_KW);
+    OpcodeCall call(this);
+    call.CALL_FUNCTION_KW(oparg);
 }
 
 void
 LlvmFunctionBuilder::CALL_FUNCTION_VAR_KW(int oparg)
 {
-#ifdef WITH_TSC
-    this->LogTscEvent(CALL_START_LLVM);
-#endif
-    this->CallVarKwFunction(oparg, CALL_FLAG_KW | CALL_FLAG_VAR);
+    OpcodeCall call(this);
+    call.CALL_FUNCTION_VAR_KW(oparg);
 }
-
-#undef CALL_FLAG_VAR
-#undef CALL_FLAG_KW
-
-#define FUNC_TYPE PyObject *(PyObject *, PyObject *, PyObject *)
 
 void
 LlvmFunctionBuilder::IMPORT_NAME()
 {
-    IMPORT_NAME_INC_STATS(total);
-
-    if (this->IMPORT_NAME_fast())
-        return;
-
-    Value *mod_name = this->Pop();
-    Value *names = this->Pop();
-    Value *level = this->Pop();
-
-    Value *module = this->CreateCall(
-        this->GetGlobalFunction<FUNC_TYPE>("_PyEval_ImportName"),
-        level, names, mod_name);
-    this->DecRef(level);
-    this->DecRef(names);
-    this->DecRef(mod_name);
-    this->PropagateExceptionOnNull(module);
-    this->Push(module);
-}
-
-#undef FUNC_TYPE
-
-bool
-LlvmFunctionBuilder::IMPORT_NAME_fast()
-{
-    const PyRuntimeFeedback *feedback = this->GetFeedback();
-    if (feedback == NULL || feedback->ObjectsOverflowed()) {
-        return false;
-    }
-
-    llvm::SmallVector<PyObject *, 3> objects;
-    feedback->GetSeenObjectsInto(objects);
-    if (objects.size() != 1 || !PyModule_Check(objects[0])) {
-        return false;
-    }
-    PyObject *module = objects[0];
-
-    // We need to invalidate this function if someone changes sys.modules.
-    if (this->code_object_->co_watching[WATCHING_SYS_MODULES] == NULL) {
-        PyObject *sys_modules = PyImport_GetModuleDict();
-        if (sys_modules == NULL) {
-            return false;
-        }
-
-        if (_PyCode_WatchDict(this->code_object_,
-                              WATCHING_SYS_MODULES,
-                              sys_modules)) {
-            PyErr_Clear();
-            return false;
-        }
-        this->uses_watched_dicts_.set(WATCHING_BUILTINS);
-        this->uses_watched_dicts_.set(WATCHING_SYS_MODULES);
-    }
-    // We start watching builtins when we begin compilation to LLVM IR (aka,
-    // we're always watching it by this point).
-    assert(this->code_object_->co_watching[WATCHING_BUILTINS]);
-    assert(this->code_object_->co_watching[WATCHING_SYS_MODULES]);
-
-    BasicBlock *keep_going = this->CreateBasicBlock("IMPORT_NAME_keep_going");
-    BasicBlock *invalid_assumptions =
-        this->CreateBasicBlock("IMPORT_NAME_invalid_assumptions");
-
-    Value *use_jit = this->builder_.CreateLoad(this->use_jit_addr_);
-    this->builder_.CreateCondBr(this->IsNonZero(use_jit),
-                                keep_going,
-                                invalid_assumptions);
-
-    /* Our assumptions about the state of sys.modules no longer hold;
-       bail back to the interpreter. */
-    this->builder_.SetInsertPoint(invalid_assumptions);
-    this->CreateBailPoint(_PYFRAME_FATAL_GUARD_FAIL);
-
-    this->builder_.SetInsertPoint(keep_going);
-    /* TODO(collinwinter): we pop to get rid of the inputs to IMPORT_NAME.
-       Find a way to omit this work. */
-    this->DecRef(this->Pop());
-    this->DecRef(this->Pop());
-    this->DecRef(this->Pop());
-
-    Value *mod = this->GetGlobalVariableFor(module);
-    this->IncRef(mod);
-    this->Push(mod);
-
-    IMPORT_NAME_INC_STATS(optimized);
-    return true;
+    OpcodeContainer cont(this);
+    cont.IMPORT_NAME();
 }
 
 void
 LlvmFunctionBuilder::LOAD_DEREF(int index)
 {
-    BasicBlock *failed_load =
-        this->CreateBasicBlock("LOAD_DEREF_failed_load");
-    BasicBlock *unbound_local =
-        this->CreateBasicBlock("LOAD_DEREF_unbound_local");
-    BasicBlock *error =
-        this->CreateBasicBlock("LOAD_DEREF_error");
-    BasicBlock *success =
-        this->CreateBasicBlock("LOAD_DEREF_success");
-
-    Value *cell = this->builder_.CreateLoad(
-        this->builder_.CreateGEP(
-            this->freevars_, ConstantInt::get(Type::getInt32Ty(this->context_),
-                                              index)));
-    Function *pycell_get = this->GetGlobalFunction<
-        PyObject *(PyObject *)>("PyCell_Get");
-    Value *value = this->CreateCall(
-        pycell_get, cell, "LOAD_DEREF_cell_contents");
-    this->builder_.CreateCondBr(this->IsNull(value), failed_load, success);
-
-    this->builder_.SetInsertPoint(failed_load);
-    Function *pyerr_occurred =
-        this->GetGlobalFunction<PyObject *()>("PyErr_Occurred");
-    Value *was_err =
-        this->CreateCall(pyerr_occurred, "LOAD_DEREF_err_occurred");
-    this->builder_.CreateCondBr(this->IsNull(was_err), unbound_local, error);
-
-    this->builder_.SetInsertPoint(unbound_local);
-    Function *do_raise =
-        this->GetGlobalFunction<void(PyFrameObject*, int)>(
-            "_PyEval_RaiseForUnboundFreeVar");
-    this->CreateCall(
-        do_raise, this->frame_,
-        ConstantInt::get(PyTypeBuilder<int>::get(this->context_), index));
-
-    this->FallThroughTo(error);
-    this->PropagateException();
-
-    this->builder_.SetInsertPoint(success);
-    this->Push(value);
+    OpcodeClosure closure(this);
+    closure.LOAD_DEREF(index);
 }
 
 void
 LlvmFunctionBuilder::STORE_DEREF(int index)
 {
-    Value *value = this->Pop();
-    Value *cell = this->builder_.CreateLoad(
-        this->builder_.CreateGEP(
-            this->freevars_, ConstantInt::get(Type::getInt32Ty(this->context_),
-                                              index)));
-    Function *pycell_set = this->GetGlobalFunction<
-        int(PyObject *, PyObject *)>("PyCell_Set");
-    Value *result = this->CreateCall(
-        pycell_set, cell, value, "STORE_DEREF_result");
-    this->DecRef(value);
-    // eval.cc doesn't actually check the return value of this, I guess
-    // we are a little more likely to do things wrong.
-    this->PropagateExceptionOnNonZero(result);
+    OpcodeClosure closure(this);
+    closure.STORE_DEREF(index);
 }
 
 void
 LlvmFunctionBuilder::JUMP_ABSOLUTE(llvm::BasicBlock *target,
                                    llvm::BasicBlock *fallthrough)
 {
-    this->builder_.CreateBr(target);
-}
-
-enum BranchInput {
-    BranchInputFalse = -1,
-    BranchInputUnpredictable = 0,
-    BranchInputTrue = 1,
-};
-
-// If the branch was predictable, return the branch direction: return
-// BranchInputTrue if the branch was always True, return BranchInputFalse
-// if the branch was always False. If the branch was unpredictable or if we have
-// no data, return 0.
-static BranchInput
-predict_branch_input(const PyRuntimeFeedback *feedback)
-{
-    if (feedback == NULL) {
-        COND_BRANCH_INC_STATS(not_enough_data);
-        return BranchInputUnpredictable;
-    }
-
-    uintptr_t was_true = feedback->GetCounter(PY_FDO_JUMP_TRUE);
-    uintptr_t was_false = feedback->GetCounter(PY_FDO_JUMP_FALSE);
-
-    // We want to be relatively sure of our prediction. 200 was chosen by
-    // running the benchmarks and increasing this threshold until we stopped
-    // making massively-bad predictions. Example: increasing the threshold from
-    // 100 to 200 reduced bad predictions in 2to3 from 3900+ to 2. We currently
-    // optimize only perfectly-predictable branches as a baseline; later work
-    // should explore the tradeoffs between bail penalties and improved codegen
-    // gained from omiting rarely-taken branches.
-    if (was_true + was_false <= 200) {
-        COND_BRANCH_INC_STATS(not_enough_data);
-        return BranchInputUnpredictable;
-    }
-
-    BranchInput result = (BranchInput)(bool(was_true) - bool(was_false));
-    if (result == BranchInputUnpredictable) {
-        COND_BRANCH_INC_STATS(unpredictable);
-    }
-    return result;
-}
-
-void
-LlvmFunctionBuilder::GetPyCondBranchBailBlock(unsigned true_idx,
-                                              BasicBlock **true_block,
-                                              unsigned false_idx,
-                                              BasicBlock **false_block,
-                                              unsigned *bail_idx,
-                                              BasicBlock **bail_block)
-{
-    COND_BRANCH_INC_STATS(total);
-    BranchInput branch_dir = predict_branch_input(this->GetFeedback());
-
-    if (branch_dir == BranchInputFalse) {
-        *bail_idx = false_idx;
-        *false_block = *bail_block = this->CreateBasicBlock("FALSE_bail");
-    }
-    else if (branch_dir == BranchInputTrue) {
-        *bail_idx = true_idx;
-        *true_block = *bail_block = this->CreateBasicBlock("TRUE_bail");
-    }
-    else {
-        *bail_idx = 0;
-        *bail_block = NULL;
-    }
-}
-
-void
-LlvmFunctionBuilder::FillPyCondBranchBailBlock(BasicBlock *bail_to,
-                                               unsigned bail_idx)
-{
-    COND_BRANCH_INC_STATS(optimized);
-    BasicBlock *current = this->builder_.GetInsertBlock();
-
-    this->builder_.SetInsertPoint(bail_to);
-    this->CreateGuardBailPoint(bail_idx, _PYGUARD_BRANCH);
-
-    this->builder_.SetInsertPoint(current);
+    OpcodeControl control(this);
+    control.JUMP_ABSOLUTE(target, fallthrough);
 }
 
 void
@@ -2469,18 +1258,9 @@ LlvmFunctionBuilder::POP_JUMP_IF_FALSE(unsigned target_idx,
                                        BasicBlock *target,
                                        BasicBlock *fallthrough)
 {
-    unsigned bail_idx = 0;
-    BasicBlock *bail_to = NULL;
-    this->GetPyCondBranchBailBlock(/*on true: */ target_idx, &target,
-                                   /*on false: */ fallthrough_idx, &fallthrough,
-                                   &bail_idx, &bail_to);
-
-    Value *test_value = this->Pop();
-    Value *is_true = this->IsPythonTrue(test_value);
-    this->builder_.CreateCondBr(is_true, fallthrough, target);
-
-    if (bail_to)
-        this->FillPyCondBranchBailBlock(bail_to, bail_idx);
+    OpcodeControl control(this);
+    control.POP_JUMP_IF_FALSE(target_idx, fallthrough_idx,
+                              target, fallthrough);
 }
 
 void
@@ -2489,18 +1269,9 @@ LlvmFunctionBuilder::POP_JUMP_IF_TRUE(unsigned target_idx,
                                       BasicBlock *target,
                                       BasicBlock *fallthrough)
 {
-    unsigned bail_idx = 0;
-    BasicBlock *bail_to = NULL;
-    this->GetPyCondBranchBailBlock(/*on true: */ fallthrough_idx, &fallthrough,
-                                   /*on false: */ target_idx, &target,
-                                   &bail_idx, &bail_to);
-
-    Value *test_value = this->Pop();
-    Value *is_true = this->IsPythonTrue(test_value);
-    this->builder_.CreateCondBr(is_true, target, fallthrough);
-
-    if (bail_to)
-        this->FillPyCondBranchBailBlock(bail_to, bail_idx);
+    OpcodeControl control(this);
+    control.POP_JUMP_IF_TRUE(target_idx, fallthrough_idx,
+                             target, fallthrough);
 }
 
 void
@@ -2509,28 +1280,9 @@ LlvmFunctionBuilder::JUMP_IF_FALSE_OR_POP(unsigned target_idx,
                                           BasicBlock *target,
                                           BasicBlock *fallthrough)
 {
-    unsigned bail_idx = 0;
-    BasicBlock *bail_to = NULL;
-    this->GetPyCondBranchBailBlock(/*on true: */ target_idx, &target,
-                                   /*on false: */ fallthrough_idx, &fallthrough,
-                                   &bail_idx, &bail_to);
-
-    BasicBlock *true_path =
-        this->CreateBasicBlock("JUMP_IF_FALSE_OR_POP_pop");
-    Value *test_value = this->Pop();
-    this->Push(test_value);
-    // IsPythonTrue() will steal the reference to test_value, so make sure
-    // the stack owns one too.
-    this->IncRef(test_value);
-    Value *is_true = this->IsPythonTrue(test_value);
-    this->builder_.CreateCondBr(is_true, true_path, target);
-    this->builder_.SetInsertPoint(true_path);
-    test_value = this->Pop();
-    this->DecRef(test_value);
-    this->builder_.CreateBr(fallthrough);
-
-    if (bail_to)
-        this->FillPyCondBranchBailBlock(bail_to, bail_idx);
+    OpcodeControl control(this);
+    control.JUMP_IF_FALSE_OR_POP(target_idx, fallthrough_idx,
+                                 target, fallthrough);
 }
 
 void
@@ -2539,28 +1291,9 @@ LlvmFunctionBuilder::JUMP_IF_TRUE_OR_POP(unsigned target_idx,
                                          BasicBlock *target,
                                          BasicBlock *fallthrough)
 {
-    unsigned bail_idx = 0;
-    BasicBlock *bail_to = NULL;
-    this->GetPyCondBranchBailBlock(/*on true: */ fallthrough_idx, &fallthrough,
-                                   /*on false: */ target_idx, &target,
-                                   &bail_idx, &bail_to);
-
-    BasicBlock *false_path =
-        this->CreateBasicBlock("JUMP_IF_TRUE_OR_POP_pop");
-    Value *test_value = this->Pop();
-    this->Push(test_value);
-    // IsPythonTrue() will steal the reference to test_value, so make sure
-    // the stack owns one too.
-    this->IncRef(test_value);
-    Value *is_true = this->IsPythonTrue(test_value);
-    this->builder_.CreateCondBr(is_true, target, false_path);
-    this->builder_.SetInsertPoint(false_path);
-    test_value = this->Pop();
-    this->DecRef(test_value);
-    this->builder_.CreateBr(fallthrough);
-
-    if (bail_to)
-        this->FillPyCondBranchBailBlock(bail_to, bail_idx);
+    OpcodeControl control(this);
+    control.JUMP_IF_TRUE_OR_POP(target_idx, fallthrough_idx,
+                                target, fallthrough);
 }
 
 void
@@ -2606,88 +1339,30 @@ LlvmFunctionBuilder::SETUP_LOOP(llvm::BasicBlock *target,
                                 int target_opindex,
                                 llvm::BasicBlock *fallthrough)
 {
-    this->CallBlockSetup(::SETUP_LOOP, target, target_opindex);
+    OpcodeBlock block(this);
+    block.SETUP_LOOP(target, target_opindex, fallthrough);
 }
 
 void
 LlvmFunctionBuilder::GET_ITER()
 {
-    Value *obj = this->Pop();
-    Function *pyobject_getiter = this->GetGlobalFunction<PyObject*(PyObject*)>(
-        "PyObject_GetIter");
-    Value *iter = this->CreateCall(pyobject_getiter, obj);
-    this->DecRef(obj);
-    this->PropagateExceptionOnNull(iter);
-    this->Push(iter);
+    OpcodeLoop loop(this);
+    loop.GET_ITER();
 }
 
 void
 LlvmFunctionBuilder::FOR_ITER(llvm::BasicBlock *target,
                               llvm::BasicBlock *fallthrough)
 {
-    Value *iter = this->Pop();
-    Value *iter_tp = this->builder_.CreateBitCast(
-        this->builder_.CreateLoad(
-            ObjectTy::ob_type(this->builder_, iter)),
-        PyTypeBuilder<PyTypeObject *>::get(this->context_),
-        "iter_type");
-    Value *iternext = this->builder_.CreateLoad(
-        TypeTy::tp_iternext(this->builder_, iter_tp),
-        "iternext");
-    Value *next = this->CreateCall(iternext, iter, "next");
-    BasicBlock *got_next = this->CreateBasicBlock("got_next");
-    BasicBlock *next_null = this->CreateBasicBlock("next_null");
-    this->builder_.CreateCondBr(this->IsNull(next), next_null, got_next);
-
-    this->builder_.SetInsertPoint(next_null);
-    Value *err_occurred = this->CreateCall(
-        this->GetGlobalFunction<PyObject*()>("PyErr_Occurred"));
-    BasicBlock *iter_ended = this->CreateBasicBlock("iter_ended");
-    BasicBlock *exception = this->CreateBasicBlock("exception");
-    this->builder_.CreateCondBr(this->IsNull(err_occurred),
-                                iter_ended, exception);
-
-    this->builder_.SetInsertPoint(exception);
-    Value *exc_stopiteration = this->builder_.CreateLoad(
-        this->GET_GLOBAL_VARIABLE(PyObject*, PyExc_StopIteration));
-    Value *was_stopiteration = this->CreateCall(
-        this->GetGlobalFunction<int(PyObject *)>("PyErr_ExceptionMatches"),
-        exc_stopiteration);
-    BasicBlock *clear_err = this->CreateBasicBlock("clear_err");
-    BasicBlock *propagate = this->CreateBasicBlock("propagate");
-    this->builder_.CreateCondBr(this->IsNonZero(was_stopiteration),
-                                clear_err, propagate);
-
-    this->builder_.SetInsertPoint(propagate);
-    this->DecRef(iter);
-    this->PropagateException();
-
-    this->builder_.SetInsertPoint(clear_err);
-    this->CreateCall(this->GetGlobalFunction<void()>("PyErr_Clear"));
-    this->builder_.CreateBr(iter_ended);
-
-    this->builder_.SetInsertPoint(iter_ended);
-    this->DecRef(iter);
-    this->builder_.CreateBr(target);
-
-    this->builder_.SetInsertPoint(got_next);
-    this->Push(iter);
-    this->Push(next);
+    OpcodeLoop loop(this);
+    loop.FOR_ITER(target, fallthrough);
 }
 
 void
 LlvmFunctionBuilder::POP_BLOCK()
 {
-    Value *block_info = this->CreateCall(
-        this->GetGlobalFunction<PyTryBlock *(PyTryBlock *, char *)>(
-            "_PyLlvm_Frame_BlockPop"),
-        this->blockstack_addr_,
-        this->num_blocks_addr_);
-    Value *pop_to_level = this->builder_.CreateLoad(
-        PyTypeBuilder<PyTryBlock>::b_level(this->builder_, block_info));
-    Value *pop_to_addr =
-        this->builder_.CreateGEP(this->stack_bottom_, pop_to_level);
-    this->PopAndDecrefTo(pop_to_addr);
+    OpcodeBlock block(this);
+    block.POP_BLOCK();
 }
 
 void
@@ -2695,7 +1370,8 @@ LlvmFunctionBuilder::SETUP_EXCEPT(llvm::BasicBlock *target,
                                   int target_opindex,
                                   llvm::BasicBlock *fallthrough)
 {
-    this->CallBlockSetup(::SETUP_EXCEPT, target, target_opindex);
+    OpcodeBlock block(this);
+    block.SETUP_EXCEPT(target, target_opindex, fallthrough);
 }
 
 void
@@ -2703,123 +1379,15 @@ LlvmFunctionBuilder::SETUP_FINALLY(llvm::BasicBlock *target,
                                    int target_opindex,
                                    llvm::BasicBlock *fallthrough)
 {
-    this->CallBlockSetup(::SETUP_FINALLY, target, target_opindex);
+    OpcodeBlock block(this);
+    block.SETUP_FINALLY(target, target_opindex, fallthrough);
 }
 
 void
 LlvmFunctionBuilder::END_FINALLY()
 {
-    Value *finally_discriminator = this->Pop();
-    // END_FINALLY is fairly complicated. It decides what to do based
-    // on the top value in the stack.  If that value is an int, it's
-    // interpreted as one of the unwind reasons.  If it's an exception
-    // type, the next two stack values are the rest of the exception,
-    // and it's re-raised.  Otherwise, it's supposed to be None,
-    // indicating that the finally was entered through normal control
-    // flow.
-
-    BasicBlock *unwind_code =
-        this->CreateBasicBlock("unwind_code");
-    BasicBlock *test_exception =
-        this->CreateBasicBlock("test_exception");
-    BasicBlock *reraise_exception =
-        this->CreateBasicBlock("reraise_exception");
-    BasicBlock *check_none = this->CreateBasicBlock("check_none");
-    BasicBlock *not_none = this->CreateBasicBlock("not_none");
-    BasicBlock *finally_fallthrough =
-        this->CreateBasicBlock("finally_fallthrough");
-
-    this->builder_.CreateCondBr(
-        this->IsInstanceOfFlagClass(finally_discriminator,
-                                    Py_TPFLAGS_INT_SUBCLASS),
-        unwind_code, test_exception);
-
-    this->builder_.SetInsertPoint(unwind_code);
-    // The top of the stack was an int, interpreted as an unwind code.
-    // If we're resuming a return or continue, the return value or
-    // loop target (respectively) is now on top of the stack and needs
-    // to be popped off.
-    Value *unwind_reason = this->builder_.CreateTrunc(
-        this->CreateCall(
-            this->GetGlobalFunction<long(PyObject *)>("PyInt_AsLong"),
-            finally_discriminator),
-        Type::getInt8Ty(this->context_),
-        "unwind_reason");
-    this->DecRef(finally_discriminator);
-    // Save the unwind reason for when we jump to the unwind block.
-    this->builder_.CreateStore(unwind_reason, this->unwind_reason_addr_);
-    // Check if we need to pop the return value or loop target.
-    BasicBlock *pop_retval = this->CreateBasicBlock("pop_retval");
-    llvm::SwitchInst *should_pop_retval =
-        this->builder_.CreateSwitch(unwind_reason, this->unwind_block_, 2);
-    should_pop_retval->addCase(ConstantInt::get(Type::getInt8Ty(this->context_),
-                                                UNWIND_RETURN),
-                               pop_retval);
-    should_pop_retval->addCase(ConstantInt::get(Type::getInt8Ty(this->context_),
-                                                UNWIND_CONTINUE),
-                               pop_retval);
-
-    this->builder_.SetInsertPoint(pop_retval);
-    // We're continuing a return or continue.  Retrieve its argument.
-    this->builder_.CreateStore(this->Pop(), this->retval_addr_);
-    this->builder_.CreateBr(this->unwind_block_);
-
-    this->builder_.SetInsertPoint(test_exception);
-    Value *is_exception_or_string = this->CreateCall(
-        this->GetGlobalFunction<int(PyObject *)>(
-            "_PyLlvm_WrapIsExceptionOrString"),
-        finally_discriminator);
-    this->builder_.CreateCondBr(this->IsNonZero(is_exception_or_string),
-                                reraise_exception, check_none);
-
-    this->builder_.SetInsertPoint(reraise_exception);
-    Value *err_type = finally_discriminator;
-    Value *err_value = this->Pop();
-    Value *err_traceback = this->Pop();
-    this->CreateCall(
-        this->GetGlobalFunction<void(PyObject *, PyObject *, PyObject *)>(
-            "PyErr_Restore"),
-        err_type, err_value, err_traceback);
-    // This is a "re-raise" rather than a new exception, so we don't
-    // jump to the propagate_exception_block_.
-    this->builder_.CreateStore(this->GetNull<PyObject*>(), this->retval_addr_);
-    this->builder_.CreateStore(ConstantInt::get(Type::getInt8Ty(this->context_),
-                                                UNWIND_EXCEPTION),
-                               this->unwind_reason_addr_);
-    this->builder_.CreateBr(this->unwind_block_);
-
-    this->builder_.SetInsertPoint(check_none);
-    // The contents of the try block push None onto the stack just
-    // before falling through to the finally block.  If we didn't get
-    // an unwind reason or an exception, we expect to fall through,
-    // but for sanity we also double-check that the None is present.
-    Value *is_none = this->builder_.CreateICmpEQ(
-        finally_discriminator,
-        this->GetGlobalVariableFor(&_Py_NoneStruct));
-    this->DecRef(finally_discriminator);
-    this->builder_.CreateCondBr(is_none, finally_fallthrough, not_none);
-
-    this->builder_.SetInsertPoint(not_none);
-    // If we didn't get a None, raise a SystemError.
-    Value *system_error = this->builder_.CreateLoad(
-        this->GET_GLOBAL_VARIABLE(PyObject *, PyExc_SystemError));
-    Value *err_msg =
-        this->llvm_data_->GetGlobalStringPtr("'finally' pops bad exception");
-    this->CreateCall(
-        this->GetGlobalFunction<void(PyObject *, const char *)>(
-            "PyErr_SetString"),
-        system_error, err_msg);
-    this->builder_.CreateStore(ConstantInt::get(Type::getInt8Ty(this->context_),
-                                                UNWIND_EXCEPTION),
-                               this->unwind_reason_addr_);
-    this->builder_.CreateBr(this->unwind_block_);
-
-    // After falling through into a finally block, we also fall
-    // through out of the block.  This has the nice side-effect of
-    // avoiding jumps and switch instructions in the common case,
-    // although returning out of a finally may still be slower than
-    // ideal.
-    this->builder_.SetInsertPoint(finally_fallthrough);
+    OpcodeBlock block(this);
+    block.END_FINALLY();
 }
 
 void
@@ -2827,253 +1395,71 @@ LlvmFunctionBuilder::CONTINUE_LOOP(llvm::BasicBlock *target,
                                    int target_opindex,
                                    llvm::BasicBlock *fallthrough)
 {
-    // Accept code after a continue statement, even though it's never executed.
-    // Otherwise, CPython's willingness to insert code after block
-    // terminators causes problems.
-    BasicBlock *dead_code = this->CreateBasicBlock("dead_code");
-    this->builder_.CreateStore(ConstantInt::get(Type::getInt8Ty(this->context_),
-                                                UNWIND_CONTINUE),
-                               this->unwind_reason_addr_);
-    Value *unwind_target = this->AddUnwindTarget(target, target_opindex);
-    // Yes, store the unwind target in the return value slot. This is to
-    // keep the translation from eval.cc as close as possible; deviation will
-    // only introduce bugs. The UNWIND_CONTINUE cases in the unwind block
-    // (see FillUnwindBlock()) will pick this up and deal with it.
-    const Type *long_type = PyTypeBuilder<long>::get(this->context_);
-    Value *pytarget = this->CreateCall(
-            this->GetGlobalFunction<PyObject *(long)>("PyInt_FromLong"),
-            this->builder_.CreateZExt(unwind_target, long_type));
-    this->builder_.CreateStore(pytarget, this->retval_addr_);
-    this->builder_.CreateBr(this->unwind_block_);
-
-    this->builder_.SetInsertPoint(dead_code);
+    OpcodeLoop loop(this);
+    loop.CONTINUE_LOOP(target, target_opindex, fallthrough);
 }
 
 void
 LlvmFunctionBuilder::BREAK_LOOP()
 {
-    // Accept code after a break statement, even though it's never executed.
-    // Otherwise, CPython's willingness to insert code after block
-    // terminators causes problems.
-    BasicBlock *dead_code = this->CreateBasicBlock("dead_code");
-    this->builder_.CreateStore(ConstantInt::get(Type::getInt8Ty(this->context_),
-                                                UNWIND_BREAK),
-                               this->unwind_reason_addr_);
-    this->builder_.CreateBr(this->unwind_block_);
-
-    this->builder_.SetInsertPoint(dead_code);
+    OpcodeLoop loop(this);
+    loop.BREAK_LOOP();
 }
 
 void
 LlvmFunctionBuilder::RETURN_VALUE()
 {
-    // Accept code after a return statement, even though it's never executed.
-    // Otherwise, CPython's willingness to insert code after block
-    // terminators causes problems.
-    BasicBlock *dead_code = this->CreateBasicBlock("dead_code");
-
-    Value *retval = this->Pop();
-    this->Return(retval);
-
-    this->builder_.SetInsertPoint(dead_code);
+    OpcodeControl control(this);
+    control.RETURN_VALUE();
 }
 
 void
 LlvmFunctionBuilder::YIELD_VALUE()
 {
-    assert(this->is_generator_ && "yield in non-generator!");
-    BasicBlock *yield_resume =
-        this->CreateBasicBlock("yield_resume");
-    // Save the current opcode index into f_lasti when we yield so
-    // that, if tracing gets turned on while we're outside this
-    // function we can jump back to the interpreter at the right
-    // place.
-    ConstantInt *yield_number =
-        ConstantInt::getSigned(PyTypeBuilder<int>::get(this->context_),
-                               this->f_lasti_);
-    this->yield_resume_switch_->addCase(yield_number, yield_resume);
-
-    Value *retval = this->Pop();
-
-    // Save everything to the frame object so it'll be there when we
-    // resume from the yield.
-    this->CopyToFrameObject();
-
-    // Save the right block to jump back to when we resume this generator.
-    this->builder_.CreateStore(yield_number, this->f_lasti_addr_);
-
-    // Yields return from the current function without unwinding the
-    // stack.  They do trace the return and call _PyEval_ResetExcInfo
-    // like everything else, so we jump to the common return block
-    // instead of returning directly.
-    this->builder_.CreateStore(retval, this->retval_addr_);
-    this->builder_.CreateStore(ConstantInt::get(Type::getInt8Ty(this->context_),
-                                                UNWIND_YIELD),
-                               this->unwind_reason_addr_);
-    this->builder_.CreateBr(this->do_return_block_);
-
-    // Continue inserting code inside the resume block.
-    this->builder_.SetInsertPoint(yield_resume);
-    // Set frame->f_lasti back to negative so that exceptions are
-    // generated with llvm-provided line numbers.
-    this->builder_.CreateStore(
-        ConstantInt::getSigned(PyTypeBuilder<int>::get(this->context_), -2),
-        this->f_lasti_addr_);
-}
-
-void
-LlvmFunctionBuilder::DoRaise(Value *exc_type, Value *exc_inst, Value *exc_tb)
-{
-    // Accept code after a raise statement, even though it's never executed.
-    // Otherwise, CPython's willingness to insert code after block
-    // terminators causes problems.
-    BasicBlock *dead_code = this->CreateBasicBlock("dead_code");
-
-    // All raises set 'why' to UNWIND_EXCEPTION and the return value to NULL.
-    // This is redundant with the propagate_exception_block_, but mem2reg will
-    // remove the redundancy.
-    this->builder_.CreateStore(
-        ConstantInt::get(Type::getInt8Ty(this->context_), UNWIND_EXCEPTION),
-        this->unwind_reason_addr_);
-    this->builder_.CreateStore(this->GetNull<PyObject*>(), this->retval_addr_);
-
-#ifdef WITH_TSC
-    this->LogTscEvent(EXCEPT_RAISE_LLVM);
-#endif
-    Function *do_raise = this->GetGlobalFunction<
-        int(PyObject*, PyObject *, PyObject *)>("_PyEval_DoRaise");
-    // _PyEval_DoRaise eats references.
-    Value *is_reraise = this->CreateCall(
-        do_raise, exc_type, exc_inst, exc_tb, "raise_is_reraise");
-    // If this is a "re-raise", we jump straight to the unwind block.
-    // If it's a new raise, we call PyTraceBack_Here from the
-    // propagate_exception_block_.
-    this->builder_.CreateCondBr(
-        this->builder_.CreateICmpEQ(
-            is_reraise,
-            ConstantInt::get(is_reraise->getType(), UNWIND_RERAISE)),
-        this->unwind_block_, this->GetExceptionBlock());
-
-    this->builder_.SetInsertPoint(dead_code);
+    OpcodeControl control(this);
+    control.YIELD_VALUE();
 }
 
 void
 LlvmFunctionBuilder::RAISE_VARARGS_ZERO()
 {
-    Value *exc_tb = this->GetNull<PyObject*>();
-    Value *exc_inst = this->GetNull<PyObject*>();
-    Value *exc_type = this->GetNull<PyObject*>();
-    this->DoRaise(exc_type, exc_inst, exc_tb);
+    OpcodeControl control(this);
+    control.RAISE_VARARGS_ZERO();
 }
 
 void
 LlvmFunctionBuilder::RAISE_VARARGS_ONE()
 {
-    Value *exc_tb = this->GetNull<PyObject*>();
-    Value *exc_inst = this->GetNull<PyObject*>();
-    Value *exc_type = this->Pop();
-    this->DoRaise(exc_type, exc_inst, exc_tb);
+    OpcodeControl control(this);
+    control.RAISE_VARARGS_ONE();
 }
 
 void
 LlvmFunctionBuilder::RAISE_VARARGS_TWO()
 {
-    Value *exc_tb = this->GetNull<PyObject*>();
-    Value *exc_inst = this->Pop();
-    Value *exc_type = this->Pop();
-    this->DoRaise(exc_type, exc_inst, exc_tb);
+    OpcodeControl control(this);
+    control.RAISE_VARARGS_TWO();
 }
 
 void
 LlvmFunctionBuilder::RAISE_VARARGS_THREE()
 {
-    Value *exc_tb = this->Pop();
-    Value *exc_inst = this->Pop();
-    Value *exc_type = this->Pop();
-    this->DoRaise(exc_type, exc_inst, exc_tb);
+    OpcodeControl control(this);
+    control.RAISE_VARARGS_THREE();
 }
-
-#define INT_OBJ_OBJ_OBJ int(PyObject*, PyObject*, PyObject*)
-
-void
-LlvmFunctionBuilder::STORE_SUBSCR_list_int()
-{
-    BasicBlock *success = this->CreateBasicBlock("STORE_SUBSCR_success");
-    BasicBlock *bailpoint = this->CreateBasicBlock("STORE_SUBSCR_bail");
-
-    Value *key = this->Pop();
-    Value *obj = this->Pop();
-    Value *value = this->Pop();
-    Function *setitem =
-        this->GetGlobalFunction<INT_OBJ_OBJ_OBJ>("_PyLlvm_StoreSubscr_List");
-
-    Value *result = this->CreateCall(setitem, obj, key, value,
-                                     "STORE_SUBSCR_result");
-    this->builder_.CreateCondBr(this->IsNonZero(result), bailpoint, success);
-
-    this->builder_.SetInsertPoint(bailpoint);
-    this->Push(value);
-    this->Push(obj);
-    this->Push(key);
-    this->CreateGuardBailPoint(_PYGUARD_STORE_SUBSCR);
-
-    this->builder_.SetInsertPoint(success);
-    this->DecRef(value);
-    this->DecRef(obj);
-    this->DecRef(key);
-}
-
-void
-LlvmFunctionBuilder::STORE_SUBSCR_safe()
-{
-    // Performing obj[key] = val
-    Value *key = this->Pop();
-    Value *obj = this->Pop();
-    Value *value = this->Pop();
-    Function *setitem =
-        this->GetGlobalFunction<INT_OBJ_OBJ_OBJ>("PyObject_SetItem");
-    Value *result = this->CreateCall(setitem, obj, key, value,
-                                     "STORE_SUBSCR_result");
-    this->DecRef(value);
-    this->DecRef(obj);
-    this->DecRef(key);
-    this->PropagateExceptionOnNonZero(result);
-}
-
-#undef INT_OBJ_OBJ_OBJ
 
 void
 LlvmFunctionBuilder::STORE_SUBSCR()
 {
-    OpcodeBinops::IncStatsTotal();
-
-    const PyTypeObject *lhs_type = this->GetTypeFeedback(0);
-    const PyTypeObject *rhs_type = this->GetTypeFeedback(1);
-
-    if (lhs_type == &PyList_Type && rhs_type == &PyInt_Type) {
-        OpcodeBinops::IncStatsOptimized();
-        this->STORE_SUBSCR_list_int();
-        return;
-    }
-    else {
-        OpcodeBinops::IncStatsOmitted();
-        this->STORE_SUBSCR_safe();
-        return;
-    }
+    OpcodeContainer cont(this);
+    cont.STORE_SUBSCR();
 }
 
 void
 LlvmFunctionBuilder::DELETE_SUBSCR()
 {
-    Value *key = this->Pop();
-    Value *obj = this->Pop();
-    Function *delitem = this->GetGlobalFunction<
-          int(PyObject *, PyObject *)>("PyObject_DelItem");
-    Value *result = this->CreateCall(delitem, obj, key,
-                                               "DELETE_SUBSCR_result");
-    this->DecRef(obj);
-    this->DecRef(key);
-    this->PropagateExceptionOnNonZero(result);
+    OpcodeContainer cont(this);
+    cont.DELETE_SUBSCR();
 }
 
 #define BINOP_METH(OPCODE)              \
@@ -3128,121 +1514,68 @@ LlvmFunctionBuilder::INPLACE_POWER()
     binops.INPLACE_POWER();
 }
 
-// Implementation of almost all unary operations
-void
-LlvmFunctionBuilder::GenericUnaryOp(const char *apifunc)
-{
-    Value *value = this->Pop();
-    Function *op = this->GetGlobalFunction<PyObject*(PyObject*)>(apifunc);
-    Value *result = this->CreateCall(op, value, "unaryop_result");
-    this->DecRef(value);
-    this->PropagateExceptionOnNull(result);
-    this->Push(result);
-}
-
-#define UNARYOP_METH(NAME, APIFUNC)			\
+#define UNARYOP_METH(NAME)                              \
 void							\
 LlvmFunctionBuilder::NAME()				\
 {							\
-    this->GenericUnaryOp(#APIFUNC);			\
+    OpcodeUnaryops unary(this);                         \
+    unary.NAME();                                       \
 }
 
-UNARYOP_METH(UNARY_CONVERT, PyObject_Repr)
-UNARYOP_METH(UNARY_INVERT, PyNumber_Invert)
-UNARYOP_METH(UNARY_POSITIVE, PyNumber_Positive)
-UNARYOP_METH(UNARY_NEGATIVE, PyNumber_Negative)
-
+UNARYOP_METH(UNARY_CONVERT)
+UNARYOP_METH(UNARY_INVERT)
+UNARYOP_METH(UNARY_POSITIVE)
+UNARYOP_METH(UNARY_NEGATIVE)
+UNARYOP_METH(UNARY_NOT)
 #undef UNARYOP_METH
-
-void
-LlvmFunctionBuilder::UNARY_NOT()
-{
-    Value *value = this->Pop();
-    Value *retval = this->builder_.CreateSelect(
-        this->IsPythonTrue(value),
-        this->GetGlobalVariableFor((PyObject*)&_Py_ZeroStruct),
-        this->GetGlobalVariableFor((PyObject*)&_Py_TrueStruct),
-        "UNARY_NOT_result");
-    this->IncRef(retval);
-    this->Push(retval);
-}
 
 void
 LlvmFunctionBuilder::POP_TOP()
 {
-    this->DecRef(this->Pop());
+    OpcodeStack stack(this);
+    stack.POP_TOP();
 }
 
 void
 LlvmFunctionBuilder::DUP_TOP()
 {
-    Value *first = this->Pop();
-    this->IncRef(first);
-    this->Push(first);
-    this->Push(first);
+    OpcodeStack stack(this);
+    stack.DUP_TOP();
 }
 
 void
 LlvmFunctionBuilder::DUP_TOP_TWO()
 {
-    Value *first = this->Pop();
-    Value *second = this->Pop();
-    this->IncRef(first);
-    this->IncRef(second);
-    this->Push(second);
-    this->Push(first);
-    this->Push(second);
-    this->Push(first);
+    OpcodeStack stack(this);
+    stack.DUP_TOP_TWO();
 }
 
 void
 LlvmFunctionBuilder::DUP_TOP_THREE()
 {
-    Value *first = this->Pop();
-    Value *second = this->Pop();
-    Value *third = this->Pop();
-    this->IncRef(first);
-    this->IncRef(second);
-    this->IncRef(third);
-    this->Push(third);
-    this->Push(second);
-    this->Push(first);
-    this->Push(third);
-    this->Push(second);
-    this->Push(first);
+    OpcodeStack stack(this);
+    stack.DUP_TOP_THREE();
 }
 
 void
 LlvmFunctionBuilder::ROT_TWO()
 {
-    Value *first = this->Pop();
-    Value *second = this->Pop();
-    this->Push(first);
-    this->Push(second);
+    OpcodeStack stack(this);
+    stack.ROT_TWO();
 }
 
 void
 LlvmFunctionBuilder::ROT_THREE()
 {
-    Value *first = this->Pop();
-    Value *second = this->Pop();
-    Value *third = this->Pop();
-    this->Push(first);
-    this->Push(third);
-    this->Push(second);
+    OpcodeStack stack(this);
+    stack.ROT_THREE();
 }
 
 void
 LlvmFunctionBuilder::ROT_FOUR()
 {
-    Value *first = this->Pop();
-    Value *second = this->Pop();
-    Value *third = this->Pop();
-    Value *fourth = this->Pop();
-    this->Push(first);
-    this->Push(fourth);
-    this->Push(third);
-    this->Push(second);
+    OpcodeStack stack(this);
+    stack.ROT_FOUR();
 }
 
 void
@@ -3255,37 +1588,15 @@ LlvmFunctionBuilder::COMPARE_OP(int cmp_op)
 void
 LlvmFunctionBuilder::LIST_APPEND()
 {
-    Value *item = this->Pop();
-    Value *listobj = this->Pop();
-    Function *list_append = this->GetGlobalFunction<
-        int(PyObject *, PyObject *)>("PyList_Append");
-    Value *result = this->CreateCall(list_append, listobj, item,
-                                               "LIST_APPEND_result");
-    this->DecRef(listobj);
-    this->DecRef(item);
-    this->PropagateExceptionOnNonZero(result);
+    OpcodeContainer cont(this);
+    cont.LIST_APPEND();
 }
 
 void
 LlvmFunctionBuilder::STORE_MAP()
 {
-    Value *key = this->Pop();
-    Value *value = this->Pop();
-    Value *dict = this->Pop();
-    this->Push(dict);
-    Value *dict_type = this->builder_.CreateLoad(
-        ObjectTy::ob_type(this->builder_, dict));
-    Value *is_exact_dict = this->builder_.CreateICmpEQ(
-        dict_type, this->GetGlobalVariableFor((PyObject*)&PyDict_Type));
-    this->Assert(is_exact_dict,
-                 "dict argument to STORE_MAP is not exactly a PyDict");
-    Function *setitem = this->GetGlobalFunction<
-        int(PyObject *, PyObject *, PyObject *)>("PyDict_SetItem");
-    Value *result = this->CreateCall(setitem, dict, key, value,
-                                               "STORE_MAP_result");
-    this->DecRef(value);
-    this->DecRef(key);
-    this->PropagateExceptionOnNonZero(result);
+    OpcodeContainer cont(this);
+    cont.STORE_MAP();
 }
 
 Value *
@@ -3315,261 +1626,129 @@ LlvmFunctionBuilder::GetTupleItemSlot(Value *tup, int idx)
 }
 
 void
-LlvmFunctionBuilder::BuildSequenceLiteral(
-    int size, const char *createname,
-    Value *(LlvmFunctionBuilder::*getitemslot)(Value*, int))
-{
-    const Type *IntSsizeTy = PyTypeBuilder<Py_ssize_t>::get(this->context_);
-    Value *seqsize = ConstantInt::getSigned(IntSsizeTy, size);
-
-    Function *create =
-        this->GetGlobalFunction<PyObject *(Py_ssize_t)>(createname);
-    Value *seq = this->CreateCall(create, seqsize, "sequence_literal");
-    this->PropagateExceptionOnNull(seq);
-
-    // XXX(twouters): do this with a memcpy?
-    while (--size >= 0) {
-        Value *itemslot = (this->*getitemslot)(seq, size);
-        this->builder_.CreateStore(this->Pop(), itemslot);
-    }
-    this->Push(seq);
-}
-
-void
 LlvmFunctionBuilder::BUILD_LIST(int size)
 {
-   this->BuildSequenceLiteral(size, "PyList_New",
-                              &LlvmFunctionBuilder::GetListItemSlot);
+    OpcodeContainer cont(this);
+    cont.BUILD_LIST(size);
 }
 
 void
 LlvmFunctionBuilder::BUILD_TUPLE(int size)
 {
-   this->BuildSequenceLiteral(size, "PyTuple_New",
-                              &LlvmFunctionBuilder::GetTupleItemSlot);
+    OpcodeContainer cont(this);
+    cont.BUILD_TUPLE(size);
 }
 
 void
 LlvmFunctionBuilder::BUILD_MAP(int size)
 {
-    Value *sizehint = ConstantInt::getSigned(
-        PyTypeBuilder<Py_ssize_t>::get(this->context_), size);
-    Function *create_dict = this->GetGlobalFunction<
-        PyObject *(Py_ssize_t)>("_PyDict_NewPresized");
-    Value *result = this->CreateCall(create_dict, sizehint,
-                                              "BULD_MAP_result");
-    this->PropagateExceptionOnNull(result);
-    this->Push(result);
-}
-
-void
-LlvmFunctionBuilder::ApplySlice(Value *seq, Value *start, Value *stop)
-{
-    Function *build_slice = this->GetGlobalFunction<
-        PyObject *(PyObject *, PyObject *, PyObject *)>("_PyEval_ApplySlice");
-    Value *result = this->CreateCall(
-        build_slice, seq, start, stop, "ApplySlice_result");
-    this->XDecRef(stop);
-    this->XDecRef(start);
-    this->DecRef(seq);
-    this->PropagateExceptionOnNull(result);
-    this->Push(result);
+    OpcodeContainer cont(this);
+    cont.BUILD_MAP(size);
 }
 
 void
 LlvmFunctionBuilder::SLICE_BOTH()
 {
-    Value *stop = this->Pop();
-    Value *start = this->Pop();
-    Value *seq = this->Pop();
-    this->ApplySlice(seq, start, stop);
+    OpcodeSlice slice(this);
+    slice.SLICE_BOTH();
 }
 
 void
 LlvmFunctionBuilder::SLICE_LEFT()
 {
-    Value *stop = this->GetNull<PyObject*>();
-    Value *start = this->Pop();
-    Value *seq = this->Pop();
-    this->ApplySlice(seq, start, stop);
+    OpcodeSlice slice(this);
+    slice.SLICE_LEFT();
 }
 
 void
 LlvmFunctionBuilder::SLICE_RIGHT()
 {
-    Value *stop = this->Pop();
-    Value *start = this->GetNull<PyObject*>();
-    Value *seq = this->Pop();
-    this->ApplySlice(seq, start, stop);
+    OpcodeSlice slice(this);
+    slice.SLICE_RIGHT();
 }
 
 void
 LlvmFunctionBuilder::SLICE_NONE()
 {
-    Value *stop = this->GetNull<PyObject*>();
-    Value *start = this->GetNull<PyObject*>();
-    Value *seq = this->Pop();
-    this->ApplySlice(seq, start, stop);
-}
-
-void
-LlvmFunctionBuilder::AssignSlice(Value *seq, Value *start, Value *stop,
-                                 Value *source)
-{
-    Function *assign_slice = this->GetGlobalFunction<
-        int (PyObject *, PyObject *, PyObject *, PyObject *)>(
-            "_PyEval_AssignSlice");
-    Value *result = this->CreateCall(
-        assign_slice, seq, start, stop, source, "ApplySlice_result");
-    this->XDecRef(source);
-    this->XDecRef(stop);
-    this->XDecRef(start);
-    this->DecRef(seq);
-    this->PropagateExceptionOnNonZero(result);
+    OpcodeSlice slice(this);
+    slice.SLICE_NONE();
 }
 
 void
 LlvmFunctionBuilder::STORE_SLICE_BOTH()
 {
-    Value *stop = this->Pop();
-    Value *start = this->Pop();
-    Value *seq = this->Pop();
-    Value *source = this->Pop();
-    this->AssignSlice(seq, start, stop, source);
+    OpcodeSlice slice(this);
+    slice.STORE_SLICE_BOTH();
 }
 
 void
 LlvmFunctionBuilder::STORE_SLICE_LEFT()
 {
-    Value *stop = this->GetNull<PyObject*>();
-    Value *start = this->Pop();
-    Value *seq = this->Pop();
-    Value *source = this->Pop();
-    this->AssignSlice(seq, start, stop, source);
+    OpcodeSlice slice(this);
+    slice.STORE_SLICE_LEFT();
 }
 
 void
 LlvmFunctionBuilder::STORE_SLICE_RIGHT()
 {
-    Value *stop = this->Pop();
-    Value *start = this->GetNull<PyObject*>();
-    Value *seq = this->Pop();
-    Value *source = this->Pop();
-    this->AssignSlice(seq, start, stop, source);
+    OpcodeSlice slice(this);
+    slice.STORE_SLICE_RIGHT();
 }
 
 void
 LlvmFunctionBuilder::STORE_SLICE_NONE()
 {
-    Value *stop = this->GetNull<PyObject*>();
-    Value *start = this->GetNull<PyObject*>();
-    Value *seq = this->Pop();
-    Value *source = this->Pop();
-    this->AssignSlice(seq, start, stop, source);
+    OpcodeSlice slice(this);
+    slice.STORE_SLICE_NONE();
 }
 
 void
 LlvmFunctionBuilder::DELETE_SLICE_BOTH()
 {
-    Value *stop = this->Pop();
-    Value *start = this->Pop();
-    Value *seq = this->Pop();
-    Value *source = this->GetNull<PyObject*>();
-    this->AssignSlice(seq, start, stop, source);
+    OpcodeSlice slice(this);
+    slice.DELETE_SLICE_BOTH();
 }
 
 void
 LlvmFunctionBuilder::DELETE_SLICE_LEFT()
 {
-    Value *stop = this->GetNull<PyObject*>();
-    Value *start = this->Pop();
-    Value *seq = this->Pop();
-    Value *source = this->GetNull<PyObject*>();
-    this->AssignSlice(seq, start, stop, source);
+    OpcodeSlice slice(this);
+    slice.DELETE_SLICE_LEFT();
 }
 
 void
 LlvmFunctionBuilder::DELETE_SLICE_RIGHT()
 {
-    Value *stop = this->Pop();
-    Value *start = this->GetNull<PyObject*>();
-    Value *seq = this->Pop();
-    Value *source = this->GetNull<PyObject*>();
-    this->AssignSlice(seq, start, stop, source);
+    OpcodeSlice slice(this);
+    slice.DELETE_SLICE_RIGHT();
 }
 
 void
 LlvmFunctionBuilder::DELETE_SLICE_NONE()
 {
-    Value *stop = this->GetNull<PyObject*>();
-    Value *start = this->GetNull<PyObject*>();
-    Value *seq = this->Pop();
-    Value *source = this->GetNull<PyObject*>();
-    this->AssignSlice(seq, start, stop, source);
+    OpcodeSlice slice(this);
+    slice.DELETE_SLICE_NONE();
 }
 
 void
 LlvmFunctionBuilder::BUILD_SLICE_TWO()
 {
-    Value *step = this->GetNull<PyObject*>();
-    Value *stop = this->Pop();
-    Value *start = this->Pop();
-    Function *build_slice = this->GetGlobalFunction<
-        PyObject *(PyObject *, PyObject *, PyObject *)>("PySlice_New");
-    Value *result = this->CreateCall(
-        build_slice, start, stop, step, "BUILD_SLICE_result");
-    this->DecRef(start);
-    this->DecRef(stop);
-    this->PropagateExceptionOnNull(result);
-    this->Push(result);
+    OpcodeSlice slice(this);
+    slice.BUILD_SLICE_TWO();
 }
 
 void
 LlvmFunctionBuilder::BUILD_SLICE_THREE()
 {
-    Value *step = this->Pop();
-    Value *stop = this->Pop();
-    Value *start = this->Pop();
-    Function *build_slice = this->GetGlobalFunction<
-        PyObject *(PyObject *, PyObject *, PyObject *)>("PySlice_New");
-    Value *result = this->CreateCall(
-        build_slice, start, stop, step, "BUILD_SLICE_result");
-    this->DecRef(start);
-    this->DecRef(stop);
-    this->DecRef(step);
-    this->PropagateExceptionOnNull(result);
-    this->Push(result);
+    OpcodeSlice slice(this);
+    slice.BUILD_SLICE_THREE();
 }
 
 void
 LlvmFunctionBuilder::UNPACK_SEQUENCE(int size)
 {
-    // TODO(twouters): We could do even better by combining this opcode and the
-    // STORE_* ones that follow into a single block of code circumventing the
-    // stack altogether. And omitting the horrible external stack munging that
-    // UnpackIterable does.
-    Value *iterable = this->Pop();
-    Function *unpack_iterable = this->GetGlobalFunction<
-        int(PyObject *, int, PyObject **)>("_PyLlvm_FastUnpackIterable");
-    Value *new_stack_pointer = this->builder_.CreateGEP(
-        this->builder_.CreateLoad(this->stack_pointer_addr_),
-        ConstantInt::getSigned(PyTypeBuilder<Py_ssize_t>::get(this->context_),
-                               size));
-    this->llvm_data_->tbaa_stack.MarkInstruction(new_stack_pointer);
-
-    Value *result = this->CreateCall(
-        unpack_iterable, iterable,
-        ConstantInt::get(PyTypeBuilder<int>::get(this->context_), size, true),
-        // _PyLlvm_FastUnpackIterable really takes the *new* stack pointer as
-        // an argument, because it builds the result stack in reverse.
-        new_stack_pointer);
-    this->DecRef(iterable);
-    this->PropagateExceptionOnNonZero(result);
-    // Not setting the new stackpointer on failure does mean that if
-    // _PyLlvm_FastUnpackIterable failed after pushing some values onto the
-    // stack, and it didn't clean up after itself, we lose references.  This
-    // is what eval.cc does as well.
-    this->builder_.CreateStore(new_stack_pointer, this->stack_pointer_addr_);
+    OpcodeContainer cont(this);
+    cont.UNPACK_SEQUENCE(size);
 }
 
 void
@@ -3639,25 +1818,6 @@ LlvmFunctionBuilder::GetStackLevel()
 }
 
 void
-LlvmFunctionBuilder::CallBlockSetup(int block_type, llvm::BasicBlock *handler,
-                                    int handler_opindex)
-{
-    Value *stack_level = this->GetStackLevel();
-    Value *unwind_target_index =
-        this->AddUnwindTarget(handler, handler_opindex);
-    Function *blocksetup =
-        this->GetGlobalFunction<void(PyTryBlock *, char *, int, int, int)>(
-            "_PyLlvm_Frame_BlockSetup");
-    Value *args[] = {
-        this->blockstack_addr_, this->num_blocks_addr_,
-        ConstantInt::get(PyTypeBuilder<int>::get(this->context_), block_type),
-        unwind_target_index,
-        stack_level
-    };
-    this->CreateCall(blocksetup, args, array_endof(args));
-}
-
-void
 LlvmFunctionBuilder::CheckPyTicker(BasicBlock *next_block)
 {
     if (next_block == NULL) {
@@ -3718,7 +1878,7 @@ LlvmFunctionBuilder::GetGlobalVariableFor(PyObject *obj)
 // For llvm::Functions, copy callee's calling convention and attributes to
 // callsite; for non-Functions, leave the default calling convention and
 // attributes in place (ie, do nothing). We require this for function pointers.
-static llvm::CallInst *
+llvm::CallInst *
 TransferAttributes(llvm::CallInst *callsite, const llvm::Value* callee)
 {
     if (const llvm::GlobalAlias *alias =
@@ -3772,14 +1932,6 @@ LlvmFunctionBuilder::CreateCall(llvm::Value *callee, llvm::Value *arg1,
 {
     llvm::CallInst *call = this->builder_.CreateCall4(callee, arg1, arg2, arg3,
                                                       arg4, name);
-    return TransferAttributes(call, callee);
-}
-
-template<typename InputIterator> llvm::CallInst *
-LlvmFunctionBuilder::CreateCall(llvm::Value *callee, InputIterator begin,
-                                InputIterator end, const char *name)
-{
-    llvm::CallInst *call = this->builder_.CreateCall(callee, begin, end, name);
     return TransferAttributes(call, callee);
 }
 
