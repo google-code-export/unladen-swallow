@@ -78,6 +78,8 @@ public:
     BuilderT& builder() { return builder_; }
     llvm::BasicBlock *unreachable_block() { return unreachable_block_; }
 
+    bool Error() { return this->error_; }
+
     /// Sets the current instruction index.  This is only put into the
     /// frame object when tracing.
     void SetLasti(int current_instruction_index);
@@ -554,6 +556,11 @@ private:
     llvm::DIFactory &debug_info_;
     const llvm::DICompileUnit debug_compile_unit_;
     const llvm::DISubprogram debug_subprogram_;
+
+    // True if something went wrong and we need to stop compilation without
+    // aborting the process. If this is true, a Python error has already
+    // been set.
+    bool error_;
 
     // The most recent index we've started emitting an instruction for.
     int f_lasti_;

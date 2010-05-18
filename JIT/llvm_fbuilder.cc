@@ -138,8 +138,9 @@ LlvmFunctionBuilder::LlvmFunctionBuilder(
                             debug_compile_unit_,
                             code_object->co_firstlineno,
                             llvm::DIType(),
-                            false,  // Not local to unit.
-                            true))  // Is definition.
+                            false,   // Not local to unit.
+                            true)),  // Is definition.
+      error_(false)
 {
     Function::arg_iterator args = this->function_->arg_begin();
     this->frame_ = args++;
@@ -181,7 +182,11 @@ LlvmFunctionBuilder::LlvmFunctionBuilder(
     this->num_blocks_addr_ = this->builder_.CreateAlloca(
         PyTypeBuilder<char>::get(this->context_), NULL, "num_blocks_addr");
     for (int i = 0; i < code_object->co_nlocals; ++i) {
-        PyObject *local_name = PyTuple_GET_ITEM(code_object->co_varnames, i);
+        PyObject *local_name = PyTuple_GetItem(code_object->co_varnames, i);
+        if (local_name == NULL) {
+            this->error_ = true;
+            return;
+        }
         this->locals_.push_back(
             this->builder_.CreateAlloca(
                 PyTypeBuilder<PyObject*>::get(this->context_),

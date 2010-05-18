@@ -192,6 +192,9 @@ _PyCode_ToLlvmIr(PyCodeObject *code)
     global_data->MaybeCollectUnusedGlobals();
 
     py::LlvmFunctionBuilder fbuilder(global_data, code);
+    if (fbuilder.Error()) {
+        return NULL;
+    }
     std::vector<InstrInfo> instr_info(PyString_GET_SIZE(code->co_code));
     if (-1 == set_line_numbers(code, instr_info)) {
         return NULL;

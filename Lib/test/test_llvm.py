@@ -14,6 +14,7 @@ import contextlib
 import functools
 import gc
 import sys
+import types
 import unittest
 import weakref
 
@@ -4230,6 +4231,34 @@ class SetJitControlTests(LlvmTestCase):
         self.assertRaises(ValueError, _llvm.set_jit_control, "asdf")
 
 
+def modify_code_object(code, **changes):
+    order = ["argcount", "nlocals", "stacksize", "flags", "code",
+             "consts", "names", "varnames", "filename", "name",
+             "firstlineno", "lnotab", "freevars", "cellvars"]
+
+    members = []
+    for attr in order:
+        if attr in changes:
+            members.append(changes[attr])
+        else:
+            full_attr = "co_" + attr
+            members.append(getattr(code, full_attr))
+    return types.CodeType(*members)
+
+
+class CrashRegressionTests(unittest.TestCase):
+
+    """Tests for segfaults uncovered by fuzz testing."""
+
+    def test_bad_locals(self):
+        # This used to crash because co_nlocals was greater than
+        # len(co_varnames).
+        code = modify_code_object(modify_code_object.__code__, nlocals=1000)
+        def test():
+            code.co_optimization = 2
+        self.assertRaises(IndexError, test)
+
+
 def test_main():
     if __name__ == "__main__" and len(sys.argv) > 1:
         tests = []
@@ -4243,7 +4272,8 @@ def test_main():
         tests = [LoopExceptionInteractionTests, GeneralCompilationTests,
                  OperatorTests, LiteralsTests, BailoutTests, InliningTests,
                  LlvmRebindBuiltinsTests, OptimizationTests,
-                 SetJitControlTests, TypeBasedAnalysisTests]
+                 SetJitControlTests, TypeBasedAnalysisTests,
+                 CrashRegressionTests]
     if sys.flags.optimize >= 1:
         print >>sys.stderr, "test_llvm -- skipping some tests due to -O flag."
         sys.stderr.flush()
