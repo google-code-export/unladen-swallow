@@ -86,7 +86,7 @@ static llvm::ManagedStatic<AccessAttrStats> access_attr_stats;
 namespace py {
 
 OpcodeAttributes::OpcodeAttributes(LlvmFunctionBuilder *fbuilder) :
-    fbuilder_(fbuilder)    
+    fbuilder_(fbuilder)
 {
 }
 
