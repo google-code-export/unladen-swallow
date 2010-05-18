@@ -233,7 +233,7 @@ OpcodeAttributes::STORE_ATTR_fast(int names_index)
 }
 
 bool
-OpcodeAttributes::AttributeAccessor::CanOptimizeAttrAccess()
+AttributeAccessor::CanOptimizeAttrAccess()
 {
     // Only optimize string attribute loads.  This leaves unicode hanging for
     // now, but most objects are still constructed with string objects.  If it
@@ -315,7 +315,7 @@ OpcodeAttributes::AttributeAccessor::CanOptimizeAttrAccess()
 }
 
 void
-OpcodeAttributes::AttributeAccessor::CacheTypeLookup()
+AttributeAccessor::CacheTypeLookup()
 {
     this->dictoffset_ = this->guard_type_->tp_dictoffset;
     this->descr_ = _PyType_Lookup(this->guard_type_, this->name_);
@@ -332,7 +332,7 @@ OpcodeAttributes::AttributeAccessor::CacheTypeLookup()
 }
 
 void
-OpcodeAttributes::AttributeAccessor::MakeLlvmValues()
+AttributeAccessor::MakeLlvmValues()
 {
     this->guard_type_v_ =
         this->fbuilder_->EmbedPointer<PyTypeObject*>(this->guard_type_);
@@ -347,7 +347,7 @@ OpcodeAttributes::AttributeAccessor::MakeLlvmValues()
 }
 
 void
-OpcodeAttributes::AttributeAccessor::GuardAttributeAccess(
+AttributeAccessor::GuardAttributeAccess(
     Value *obj_v, BasicBlock *do_access)
 {
     LlvmFunctionBuilder *fbuilder = this->fbuilder_;

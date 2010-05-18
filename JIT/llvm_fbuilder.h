@@ -54,6 +54,7 @@ class LlvmFunctionBuilder {
     LlvmFunctionBuilder(const LlvmFunctionBuilder &);  // Not implemented.
     void operator=(const LlvmFunctionBuilder &);  // Not implemented.
 
+    friend class AttributeAccessor;
     friend class OpcodeAttributes;
     friend class OpcodeBinops;
     friend class OpcodeBlock;
