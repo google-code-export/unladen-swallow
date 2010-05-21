@@ -113,9 +113,9 @@ LlvmFunctionBuilder::LlvmFunctionBuilder(
       function_(Function::Create(
                     get_function_type(this->module_),
                     llvm::GlobalValue::ExternalLinkage,
-                    // Prefix names with #u# to avoid collisions
+                    // Prefix names with # to avoid collisions
                     // with runtime functions.
-                    "#u#" + pystring_to_std_string(code_object->co_name),
+                    "#" + pystring_to_std_string(code_object->co_name),
                     this->module_)),
       builder_(this->context_,
                llvm::TargetFolder(

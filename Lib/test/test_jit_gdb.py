@@ -61,8 +61,8 @@ for function in (foo, bar, baz):
 foo()""")
         # Get the indices of each function in the stack trace.
         foo, bar, baz, output = map(
-            gdb_output.find, ("_23_u_23_foo", "_23_u_23_bar",
-                              "_23_u_23_baz", "Hello, World!"))
+            gdb_output.find, ("_23_foo", "_23_bar",
+                              "_23_baz", "Hello, World!"))
         # str.find returns -1 on failure, so this makes sure each
         # string is in the output.
         self.assertTrue(-1 not in (foo, bar, baz, output), msg=gdb_output)
