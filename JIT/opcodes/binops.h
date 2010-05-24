@@ -11,6 +11,7 @@
 namespace py {
 
 class LlvmFunctionBuilder;
+class LlvmFunctionState;
 
 // This class includes all opcodes involving binary operators.
 class OpcodeBinops
@@ -68,6 +69,7 @@ private:
     void GenericPowOp(const char *apifunc);
 
     LlvmFunctionBuilder *fbuilder_;
+    LlvmFunctionState *state_;
 };
 
 }

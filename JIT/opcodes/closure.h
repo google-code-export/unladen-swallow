@@ -9,6 +9,7 @@
 namespace py {
 
 class LlvmFunctionBuilder;
+class LlvmFunctionState;
 
 // This class contains all opcodes related to closures.
 class OpcodeClosure
@@ -23,7 +24,7 @@ public:
 
 private:
     LlvmFunctionBuilder *fbuilder_;
-
+    LlvmFunctionState *state_;
 };
 
 }

@@ -13,6 +13,7 @@ namespace llvm {
 namespace py {
 
 class LlvmFunctionBuilder;
+class LlvmFunctionState;
 
 // This class includes all opcodes used to access locals.
 class OpcodeLocals
@@ -37,6 +38,7 @@ private:
     void SetLocal(int locals_index, llvm::Value *new_value);
 
     LlvmFunctionBuilder *fbuilder_;
+    LlvmFunctionState *state_;
 };
 
 }

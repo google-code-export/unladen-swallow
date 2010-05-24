@@ -13,6 +13,7 @@ namespace llvm {
 namespace py {
 
 class LlvmFunctionBuilder;
+class LlvmFunctionState;
 
 // This class contains all opcodes which manipulate the blockstack.
 class OpcodeBlock
@@ -40,6 +41,7 @@ private:
                         llvm::BasicBlock *handler, int handler_opindex);
 
     LlvmFunctionBuilder *fbuilder_;
+    LlvmFunctionState *state_;
 };
 
 }

@@ -9,6 +9,7 @@
 namespace py {
 
 class LlvmFunctionBuilder;
+class LlvmFunctionState;
 
 // This class contains all stack modifing opcodes.
 class OpcodeStack
@@ -26,6 +27,7 @@ public:
 
 private:
     LlvmFunctionBuilder *fbuilder_;
+    LlvmFunctionState *state_;
 };
 
 }

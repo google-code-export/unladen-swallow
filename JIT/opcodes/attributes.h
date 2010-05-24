@@ -17,6 +17,7 @@ namespace llvm {
 namespace py {
 
 class LlvmFunctionBuilder;
+class LlvmFunctionState;
 
 
 // Specifies which kind of attribute access we are performing, either load
@@ -137,6 +138,7 @@ private:
     bool STORE_ATTR_fast(int names_index);
 
     LlvmFunctionBuilder *fbuilder_;
+    LlvmFunctionState *state_;
 };
 
 }

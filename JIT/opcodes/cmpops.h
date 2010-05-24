@@ -13,6 +13,7 @@ namespace llvm {
 namespace py {
 
 class LlvmFunctionBuilder;
+class LlvmFunctionState;
 
 // This class includes all code to implement the compare opcode.
 class OpcodeCmpops
@@ -43,6 +44,7 @@ private:
     llvm::Value *ExceptionMatches(llvm::Value *exc, llvm::Value *exc_type);
 
     LlvmFunctionBuilder *fbuilder_;
+    LlvmFunctionState *state_;
 };
 
 }

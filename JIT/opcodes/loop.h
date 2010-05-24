@@ -13,6 +13,7 @@ namespace llvm {
 namespace py {
 
 class LlvmFunctionBuilder;
+class LlvmFunctionState;
 
 // This class contains most loop related opcodes.
 // SETUP_LOOP can be found in OpcodeBlock.
@@ -33,6 +34,7 @@ public:
 
 private:
     LlvmFunctionBuilder *fbuilder_;
+    LlvmFunctionState *state_;
 };
 
 }

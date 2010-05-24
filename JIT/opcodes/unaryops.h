@@ -9,6 +9,7 @@
 namespace py {
 
 class LlvmFunctionBuilder;
+class LlvmFunctionState;
 
 // This class contains all unary operators.
 class OpcodeUnaryops
@@ -27,6 +28,7 @@ private:
     void GenericUnaryOp(const char *apifunc);
 
     LlvmFunctionBuilder *fbuilder_;
+    LlvmFunctionState *state_;
 };
 
 }

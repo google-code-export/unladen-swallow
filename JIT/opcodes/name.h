@@ -9,6 +9,7 @@
 namespace py {
 
 class LlvmFunctionBuilder;
+class LlvmFunctionState;
 
 // This class contains all opcodes used to access variables by name.
 class OpcodeName
@@ -22,6 +23,7 @@ public:
 
 private:
     LlvmFunctionBuilder *fbuilder_;
+    LlvmFunctionState *state_;
 };
 
 }

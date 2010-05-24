@@ -11,6 +11,7 @@
 namespace py {
 
 class LlvmFunctionBuilder;
+class LlvmFunctionState;
 
 // This class contains the implementation of all CALL_FUNCTION* opcodes.
 class OpcodeCall
@@ -42,6 +43,7 @@ private:
                                 const char *function_name);
 
     LlvmFunctionBuilder *fbuilder_;
+    LlvmFunctionState *state_;
 };
 
 }

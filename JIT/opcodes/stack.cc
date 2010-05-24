@@ -16,21 +16,21 @@ using llvm::Value;
 namespace py {
 
 OpcodeStack::OpcodeStack(LlvmFunctionBuilder *fbuilder) :
-    fbuilder_(fbuilder)
+    fbuilder_(fbuilder), state_(fbuilder->state())
 {
 }
 
 void
 OpcodeStack::POP_TOP()
 {
-    fbuilder_->DecRef(fbuilder_->Pop());
+    state_->DecRef(fbuilder_->Pop());
 }
 
 void
 OpcodeStack::DUP_TOP()
 {
     Value *first = fbuilder_->Pop();
-    fbuilder_->IncRef(first);
+    state_->IncRef(first);
     fbuilder_->Push(first);
     fbuilder_->Push(first);
 }
@@ -40,8 +40,8 @@ OpcodeStack::DUP_TOP_TWO()
 {
     Value *first = fbuilder_->Pop();
     Value *second = fbuilder_->Pop();
-    fbuilder_->IncRef(first);
-    fbuilder_->IncRef(second);
+    state_->IncRef(first);
+    state_->IncRef(second);
     fbuilder_->Push(second);
     fbuilder_->Push(first);
     fbuilder_->Push(second);
@@ -54,9 +54,9 @@ OpcodeStack::DUP_TOP_THREE()
     Value *first = fbuilder_->Pop();
     Value *second = fbuilder_->Pop();
     Value *third = fbuilder_->Pop();
-    fbuilder_->IncRef(first);
-    fbuilder_->IncRef(second);
-    fbuilder_->IncRef(third);
+    state_->IncRef(first);
+    state_->IncRef(second);
+    state_->IncRef(third);
     fbuilder_->Push(third);
     fbuilder_->Push(second);
     fbuilder_->Push(first);

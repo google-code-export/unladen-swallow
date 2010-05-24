@@ -13,6 +13,7 @@ namespace llvm {
 namespace py {
 
 class LlvmFunctionBuilder;
+class LlvmFunctionState;
 
 // This class contains most opcodes related to containers.
 // BINARY_SUBSCR can be found in OpcodeBinops.
@@ -43,7 +44,7 @@ private:
     // to get each item's address (GetListItemSlot or GetTupleItemSlot.)
     void BuildSequenceLiteral(
         int size, const char *createname,
-        llvm::Value *(LlvmFunctionBuilder::*getitemslot)(llvm::Value *, int));
+        llvm::Value *(LlvmFunctionState::*getitemslot)(llvm::Value *, int));
 
     // _safe is guaranteed to work; _list_int is specialized for indexing a list
     // with an int.
@@ -56,6 +57,7 @@ private:
     bool IMPORT_NAME_fast();
 
     LlvmFunctionBuilder *fbuilder_;
+    LlvmFunctionState *state_;
 };
 
 }

@@ -14,6 +14,7 @@ namespace llvm {
 namespace py {
 
 class LlvmFunctionBuilder;
+class LlvmFunctionState;
 
 // This class contains most control flow opcodes.
 // break and continue can be found in OpcodeLoop.
@@ -85,6 +86,7 @@ private:
                                    unsigned bail_idx);
 
     LlvmFunctionBuilder *fbuilder_;
+    LlvmFunctionState *state_;
 };
 
 }

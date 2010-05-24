@@ -51,7 +51,7 @@ py::OpcodeBinops::IncStatsTotal()
 namespace py {
 
 OpcodeBinops::OpcodeBinops(LlvmFunctionBuilder *fbuilder) :
-    fbuilder_(fbuilder)    
+    fbuilder_(fbuilder), state_(fbuilder->state())
 {
 }
 
@@ -62,10 +62,10 @@ OpcodeBinops::GenericBinOp(const char *apifunc)
     Value *rhs = fbuilder_->Pop();
     Value *lhs = fbuilder_->Pop();
     Function *op =
-        fbuilder_->GetGlobalFunction<PyObject*(PyObject*, PyObject*)>(apifunc);
-    Value *result = fbuilder_->CreateCall(op, lhs, rhs, "binop_result");
-    fbuilder_->DecRef(lhs);
-    fbuilder_->DecRef(rhs);
+        state_->GetGlobalFunction<PyObject*(PyObject*, PyObject*)>(apifunc);
+    Value *result = state_->CreateCall(op, lhs, rhs, "binop_result");
+    state_->DecRef(lhs);
+    state_->DecRef(rhs);
     fbuilder_->PropagateExceptionOnNull(result);
     fbuilder_->Push(result);
 }
@@ -97,8 +97,8 @@ OpcodeBinops::OptimizedBinOp(const char *apifunc)
     }
 
     BINOP_INC_STATS(optimized);
-    BasicBlock *success = fbuilder_->CreateBasicBlock("BINOP_OPT_success");
-    BasicBlock *bailpoint = fbuilder_->CreateBasicBlock("BINOP_OPT_bail");
+    BasicBlock *success = state_->CreateBasicBlock("BINOP_OPT_success");
+    BasicBlock *bailpoint = state_->CreateBasicBlock("BINOP_OPT_bail");
 
     Value *rhs = fbuilder_->Pop();
     Value *lhs = fbuilder_->Pop();
@@ -109,9 +109,9 @@ OpcodeBinops::OptimizedBinOp(const char *apifunc)
     // subset of all possible types where we control the semantics of __add__,
     // etc.
     Function *op =
-        fbuilder_->GetGlobalFunction<PyObject*(PyObject*, PyObject*)>(name);
-    Value *result = fbuilder_->CreateCall(op, lhs, rhs, "binop_result");
-    fbuilder_->builder_.CreateCondBr(fbuilder_->IsNull(result),
+        state_->GetGlobalFunction<PyObject*(PyObject*, PyObject*)>(name);
+    Value *result = state_->CreateCall(op, lhs, rhs, "binop_result");
+    fbuilder_->builder_.CreateCondBr(state_->IsNull(result),
                                      bailpoint, success);
 
     fbuilder_->builder_.SetInsertPoint(bailpoint);
@@ -120,8 +120,8 @@ OpcodeBinops::OptimizedBinOp(const char *apifunc)
     fbuilder_->CreateGuardBailPoint(_PYGUARD_BINOP);
 
     fbuilder_->builder_.SetInsertPoint(success);
-    fbuilder_->DecRef(lhs);
-    fbuilder_->DecRef(rhs);
+    state_->DecRef(lhs);
+    state_->DecRef(rhs);
     fbuilder_->Push(result);
 }
 
@@ -180,13 +180,13 @@ OpcodeBinops::GenericPowOp(const char *apifunc)
 {
     Value *rhs = fbuilder_->Pop();
     Value *lhs = fbuilder_->Pop();
-    Function *op = fbuilder_->GetGlobalFunction<PyObject*(PyObject*, PyObject*,
+    Function *op = state_->GetGlobalFunction<PyObject*(PyObject*, PyObject*,
         PyObject *)>(apifunc);
-    Value *pynone = fbuilder_->GetGlobalVariableFor(&_Py_NoneStruct);
-    Value *result = fbuilder_->CreateCall(op, lhs, rhs, pynone,
-                                          "powop_result");
-    fbuilder_->DecRef(lhs);
-    fbuilder_->DecRef(rhs);
+    Value *pynone = state_->GetGlobalVariableFor(&_Py_NoneStruct);
+    Value *result = state_->CreateCall(op, lhs, rhs, pynone,
+                                       "powop_result");
+    state_->DecRef(lhs);
+    state_->DecRef(rhs);
     fbuilder_->PropagateExceptionOnNull(result);
     fbuilder_->Push(result);
 }

@@ -6,6 +6,7 @@
 
 #include "JIT/llvm_compile.h"
 #include "JIT/llvm_fbuilder.h"
+#include "JIT/PyBytecodeDispatch.h"
 #include "JIT/PyBytecodeIterator.h"
 
 #include "llvm/ADT/OwningPtr.h"
@@ -149,7 +150,7 @@ find_basic_blocks(PyObject *bytecode, py::LlvmFunctionBuilder &fbuilder,
         }
         else if (instr_info[iter.NextIndex()].block_ == NULL) {
             instr_info[iter.NextIndex()].block_ =
-                fbuilder.CreateBasicBlock(fallthrough_name);
+                fbuilder.state()->CreateBasicBlock(fallthrough_name);
         }
         if (target_index >= instr_info.size()) {
             PyErr_Format(PyExc_SystemError,
@@ -160,12 +161,12 @@ find_basic_blocks(PyObject *bytecode, py::LlvmFunctionBuilder &fbuilder,
         }
         if (instr_info[target_index].block_ == NULL) {
             instr_info[target_index].block_ =
-                fbuilder.CreateBasicBlock(target_name);
+                fbuilder.state()->CreateBasicBlock(target_name);
         }
         if (target_index < iter.NextIndex() &&  // This is a backedge.
             instr_info[target_index].backedge_block_ == NULL) {
             instr_info[target_index].backedge_block_ =
-                fbuilder.CreateBasicBlock(backedge_name);
+                fbuilder.state()->CreateBasicBlock(backedge_name);
         }
     }
     if (iter.Error()) {
@@ -191,7 +192,8 @@ _PyCode_ToLlvmIr(PyCodeObject *code)
     PyGlobalLlvmData *global_data = PyGlobalLlvmData::Get();
     global_data->MaybeCollectUnusedGlobals();
 
-    py::LlvmFunctionBuilder fbuilder(global_data, code);
+    py::LlvmFunctionState fstate(global_data, code);
+    py::LlvmFunctionBuilder fbuilder(&fstate, code);
     if (fbuilder.Error()) {
         return NULL;
     }
@@ -203,6 +205,7 @@ _PyCode_ToLlvmIr(PyCodeObject *code)
         return NULL;
     }
 
+    py::PyBytecodeDispatch dispatch(&fbuilder);
     PyBytecodeIterator iter(code->co_code);
     for (; !iter.Done() && !iter.Error(); iter.Advance()) {
         fbuilder.SetLasti(iter.CurIndex());
@@ -226,7 +229,7 @@ _PyCode_ToLlvmIr(PyCodeObject *code)
 
 #define OPCODE(opname)					\
     case opname:					\
-        fbuilder.opname();				\
+        dispatch.opname();				\
         break;
 
         OPCODE(POP_TOP)
@@ -302,7 +305,7 @@ _PyCode_ToLlvmIr(PyCodeObject *code)
 
 #define OPCODE_WITH_ARG(opname)				\
     case opname:					\
-        fbuilder.opname(iter.Oparg());			\
+        dispatch.opname(iter.Oparg());			\
         break;
 
         OPCODE_WITH_ARG(STORE_NAME)
@@ -353,7 +356,7 @@ _PyCode_ToLlvmIr(PyCodeObject *code)
         } else { \
             fallthrough = NULL; \
         } \
-        fbuilder.opname(TARGET_PARAM, fallthrough); \
+        dispatch.opname(TARGET_PARAM, fallthrough); \
         break;
 
         OPCODE_J(JUMP_IF_FALSE_OR_POP, ABS, COND_BRANCH)

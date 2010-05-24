@@ -14,7 +14,7 @@ using llvm::Value;
 namespace py {
 
 OpcodeUnaryops::OpcodeUnaryops(LlvmFunctionBuilder *fbuilder) :
-    fbuilder_(fbuilder)
+    fbuilder_(fbuilder), state_(fbuilder->state())
 {
 }
 
@@ -23,16 +23,16 @@ void
 OpcodeUnaryops::GenericUnaryOp(const char *apifunc)
 {
     Value *value = fbuilder_->Pop();
-    Function *op = fbuilder_->GetGlobalFunction<PyObject*(PyObject*)>(apifunc);
-    Value *result = fbuilder_->CreateCall(op, value, "unaryop_result");
-    fbuilder_->DecRef(value);
+    Function *op = state_->GetGlobalFunction<PyObject*(PyObject*)>(apifunc);
+    Value *result = state_->CreateCall(op, value, "unaryop_result");
+    state_->DecRef(value);
     fbuilder_->PropagateExceptionOnNull(result);
     fbuilder_->Push(result);
 }
 
 #define UNARYOP_METH(NAME, APIFUNC)			\
 void							\
-OpcodeUnaryops::NAME()				\
+OpcodeUnaryops::NAME()				        \
 {							\
     this->GenericUnaryOp(#APIFUNC);			\
 }
@@ -50,10 +50,10 @@ OpcodeUnaryops::UNARY_NOT()
     Value *value = fbuilder_->Pop();
     Value *retval = fbuilder_->builder_.CreateSelect(
         fbuilder_->IsPythonTrue(value),
-        fbuilder_->GetGlobalVariableFor((PyObject*)&_Py_ZeroStruct),
-        fbuilder_->GetGlobalVariableFor((PyObject*)&_Py_TrueStruct),
+        state_->GetGlobalVariableFor((PyObject*)&_Py_ZeroStruct),
+        state_->GetGlobalVariableFor((PyObject*)&_Py_TrueStruct),
         "UNARY_NOT_result");
-    fbuilder_->IncRef(retval);
+    state_->IncRef(retval);
     fbuilder_->Push(retval);
 }
 

@@ -9,6 +9,7 @@
 namespace py {
 
 class LlvmFunctionBuilder;
+class LlvmFunctionState;
 
 // This class includes all opcodes used to access globals.
 class OpcodeGlobals
@@ -28,6 +29,7 @@ private:
     void LOAD_GLOBAL_safe(int index);
 
     LlvmFunctionBuilder *fbuilder_;
+    LlvmFunctionState *state_;
 };
 
 }

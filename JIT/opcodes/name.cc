@@ -16,15 +16,15 @@ using llvm::Value;
 namespace py {
 
 OpcodeName::OpcodeName(LlvmFunctionBuilder *fbuilder) :
-    fbuilder_(fbuilder)
+    fbuilder_(fbuilder), state_(fbuilder->state())
 {
 }
 
 void
 OpcodeName::LOAD_NAME(int index)
 {
-    Value *result = fbuilder_->CreateCall(
-        fbuilder_->GetGlobalFunction<PyObject *(PyFrameObject*, int)>(
+    Value *result = state_->CreateCall(
+        state_->GetGlobalFunction<PyObject *(PyFrameObject*, int)>(
             "_PyEval_LoadName"),
         fbuilder_->frame_,
         ConstantInt::get(PyTypeBuilder<int>::get(fbuilder_->context_), index));
@@ -36,8 +36,8 @@ void
 OpcodeName::STORE_NAME(int index)
 {
     Value *to_store = fbuilder_->Pop();
-    Value *err = fbuilder_->CreateCall(
-        fbuilder_->GetGlobalFunction<int(PyFrameObject*, int, PyObject*)>(
+    Value *err = state_->CreateCall(
+        state_->GetGlobalFunction<int(PyFrameObject*, int, PyObject*)>(
             "_PyEval_StoreName"),
         fbuilder_->frame_,
         ConstantInt::get(PyTypeBuilder<int>::get(fbuilder_->context_), index),
@@ -48,8 +48,8 @@ OpcodeName::STORE_NAME(int index)
 void
 OpcodeName::DELETE_NAME(int index)
 {
-    Value *err = fbuilder_->CreateCall(
-        fbuilder_->GetGlobalFunction<int(PyFrameObject*, int)>(
+    Value *err = state_->CreateCall(
+        state_->GetGlobalFunction<int(PyFrameObject*, int)>(
             "_PyEval_DeleteName"),
         fbuilder_->frame_,
         ConstantInt::get(PyTypeBuilder<int>::get(fbuilder_->context_), index));

@@ -327,9 +327,11 @@ ifneq ($(WITH_LLVM), 0)
 		JIT/ConstantMirror.o \
 		JIT/DeadGlobalElim.o \
 		JIT/global_llvm_data.o \
-		JIT/llvm_fbuilder.o \
 		JIT/llvm_compile.o \
+		JIT/llvm_fbuilder.o \
+		JIT/llvm_state.o \
 		JIT/PyAliasAnalysis.o \
+		JIT/PyBytecodeDispatch.o \
 		JIT/PyBytecodeIterator.o \
 		JIT/PyTBAliasAnalysis.o \
 		JIT/PyTypeBuilder.o \
@@ -739,6 +741,8 @@ PYTHON_HEADERS= \
 		JIT/global_llvm_data_fwd.h \
 		JIT/llvm_compile.h \
 		JIT/llvm_fbuilder.h \
+		JIT/llvm_state.h \
+		JIT/PyBytecodeDispatch.h \
 		JIT/PyBytecodeIterator.h \
 		JIT/PyTypeBuilder.h \
 		JIT/PyTBAliasAnalysis.h \
