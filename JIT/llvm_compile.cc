@@ -9,6 +9,7 @@
 #include "JIT/PyBytecodeDispatch.h"
 #include "JIT/PyBytecodeIterator.h"
 
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/OwningPtr.h"
 #include "llvm/Analysis/Verifier.h"
 #include "llvm/BasicBlock.h"
@@ -67,6 +68,131 @@ set_line_numbers(PyCodeObject *code, std::vector<InstrInfo>& instr_info)
     return 0;
 }
 
+
+// Loop over the bytecode and sanity-check the opcode arguments. Note that jump
+// targets are sanity-checked by find_basic_blocks(). Returns -1 with an
+// exception set on error; returns 0 on success.
+//
+// TODO: the validation constraints are not as tight as they could/should be.
+// Rather than using co->co_stacksize (which is an upper bound on the value),
+// we should statically calculate the max height of the stack.
+static int
+validate_bytecode(PyCodeObject *code)
+{
+    int arg;
+    Py_ssize_t num_free = PyTuple_Size(code->co_cellvars) +
+                          PyTuple_Size(code->co_freevars);
+    PyBytecodeIterator iter(code->co_code);
+    for (; !iter.Done() && !iter.Error(); iter.Advance()) {
+        switch (iter.Opcode()) {
+            case DELETE_ATTR:
+            case LOAD_ATTR:
+            case STORE_ATTR:
+            case STORE_NAME:
+            case DELETE_NAME:
+            case LOAD_NAME:
+            case LOAD_GLOBAL:
+            case STORE_GLOBAL:
+            case DELETE_GLOBAL:
+                arg = iter.Oparg();
+                if (arg < 0 || arg >= PyObject_Size(code->co_names))
+                    goto error;
+                break;
+
+            case LOAD_FAST:
+            case STORE_FAST:
+            case DELETE_FAST:
+                arg = iter.Oparg();
+                if (arg < 0 || arg >= code->co_nlocals)
+                    goto error;
+                break;
+
+            case LOAD_CONST:
+                arg = iter.Oparg();
+                if (arg < 0 || arg >= PyTuple_Size(code->co_consts))
+                    goto error;
+                break;
+
+            case UNPACK_SEQUENCE:
+            case BUILD_TUPLE:
+            case BUILD_LIST:
+            case BUILD_MAP:
+            case MAKE_CLOSURE:
+                arg = iter.Oparg();
+                if (arg < 0 || arg > code->co_stacksize)
+                    goto error;
+                break;
+
+            case CALL_FUNCTION:
+            case CALL_FUNCTION_VAR:
+            case CALL_FUNCTION_KW:
+            case CALL_FUNCTION_VAR_KW:
+            {
+                arg = iter.Oparg();
+                int num_args = arg & 0xff;
+                int num_kwargs = (arg >> 8) & 0xff;
+                int num_stack_slots = num_args + 2 * num_kwargs + 1;
+                if (iter.Opcode() != CALL_FUNCTION) {
+                    num_stack_slots++;
+                    if (iter.Opcode() == CALL_FUNCTION_VAR_KW)
+                        num_stack_slots++;
+                }
+                if (arg < 0 || num_stack_slots > code->co_stacksize)
+                    goto error;
+                break;
+            }
+
+            case COMPARE_OP:
+                arg = iter.Oparg();
+                if (arg < 0 || arg >= PyCmp_BAD)
+                    goto error;
+                break;
+
+            case YIELD_VALUE:
+                if (!(code->co_flags & CO_GENERATOR)) {
+                    PyErr_Format(PyExc_SystemError, "yield in non-generator");
+                    return -1;
+                }
+                break;
+
+            case LOAD_CLOSURE:
+            case LOAD_DEREF:
+            case STORE_DEREF:
+                arg = iter.Oparg();
+                if (arg < 0 || arg >= num_free)
+                    goto error;
+                break;
+
+            default:
+                break;
+        }
+    }
+    return 0;
+
+error:
+    PyErr_Format(PyExc_SystemError,
+                 "bad opcode argument: opcode=%d arg=%d", iter.Opcode(), arg);
+    return -1;
+}
+
+
+// Find the "addresses" of each opcode in the bytecode stream. This is used to
+// validate that jump instructions are jumping to opcodes, rather than opcode
+// arguments. Modifies opcodes in-place. Returns 0 on success, -1 on failure.
+static int
+find_opcodes(PyObject *bytecode, llvm::DenseSet<size_t>& opcodes)
+{
+    PyBytecodeIterator iter(bytecode);
+    for (; !iter.Done() && !iter.Error(); iter.Advance()) {
+        opcodes.insert(iter.CurIndex());
+    }
+    if (iter.Error()) {
+        return -1;
+    }
+    return 0;
+}
+
+
 // Uses the jump instructions in the bytecode string to identify basic
 // blocks and backedges, and creates new llvm::BasicBlocks inside
 // *function accordingly into instr_info.  Returns -1 on error, or 0
@@ -78,6 +204,12 @@ find_basic_blocks(PyObject *bytecode, py::LlvmFunctionBuilder &fbuilder,
     assert(PyString_Check(bytecode) && "Expected bytecode string");
     assert(instr_info.size() == (size_t)PyString_GET_SIZE(bytecode) &&
            "instr_info indices must match bytecode indices.");
+
+    llvm::DenseSet<size_t> opcodes(64);
+    if (-1 == find_opcodes(bytecode, opcodes)) {
+        return -1;
+    }
+
     PyBytecodeIterator iter(bytecode);
     for (; !iter.Done() && !iter.Error(); iter.Advance()) {
         size_t target_index;
@@ -159,6 +291,11 @@ find_basic_blocks(PyObject *bytecode, py::LlvmFunctionBuilder &fbuilder,
                          target_index, instr_info.size());
             return -1;
         }
+        else if (opcodes.count(target_index) == 0) {
+            PyErr_SetString(PyExc_SystemError,
+                            "Jump opcode pointed to non-opcode.");
+            return -1;
+        }
         if (instr_info[target_index].block_ == NULL) {
             instr_info[target_index].block_ =
                 fbuilder.state()->CreateBasicBlock(target_name);
@@ -174,6 +311,7 @@ find_basic_blocks(PyObject *bytecode, py::LlvmFunctionBuilder &fbuilder,
     }
     return 0;
 }
+
 
 extern "C" _LlvmFunction *
 _PyCode_ToLlvmIr(PyCodeObject *code)
@@ -202,6 +340,9 @@ _PyCode_ToLlvmIr(PyCodeObject *code)
         return NULL;
     }
     if (-1 == find_basic_blocks(code->co_code, fbuilder, instr_info)) {
+        return NULL;
+    }
+    if (-1 == validate_bytecode(code)) {
         return NULL;
     }
 

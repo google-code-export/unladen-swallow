@@ -64,6 +64,8 @@ OpcodeCmpops::COMPARE_OP_fast(int cmp_op, const PyTypeObject *lhs_type,
         CMPOP_NAME(PyCmp_GT)
         CMPOP_NAME(PyCmp_GE)
         default:
+            // There's a check for this in llvm_compile.cc; if this call ever
+            // triggers, something has gone horribly wrong.
             Py_FatalError("unknown COMPARE_OP oparg");
             return false;  // Not reached.
 #undef CMPOP_NAME
@@ -165,6 +167,8 @@ OpcodeCmpops::COMPARE_OP_safe(int cmp_op)
         this->RichCompare(lhs, rhs, cmp_op);
         return;
     default:
+        // There's a check for this in llvm_compile.cc; if this call ever
+        // triggers, something has gone horribly wrong.
         Py_FatalError("unknown COMPARE_OP oparg");
         return;  // Not reached.
     }

@@ -4231,7 +4231,7 @@ class SetJitControlTests(LlvmTestCase):
         self.assertRaises(ValueError, _llvm.set_jit_control, "asdf")
 
 
-def modify_code_object(code, **changes):
+def modify_code_object(code_obj, **changes):
     order = ["argcount", "nlocals", "stacksize", "flags", "code",
              "consts", "names", "varnames", "filename", "name",
              "firstlineno", "lnotab", "freevars", "cellvars"]
@@ -4242,13 +4242,19 @@ def modify_code_object(code, **changes):
             members.append(changes[attr])
         else:
             full_attr = "co_" + attr
-            members.append(getattr(code, full_attr))
+            members.append(getattr(code_obj, full_attr))
     return types.CodeType(*members)
 
 
 class CrashRegressionTests(unittest.TestCase):
 
     """Tests for segfaults uncovered by fuzz testing."""
+
+    def compile_and_test(self, code_obj, new_bytecode):
+        code = modify_code_object(code_obj, code="".join(new_bytecode))
+        def test():
+            code.co_optimization = 2
+        self.assertRaises(SystemError, test)
 
     def test_bad_locals(self):
         # This used to crash because co_nlocals was greater than
@@ -4257,6 +4263,59 @@ class CrashRegressionTests(unittest.TestCase):
         def test():
             code.co_optimization = 2
         self.assertRaises(IndexError, test)
+
+    def test_bad_load_attr_index(self):
+        def golden():
+            return foo.bar
+
+        # Incorrect name indices used to cause a segfault in the JIT compiler.
+        bytecode = list(golden.__code__.co_code)
+        bytecode[4] = chr(200)  # LOAD_ATTR argument.
+        self.compile_and_test(golden.__code__, bytecode)
+
+    def test_bad_compare_op(self):
+        def golden():
+            return a < 5
+
+        # Incorrect compare ops used to cause a segfault in the JIT compiler.
+        bytecode = list(golden.__code__.co_code)
+        bytecode[7] = chr(200)  # COMPARE_OP argument.
+        self.compile_and_test(golden.__code__, bytecode)
+
+    def test_bad_load_fast_index(self):
+        def golden(a):
+            return a
+
+        # Incorrect LOAD_FAST args used to cause a segfault in LLVM.
+        bytecode = list(golden.__code__.co_code)
+        bytecode[1] = chr(200)  # LOAD_FAST argument.
+        self.compile_and_test(golden.__code__, bytecode)
+
+    def test_bad_load_const_index(self):
+        def golden():
+            return 5
+
+        # Incorrect LOAD_CONST args used to segfault the JIT compiler.
+        bytecode = list(golden.__code__.co_code)
+        bytecode[1] = chr(204)  # LOAD_CONST argument.
+        self.compile_and_test(golden.__code__, bytecode)
+
+    def test_jump_to_data(self):
+        def golden():
+            if x:
+                return 5
+
+        bytecode = list(golden.__code__.co_code)
+        bytecode[4] = chr(11)  # Jump to the LOAD_CONST's argument field.
+        self.compile_and_test(golden.__code__, bytecode)
+
+    def test_bad_build_list(self):
+        def golden():
+            return []
+
+        bytecode = list(golden.__code__.co_code)
+        bytecode[2] = chr(200)  # Create a huge list.
+        self.compile_and_test(golden.__code__, bytecode)
 
 
 def test_main():
