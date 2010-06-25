@@ -270,6 +270,7 @@ private:
     BuilderT &builder_;
     llvm::DIFactory &debug_info_;
     const llvm::DICompileUnit debug_compile_unit_;
+    const llvm::DIFile file_;
     const llvm::DISubprogram debug_subprogram_;
     const bool is_generator_;
 

@@ -23,6 +23,7 @@
 #include "llvm/Instructions.h"
 #include "llvm/Intrinsics.h"
 #include "llvm/Module.h"
+#include "llvm/Support/DebugLoc.h"
 #include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Type.h"
@@ -83,12 +84,16 @@ LlvmFunctionBuilder::LlvmFunctionBuilder(
                               false, // Not main.
                               false, // Not optimized
                               "")),
+      file_(this->debug_info_.CreateFile(
+                PyString_AS_STRING(code_object->co_filename),
+                "",
+                debug_compile_unit_)),
       debug_subprogram_(this->debug_info_.CreateSubprogram(
                             debug_compile_unit_,
                             PyString_AS_STRING(code_object->co_name),
                             PyString_AS_STRING(code_object->co_name),
                             PyString_AS_STRING(code_object->co_name),
-                            debug_compile_unit_,
+                            file_,
                             code_object->co_firstlineno,
                             llvm::DIType(),
                             false,   // Not local to unit.
@@ -986,10 +991,12 @@ LlvmFunctionBuilder::PropagateException()
 void
 LlvmFunctionBuilder::SetDebugStopPoint(int line_number)
 {
-    this->builder_.SetCurrentDebugLocation(
-        this->debug_info_.CreateLocation(line_number, 0,
-                                         this->debug_subprogram_,
-                                         llvm::DILocation(NULL)).getNode());
+    const llvm::DILocation location(this->debug_info_.CreateLocation(
+                                        line_number, 0,
+                                        this->debug_subprogram_,
+                                        llvm::DILocation(NULL)));
+    const llvm::DebugLoc debug_loc(llvm::DebugLoc::getFromDILocation(location));
+    this->builder_.SetCurrentDebugLocation(debug_loc);
 }
 
 const PyTypeObject *

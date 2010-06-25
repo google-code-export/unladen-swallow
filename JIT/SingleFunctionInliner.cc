@@ -15,6 +15,7 @@ using llvm::BasicBlock;
 using llvm::CallInst;
 using llvm::Function;
 using llvm::FunctionPass;
+using llvm::InlineFunctionInfo;
 using llvm::InvokeInst;
 using llvm::Module;
 using llvm::dyn_cast;
@@ -62,7 +63,8 @@ public:
 
         // Actually inline the calls we found.
         for (size_t i = 0; i != call_sites.size(); ++i) {
-            changed |= InlineFunction(call_sites[i]);
+            InlineFunctionInfo junked;
+            changed |= InlineFunction(call_sites[i], junked);
         }
         return changed;
     }
