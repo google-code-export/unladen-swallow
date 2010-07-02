@@ -92,6 +92,13 @@ public:
                                llvm::Value *arg3,
                                llvm::Value *arg4,
                                const char *name = "");
+    llvm::CallInst *CreateCall(llvm::Value *callee,
+                               llvm::Value *arg1,
+                               llvm::Value *arg2,
+                               llvm::Value *arg3,
+                               llvm::Value *arg4,
+                               llvm::Value *arg5,
+                               const char *name = "");
     template<typename InputIterator>
     llvm::CallInst *CreateCall(llvm::Value *callee,
                                InputIterator begin,

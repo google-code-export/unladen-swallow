@@ -70,23 +70,29 @@ void
 LlvmFunctionState::MemCpy(llvm::Value *target,
                           llvm::Value *array, llvm::Value *N)
 {
-    const Type *len_type[] = { Type::getInt64Ty(this->context_) };
+    const Type *char_star_type = PyTypeBuilder<char*>::get(this->context_);
+    const Type *memcpy_arg_types[] = {
+        char_star_type,
+        char_star_type,
+        Type::getInt64Ty(this->context_)
+    };
     Value *memcpy = Intrinsic::getDeclaration(
-        this->module_, Intrinsic::memcpy, len_type, 1);
+        this->module_, Intrinsic::memcpy, memcpy_arg_types, 3);
     assert(target->getType() == array->getType() &&
            "memcpy's source and destination should have the same type.");
     // Calculate the length as int64_t(&array_type(NULL)[N]).
     Value *length = this->builder_.CreatePtrToInt(
         this->builder_.CreateGEP(Constant::getNullValue(array->getType()), N),
         Type::getInt64Ty(this->context_));
-    const Type *char_star_type = PyTypeBuilder<char*>::get(this->context_);
     this->CreateCall(
         memcpy,
         this->builder_.CreateBitCast(target, char_star_type),
         this->builder_.CreateBitCast(array, char_star_type),
         length,
         // Unknown alignment.
-        ConstantInt::get(Type::getInt32Ty(this->context_), 0));
+        ConstantInt::get(Type::getInt32Ty(this->context_), 0),
+        // Not volatile.
+        ConstantInt::get(Type::getInt1Ty(this->context_), 0));
 }
 
 llvm::BasicBlock *
@@ -176,6 +182,17 @@ LlvmFunctionState::CreateCall(llvm::Value *callee, llvm::Value *arg1,
 {
     llvm::CallInst *call = this->builder_.CreateCall4(callee, arg1, arg2, arg3,
                                                       arg4, name);
+    return TransferAttributes(call, callee);
+}
+
+llvm::CallInst *
+LlvmFunctionState::CreateCall(llvm::Value *callee, llvm::Value *arg1,
+                              llvm::Value *arg2, llvm::Value *arg3,
+                              llvm::Value *arg4, llvm::Value *arg5,
+                              const char *name)
+{
+    llvm::CallInst *call = this->builder_.CreateCall5(callee, arg1, arg2, arg3,
+                                                      arg4, arg5, name);
     return TransferAttributes(call, callee);
 }
 
