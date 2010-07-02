@@ -314,11 +314,11 @@ TEST_F(AliasAnalysisTest, TBAliasAnalysis)
     this->fpm_.add(pass);
     this->fpm_.run(*this->function_);
 
-    EXPECT_EQ(AliasAnalysis::MayAlias, aa->alias(pyobject, 0, intptr, 0));
-    EXPECT_EQ(AliasAnalysis::NoAlias, aa->alias(pyobject, 0, stack, 0));
-    EXPECT_EQ(AliasAnalysis::MayAlias, aa->alias(pyobject, 0, pyintobject, 0));
+    EXPECT_EQ(AliasAnalysis::MayAlias, aa->alias(pyobject, 1, intptr, 1));
+    EXPECT_EQ(AliasAnalysis::NoAlias, aa->alias(pyobject, 1, stack, 1));
+    EXPECT_EQ(AliasAnalysis::MayAlias, aa->alias(pyobject, 1, pyintobject, 1));
     EXPECT_EQ(AliasAnalysis::NoAlias,
-              aa->alias(pyintobject, 0, pyfloatobject_gep, 0));
+              aa->alias(pyintobject, 1, pyfloatobject_gep, 1));
 }
 
 }  // namespace
