@@ -4317,6 +4317,24 @@ class CrashRegressionTests(unittest.TestCase):
         bytecode[2] = chr(200)  # Create a huge list.
         self.compile_and_test(golden.__code__, bytecode)
 
+    def test_cache_imports_null_watching(self):
+        # We used to crash when compiling code using cached imports when the
+        # watching list was NULL.
+        def foo():
+            import os
+        foo()  # Gather the tiniest amount of feedback about what os is.
+        # Compile foo in a way that doesn't provide globals and builtins
+        # dictionaries.
+        foo.__code__.co_optimization = 2
+        foo.__code__.co_use_jit = True
+        # Also assert that we were able to perform the optimzation anyway by
+        # testing the code's sensitivity to changing sys.modules.
+        foo()
+        self.assertTrue(foo.__code__.co_use_jit)
+        sys.modules["this-is-not-a-module"] = None
+        del sys.modules["this-is-not-a-module"]
+        self.assertFalse(foo.__code__.co_use_jit)
+
 
 def test_main():
     if __name__ == "__main__" and len(sys.argv) > 1:

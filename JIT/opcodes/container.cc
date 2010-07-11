@@ -282,6 +282,17 @@ OpcodeContainer::IMPORT_NAME()
 bool
 OpcodeContainer::IMPORT_NAME_fast()
 {
+    PyCodeObject *code = fbuilder_->code_object_;
+
+    // If we're not already monitoring the builtins dict, monitor it.  Normally
+    // we pick it up from the eval loop, but if it isn't here, then we make a
+    // guess.  If we are wrong, we will bail.
+    if (code->co_watching == NULL ||
+        code->co_watching[WATCHING_BUILTINS] == NULL) {
+        PyObject *builtins = PyThreadState_GET()->interp->builtins;
+        _PyCode_WatchDict(code, WATCHING_BUILTINS, builtins);
+    }
+
     const PyRuntimeFeedback *feedback = fbuilder_->GetFeedback();
     if (feedback == NULL || feedback->ObjectsOverflowed()) {
         return false;
@@ -295,25 +306,22 @@ OpcodeContainer::IMPORT_NAME_fast()
     PyObject *module = objects[0];
 
     // We need to invalidate this function if someone changes sys.modules.
-    if (fbuilder_->code_object_->co_watching[WATCHING_SYS_MODULES] == NULL) {
+    if (code->co_watching[WATCHING_SYS_MODULES] == NULL) {
         PyObject *sys_modules = PyImport_GetModuleDict();
         if (sys_modules == NULL) {
             return false;
         }
 
-        if (_PyCode_WatchDict(fbuilder_->code_object_,
+        if (_PyCode_WatchDict(code,
                               WATCHING_SYS_MODULES,
                               sys_modules)) {
             PyErr_Clear();
             return false;
         }
+
         fbuilder_->uses_watched_dicts_.set(WATCHING_BUILTINS);
         fbuilder_->uses_watched_dicts_.set(WATCHING_SYS_MODULES);
     }
-    // We start watching builtins when we begin compilation to LLVM IR (aka,
-    // we're always watching it by this point).
-    assert(fbuilder_->code_object_->co_watching[WATCHING_BUILTINS]);
-    assert(fbuilder_->code_object_->co_watching[WATCHING_SYS_MODULES]);
 
     BasicBlock *keep_going =
         state_->CreateBasicBlock("IMPORT_NAME_keep_going");
