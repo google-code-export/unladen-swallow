@@ -14,7 +14,9 @@ using llvm::Value;
 namespace py {
 
 OpcodeGlobals::OpcodeGlobals(LlvmFunctionBuilder *fbuilder) :
-    fbuilder_(fbuilder), state_(fbuilder->state())
+    fbuilder_(fbuilder),
+    state_(fbuilder->state()),
+    builder_(fbuilder->builder())
 {
 }
 
@@ -23,7 +25,7 @@ void OpcodeGlobals::LOAD_GLOBAL(int index)
     // A code object might not have co_watching set if
     // a) it was compiled by setting co_optimization, or
     // b) we couldn't watch the globals/builtins dicts.
-    PyObject **watching = fbuilder_->code_object_->co_watching;
+    PyObject **watching = this->fbuilder_->code_object()->co_watching;
     if (watching && watching[WATCHING_GLOBALS] && watching[WATCHING_BUILTINS])
         this->LOAD_GLOBAL_fast(index);
     else
@@ -32,7 +34,7 @@ void OpcodeGlobals::LOAD_GLOBAL(int index)
 
 void OpcodeGlobals::LOAD_GLOBAL_fast(int index)
 {
-    PyCodeObject *code = fbuilder_->code_object_;
+    PyCodeObject *code = this->fbuilder_->code_object();
     assert(code->co_watching != NULL);
     assert(code->co_watching[WATCHING_GLOBALS]);
     assert(code->co_watching[WATCHING_BUILTINS]);
@@ -50,124 +52,124 @@ void OpcodeGlobals::LOAD_GLOBAL_fast(int index)
             return;
         }
     }
-    fbuilder_->uses_watched_dicts_.set(WATCHING_GLOBALS);
-    fbuilder_->uses_watched_dicts_.set(WATCHING_BUILTINS);
+    this->fbuilder_->WatchDict(WATCHING_GLOBALS);
+    this->fbuilder_->WatchDict(WATCHING_BUILTINS);
 
     BasicBlock *keep_going =
-        state_->CreateBasicBlock("LOAD_GLOBAL_keep_going");
+        this->state_->CreateBasicBlock("LOAD_GLOBAL_keep_going");
     BasicBlock *invalid_assumptions =
-        state_->CreateBasicBlock("LOAD_GLOBAL_invalid_assumptions");
+        this->state_->CreateBasicBlock("LOAD_GLOBAL_invalid_assumptions");
 
 #ifdef WITH_TSC
-    state_->LogTscEvent(LOAD_GLOBAL_ENTER_LLVM);
+    this->state_->LogTscEvent(LOAD_GLOBAL_ENTER_LLVM);
 #endif
-    Value *use_jit = fbuilder_->builder_.CreateLoad(fbuilder_->use_jit_addr_,
-                                               "co_use_jit");
-    fbuilder_->builder_.CreateCondBr(state_->IsNonZero(use_jit),
-                                     keep_going,
-                                     invalid_assumptions);
+    this->builder_.CreateCondBr(this->fbuilder_->GetUseJitCond(),
+                                keep_going,
+                                invalid_assumptions);
 
     /* Our assumptions about the state of the globals/builtins no longer hold;
        bail back to the interpreter. */
-    fbuilder_->builder_.SetInsertPoint(invalid_assumptions);
-    fbuilder_->CreateBailPoint(_PYFRAME_FATAL_GUARD_FAIL);
+    this->builder_.SetInsertPoint(invalid_assumptions);
+    this->fbuilder_->CreateBailPoint(_PYFRAME_FATAL_GUARD_FAIL);
 
     /* Our assumptions are still valid; encode the result of the lookups as an
        immediate in the IR. */
-    fbuilder_->builder_.SetInsertPoint(keep_going);
-    Value *global = state_->EmbedPointer<PyObject*>(obj);
-    state_->IncRef(global);
-    fbuilder_->Push(global);
+    this->builder_.SetInsertPoint(keep_going);
+    Value *global = this->state_->EmbedPointer<PyObject*>(obj);
+    this->state_->IncRef(global);
+    this->fbuilder_->Push(global);
 
 #ifdef WITH_TSC
-    state_->LogTscEvent(LOAD_GLOBAL_EXIT_LLVM);
+    this->state_->LogTscEvent(LOAD_GLOBAL_EXIT_LLVM);
 #endif
 }
 
 void OpcodeGlobals::LOAD_GLOBAL_safe(int index)
 {
     BasicBlock *global_missing =
-            state_->CreateBasicBlock("LOAD_GLOBAL_global_missing");
+            this->state_->CreateBasicBlock("LOAD_GLOBAL_global_missing");
     BasicBlock *global_success =
-            state_->CreateBasicBlock("LOAD_GLOBAL_global_success");
+            this->state_->CreateBasicBlock("LOAD_GLOBAL_global_success");
     BasicBlock *builtin_missing =
-            state_->CreateBasicBlock("LOAD_GLOBAL_builtin_missing");
+            this->state_->CreateBasicBlock("LOAD_GLOBAL_builtin_missing");
     BasicBlock *builtin_success =
-            state_->CreateBasicBlock("LOAD_GLOBAL_builtin_success");
-    BasicBlock *done = state_->CreateBasicBlock("LOAD_GLOBAL_done");
+            this->state_->CreateBasicBlock("LOAD_GLOBAL_builtin_success");
+    BasicBlock *done = this->state_->CreateBasicBlock("LOAD_GLOBAL_done");
 #ifdef WITH_TSC
-    state_->LogTscEvent(LOAD_GLOBAL_ENTER_LLVM);
+    this->state_->LogTscEvent(LOAD_GLOBAL_ENTER_LLVM);
 #endif
-    Value *name = fbuilder_->LookupName(index);
-    Function *pydict_getitem = state_->GetGlobalFunction<
+    Value *name = this->fbuilder_->LookupName(index);
+    Function *pydict_getitem = this->state_->GetGlobalFunction<
         PyObject *(PyObject *, PyObject *)>("PyDict_GetItem");
-    Value *global = state_->CreateCall(
-        pydict_getitem, fbuilder_->globals_, name, "global_variable");
-    fbuilder_->builder_.CreateCondBr(state_->IsNull(global),
-                                     global_missing, global_success);
+    Value *global = this->state_->CreateCall(
+        pydict_getitem, this->fbuilder_->globals(), name, "global_variable");
+    this->builder_.CreateCondBr(this->state_->IsNull(global),
+                                global_missing, global_success);
 
-    fbuilder_->builder_.SetInsertPoint(global_success);
-    state_->IncRef(global);
-    fbuilder_->Push(global);
-    fbuilder_->builder_.CreateBr(done);
+    this->builder_.SetInsertPoint(global_success);
+    this->state_->IncRef(global);
+    this->fbuilder_->Push(global);
+    this->builder_.CreateBr(done);
 
-    fbuilder_->builder_.SetInsertPoint(global_missing);
+    this->builder_.SetInsertPoint(global_missing);
     // This ignores any exception set by PyDict_GetItem (and similarly
     // for the builtins dict below,) but this is what ceval does too.
-    Value *builtin = state_->CreateCall(
-        pydict_getitem, fbuilder_->builtins_, name, "builtin_variable");
-    fbuilder_->builder_.CreateCondBr(state_->IsNull(builtin),
-                                     builtin_missing, builtin_success);
+    Value *builtin = this->state_->CreateCall(
+        pydict_getitem, this->fbuilder_->builtins(), name, "builtin_variable");
+    this->builder_.CreateCondBr(this->state_->IsNull(builtin),
+                                builtin_missing, builtin_success);
 
-    fbuilder_->builder_.SetInsertPoint(builtin_missing);
-    Function *do_raise = state_->GetGlobalFunction<
+    this->builder_.SetInsertPoint(builtin_missing);
+    Function *do_raise = this->state_->GetGlobalFunction<
         void(PyObject *)>("_PyEval_RaiseForGlobalNameError");
-    state_->CreateCall(do_raise, name);
-    fbuilder_->PropagateException();
+    this->state_->CreateCall(do_raise, name);
+    this->fbuilder_->PropagateException();
 
-    fbuilder_->builder_.SetInsertPoint(builtin_success);
-    state_->IncRef(builtin);
-    fbuilder_->Push(builtin);
-    fbuilder_->builder_.CreateBr(done);
+    this->builder_.SetInsertPoint(builtin_success);
+    this->state_->IncRef(builtin);
+    this->fbuilder_->Push(builtin);
+    this->builder_.CreateBr(done);
 
-    fbuilder_->builder_.SetInsertPoint(done);
+    this->builder_.SetInsertPoint(done);
 #ifdef WITH_TSC
-    state_->LogTscEvent(LOAD_GLOBAL_EXIT_LLVM);
+    this->state_->LogTscEvent(LOAD_GLOBAL_EXIT_LLVM);
 #endif
 }
 
 void OpcodeGlobals::STORE_GLOBAL(int index)
 {
-    Value *name = fbuilder_->LookupName(index);
-    Value *value = fbuilder_->Pop();
-    Function *pydict_setitem = state_->GetGlobalFunction<
+    Value *name = this->fbuilder_->LookupName(index);
+    Value *value = this->fbuilder_->Pop();
+    Function *pydict_setitem = this->state_->GetGlobalFunction<
         int(PyObject *, PyObject *, PyObject *)>("PyDict_SetItem");
-    Value *result = state_->CreateCall(
-        pydict_setitem, fbuilder_->globals_, name, value,
+    Value *result = this->state_->CreateCall(
+        pydict_setitem, this->fbuilder_->globals(), name, value,
         "STORE_GLOBAL_result");
-    state_->DecRef(value);
-    fbuilder_->PropagateExceptionOnNonZero(result);
+    this->state_->DecRef(value);
+    this->fbuilder_->PropagateExceptionOnNonZero(result);
 }
 
 void OpcodeGlobals::DELETE_GLOBAL(int index)
 {
-    BasicBlock *failure = state_->CreateBasicBlock("DELETE_GLOBAL_failure");
-    BasicBlock *success = state_->CreateBasicBlock("DELETE_GLOBAL_success");
-    Value *name = fbuilder_->LookupName(index);
-    Function *pydict_setitem = state_->GetGlobalFunction<
+    BasicBlock *failure =
+        this->state_->CreateBasicBlock("DELETE_GLOBAL_failure");
+    BasicBlock *success =
+        this->state_->CreateBasicBlock("DELETE_GLOBAL_success");
+    Value *name = this->fbuilder_->LookupName(index);
+    Function *pydict_setitem = this->state_->GetGlobalFunction<
         int(PyObject *, PyObject *)>("PyDict_DelItem");
-    Value *result = state_->CreateCall(
-        pydict_setitem, fbuilder_->globals_, name, "STORE_GLOBAL_result");
-    fbuilder_->builder_.CreateCondBr(state_->IsNonZero(result),
-                                     failure, success);
+    Value *result = this->state_->CreateCall(
+        pydict_setitem, this->fbuilder_->globals(), name, "STORE_GLOBAL_result");
+    this->builder_.CreateCondBr(this->state_->IsNonZero(result),
+                                failure, success);
 
-    fbuilder_->builder_.SetInsertPoint(failure);
-    Function *do_raise = state_->GetGlobalFunction<
+    this->builder_.SetInsertPoint(failure);
+    Function *do_raise = this->state_->GetGlobalFunction<
         void(PyObject *)>("_PyEval_RaiseForGlobalNameError");
-    state_->CreateCall(do_raise, name);
-    fbuilder_->PropagateException();
+    this->state_->CreateCall(do_raise, name);
+    this->fbuilder_->PropagateException();
 
-    fbuilder_->builder_.SetInsertPoint(success);
+    this->builder_.SetInsertPoint(success);
 }
 
 }

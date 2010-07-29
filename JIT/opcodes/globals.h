@@ -6,6 +6,9 @@
 #error This header expects to be included only in C++ source
 #endif
 
+#include "llvm/Support/IRBuilder.h"
+#include "llvm/Support/TargetFolder.h"
+
 namespace py {
 
 class LlvmFunctionBuilder;
@@ -22,6 +25,8 @@ public:
     void DELETE_GLOBAL(int index);
 
 private:
+    typedef llvm::IRBuilder<true, llvm::TargetFolder> BuilderT;
+
     /* LOAD_GLOBAL comes in two flavors: the safe version (a port of the eval
        loop that's guaranteed to work) and a fast version, which uses dict
        versioning to cache pointers as immediates in the generated IR. */
@@ -30,6 +35,7 @@ private:
 
     LlvmFunctionBuilder *fbuilder_;
     LlvmFunctionState *state_;
+    BuilderT &builder_;
 };
 
 }

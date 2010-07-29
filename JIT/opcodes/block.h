@@ -6,6 +6,9 @@
 #error This header expects to be included only in C++ source
 #endif
 
+#include "llvm/Support/IRBuilder.h"
+#include "llvm/Support/TargetFolder.h"
+
 namespace llvm {
     class BasicBlock;
 }
@@ -34,6 +37,8 @@ public:
     void WITH_CLEANUP();
     
 private:
+    typedef llvm::IRBuilder<true, llvm::TargetFolder> BuilderT;
+
     // Adds handler to the switch for unwind targets and then sets up
     // a call to PyFrame_BlockSetup() with the block type, handler
     // index, and current stack level.
@@ -42,6 +47,8 @@ private:
 
     LlvmFunctionBuilder *fbuilder_;
     LlvmFunctionState *state_;
+    BuilderT &builder_;
+    PyGlobalLlvmData *const llvm_data_;
 };
 
 }

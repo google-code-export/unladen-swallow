@@ -6,9 +6,8 @@
 #error This header expects to be included only in C++ source
 #endif
 
-namespace llvm {
-    class Value;
-}
+#include "llvm/Support/IRBuilder.h"
+#include "llvm/Support/TargetFolder.h"
 
 namespace py {
 
@@ -38,6 +37,8 @@ public:
     void IMPORT_NAME();
 
 private:
+    typedef llvm::IRBuilder<true, llvm::TargetFolder> BuilderT;
+
     // Helper method for building a new sequence from items on the stack.
     // 'size' is the number of items to build, 'createname' the Python/C API
     // function to call to create the sequence, and 'getitemslot' is called
@@ -58,6 +59,7 @@ private:
 
     LlvmFunctionBuilder *fbuilder_;
     LlvmFunctionState *state_;
+    BuilderT &builder_;
 };
 
 }

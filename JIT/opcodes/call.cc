@@ -68,7 +68,10 @@ static llvm::ManagedStatic<CallFunctionStats> call_function_stats;
 namespace py {
 
 OpcodeCall::OpcodeCall(LlvmFunctionBuilder *fbuilder) :
-    fbuilder_(fbuilder), state_(fbuilder->state())
+    fbuilder_(fbuilder),
+    state_(fbuilder->state()),
+    builder_(fbuilder->builder()),
+    llvm_data_(fbuilder->llvm_data())
 {
 }
 
@@ -121,85 +124,85 @@ OpcodeCall::CALL_FUNCTION_fast(int oparg,
     // Expose the C function pointer to LLVM. This is what will actually get
     // called.
     Constant *llvm_func =
-        fbuilder_->llvm_data_->constant_mirror().GetGlobalForCFunction(
+        llvm_data_->constant_mirror().GetGlobalForCFunction(
             cfunc_ptr,
             max_arity,
             func_record->ml_name);
 
     BasicBlock *not_profiling =
-        state_->CreateBasicBlock("CALL_FUNCTION_not_profiling");
+        this->state_->CreateBasicBlock("CALL_FUNCTION_not_profiling");
     BasicBlock *check_is_same_func =
-        state_->CreateBasicBlock("CALL_FUNCTION_check_is_same_func");
+        this->state_->CreateBasicBlock("CALL_FUNCTION_check_is_same_func");
     BasicBlock *invalid_assumptions =
-        state_->CreateBasicBlock("CALL_FUNCTION_invalid_assumptions");
+        this->state_->CreateBasicBlock("CALL_FUNCTION_invalid_assumptions");
     BasicBlock *all_assumptions_valid =
-        state_->CreateBasicBlock("CALL_FUNCTION_all_assumptions_valid");
+        this->state_->CreateBasicBlock("CALL_FUNCTION_all_assumptions_valid");
 
-    fbuilder_->BailIfProfiling(not_profiling);
+    this->fbuilder_->BailIfProfiling(not_profiling);
 
     // Handle bailing back to the interpreter if the assumptions below don't
     // hold.
-    fbuilder_->builder_.SetInsertPoint(invalid_assumptions);
-    fbuilder_->CreateGuardBailPoint(_PYGUARD_CFUNC);
+    this->builder_.SetInsertPoint(invalid_assumptions);
+    this->fbuilder_->CreateGuardBailPoint(_PYGUARD_CFUNC);
 
-    fbuilder_->builder_.SetInsertPoint(not_profiling);
+    this->builder_.SetInsertPoint(not_profiling);
 #ifdef WITH_TSC
-    state_->LogTscEvent(CALL_START_LLVM);
+    this->state_->LogTscEvent(CALL_START_LLVM);
 #endif
     // Retrieve the function to call from the Python stack.
     Value *stack_pointer =
-        fbuilder_->builder_.CreateLoad(fbuilder_->stack_pointer_addr_);
-    fbuilder_->llvm_data_->tbaa_stack.MarkInstruction(stack_pointer);
+        this->builder_.CreateLoad(this->fbuilder_->stack_pointer_addr());
+    llvm_data_->tbaa_stack.MarkInstruction(stack_pointer);
 
-    Value *actual_func = fbuilder_->builder_.CreateLoad(
-        fbuilder_->builder_.CreateGEP(
+    Value *actual_func = this->builder_.CreateLoad(
+        this->builder_.CreateGEP(
             stack_pointer,
             ConstantInt::getSigned(
-                Type::getInt64Ty(fbuilder_->context_),
+                Type::getInt64Ty(this->fbuilder_->context()),
                 -num_args - 1)));
 
     // Make sure it's a PyCFunction; if not, bail.
-    Value *is_cfunction = state_->CreateCall(
-        state_->GetGlobalFunction<int(PyObject *)>(
+    Value *is_cfunction = this->state_->CreateCall(
+        this->state_->GetGlobalFunction<int(PyObject *)>(
             "_PyLlvm_WrapCFunctionCheck"),
         actual_func,
         "is_cfunction");
-    Value *is_cfunction_guard = fbuilder_->builder_.CreateICmpEQ(
+    Value *is_cfunction_guard = this->builder_.CreateICmpEQ(
         is_cfunction, ConstantInt::get(is_cfunction->getType(), 1),
         "is_cfunction_guard");
-    fbuilder_->builder_.CreateCondBr(is_cfunction_guard, check_is_same_func,
-                                     invalid_assumptions);
+    this->builder_.CreateCondBr(is_cfunction_guard, check_is_same_func,
+                                invalid_assumptions);
 
     // Make sure we got the same underlying function pointer; if not, bail.
-    fbuilder_->builder_.SetInsertPoint(check_is_same_func);
-    Value *actual_as_pycfunc = fbuilder_->builder_.CreateBitCast(
+    this->builder_.SetInsertPoint(check_is_same_func);
+    Value *actual_as_pycfunc = this->builder_.CreateBitCast(
         actual_func,
-        PyTypeBuilder<PyCFunctionObject *>::get(fbuilder_->context_));
-    Value *actual_method_def = fbuilder_->builder_.CreateLoad(
-        CFunctionTy::m_ml(fbuilder_->builder_, actual_as_pycfunc),
+        PyTypeBuilder<PyCFunctionObject *>::get(this->fbuilder_->context()));
+    Value *actual_method_def = this->builder_.CreateLoad(
+        CFunctionTy::m_ml(this->builder_, actual_as_pycfunc),
         "CALL_FUNCTION_actual_method_def");
-    Value *actual_func_ptr = fbuilder_->builder_.CreateLoad(
-        MethodDefTy::ml_meth(fbuilder_->builder_, actual_method_def),
+    Value *actual_func_ptr = this->builder_.CreateLoad(
+        MethodDefTy::ml_meth(this->builder_, actual_method_def),
         "CALL_FUNCTION_actual_func_ptr");
-    Value *is_same = fbuilder_->builder_.CreateICmpEQ(
+    Value *is_same = this->builder_.CreateICmpEQ(
         // TODO(jyasskin): change this to "llvm_func" when
         // http://llvm.org/PR5126 is fixed.
-        state_->EmbedPointer<PyCFunction>((void*)cfunc_ptr),
+        this->state_->EmbedPointer<PyCFunction>((void*)cfunc_ptr),
         actual_func_ptr);
-    fbuilder_->builder_.CreateCondBr(is_same,
+    this->builder_.CreateCondBr(is_same,
         all_assumptions_valid, invalid_assumptions);
 
     // Once we get to this point, we know we can make some kind of fast call,
     // either, a) a specialized inline version, or b) a direct call to a C
     // function, bypassing the CPython function call machinery. We check them
     // in that order.
-    fbuilder_->builder_.SetInsertPoint(all_assumptions_valid);
+    this->builder_.SetInsertPoint(all_assumptions_valid);
 
     // Check if we are calling a built-in function that can be specialized.
     if (cfunc_ptr == _PyBuiltin_Len) {
         // Feedback index 0 is the function itself, index 1 is the first
         // argument.
-        const PyTypeObject *arg1_type = fbuilder_->GetTypeFeedback(1);
+        const PyTypeObject *arg1_type = this->fbuilder_->GetTypeFeedback(1);
         const char *function_name = NULL;
         if (arg1_type == &PyString_Type)
             function_name = "_PyLlvm_BuiltinLen_String";
@@ -228,48 +231,49 @@ OpcodeCall::CALL_FUNCTION_fast(int oparg,
     // functions like len() and C-level methods like list.append(), we pull the
     // invocant (called m_self) from the PyCFunction object we popped
     // off the stack. Once the function returns, we patch up the stack pointer.
-    Value *self = fbuilder_->builder_.CreateLoad(
-        CFunctionTy::m_self(fbuilder_->builder_, actual_as_pycfunc),
+    Value *self = this->builder_.CreateLoad(
+        CFunctionTy::m_self(this->builder_, actual_as_pycfunc),
         "CALL_FUNCTION_actual_self");
     llvm::SmallVector<Value*, PY_MAX_ARITY + 1> args;  // +1 for self.
     args.push_back(self);
     if (num_args == 0 && max_arity == 0) {
-        args.push_back(state_->GetNull<PyObject *>());
+        args.push_back(this->state_->GetNull<PyObject *>());
     }
     for (int i = num_args; i >= 1; --i) {
         args.push_back(
-            fbuilder_->builder_.CreateLoad(
-                fbuilder_->builder_.CreateGEP(
+            this->builder_.CreateLoad(
+                this->builder_.CreateGEP(
                     stack_pointer,
                     ConstantInt::getSigned(
-                        Type::getInt64Ty(fbuilder_->context_), -i))));
+                        Type::getInt64Ty(this->fbuilder_->context()), -i))));
     }
     for(int i = 0; i < (max_arity - num_args); ++i) {
-        args.push_back(state_->GetNull<PyObject *>());
+        args.push_back(this->state_->GetNull<PyObject *>());
     }
 
 #ifdef WITH_TSC
-    state_->LogTscEvent(CALL_ENTER_C);
+    this->state_->LogTscEvent(CALL_ENTER_C);
 #endif
-    Value *result = state_->CreateCall(llvm_func, args.begin(), args.end());
+    Value *result =
+        this->state_->CreateCall(llvm_func, args.begin(), args.end());
 
-    state_->DecRef(actual_func);
+    this->state_->DecRef(actual_func);
     // Decrefing args[0] will cause self to be double-decrefed, so avoid that.
     for (int i = 1; i <= num_args; ++i) {
-        state_->DecRef(args[i]);
+        this->state_->DecRef(args[i]);
     }
-    Value *new_stack_pointer = fbuilder_->builder_.CreateGEP(
+    Value *new_stack_pointer = this->builder_.CreateGEP(
         stack_pointer,
         ConstantInt::getSigned(
-            Type::getInt64Ty(fbuilder_->context_),
+            Type::getInt64Ty(this->fbuilder_->context()),
             -num_args - 1));
-    fbuilder_->builder_.CreateStore(new_stack_pointer,
-                                    fbuilder_->stack_pointer_addr_);
-    fbuilder_->PropagateExceptionOnNull(result);
-    fbuilder_->Push(result);
+    this->builder_.CreateStore(new_stack_pointer,
+                               this->fbuilder_->stack_pointer_addr());
+    this->fbuilder_->PropagateExceptionOnNull(result);
+    this->fbuilder_->Push(result);
 
     // Check signals and maybe switch threads after each function call.
-    fbuilder_->CheckPyTicker();
+    this->fbuilder_->CheckPyTicker();
     CF_INC_STATS(direct_calls);
 }
 
@@ -279,74 +283,74 @@ OpcodeCall::CALL_FUNCTION_fast_len(Value *actual_func,
                                    BasicBlock *invalid_assumptions,
                                    const char *function_name)
 {
-    BasicBlock *success = state_->CreateBasicBlock("BUILTIN_LEN_success");
+    BasicBlock *success = this->state_->CreateBasicBlock("BUILTIN_LEN_success");
 
-    Value *obj = fbuilder_->Pop();
+    Value *obj = this->fbuilder_->Pop();
     Function *builtin_len =
-        state_->GetGlobalFunction<PyObject *(PyObject *)>(function_name);
+        this->state_->GetGlobalFunction<PyObject *(PyObject *)>(function_name);
 
-    Value *result = state_->CreateCall(builtin_len, obj,
-                                       "BUILTIN_LEN_result");
-    fbuilder_->builder_.CreateCondBr(state_->IsNonZero(result),
-                                     success, invalid_assumptions);
+    Value *result = this->state_->CreateCall(builtin_len, obj,
+                                             "BUILTIN_LEN_result");
+    this->builder_.CreateCondBr(this->state_->IsNonZero(result),
+                                success, invalid_assumptions);
+    
+    this->builder_.SetInsertPoint(success);
+    this->state_->DecRef(actual_func);
+    this->state_->DecRef(obj);
 
-    fbuilder_->builder_.SetInsertPoint(success);
-    state_->DecRef(actual_func);
-    state_->DecRef(obj);
-
-    Value *new_stack_pointer = fbuilder_->builder_.CreateGEP(
+    Value *new_stack_pointer = this->builder_.CreateGEP(
         stack_pointer,
         ConstantInt::getSigned(
-            Type::getInt64Ty(fbuilder_->context_),
+            Type::getInt64Ty(this->fbuilder_->context()),
             -2));  // -1 for the function, -1 for the argument.
-    fbuilder_->builder_.CreateStore(new_stack_pointer,
-                                    fbuilder_->stack_pointer_addr_);
+    this->builder_.CreateStore(new_stack_pointer,
+                               this->fbuilder_->stack_pointer_addr());
 
-    fbuilder_->Push(result);
+    this->fbuilder_->Push(result);
 
     // Check signals and maybe switch threads after each function call.
-    fbuilder_->CheckPyTicker();
+    this->fbuilder_->CheckPyTicker();
 }
 
 void
 OpcodeCall::CALL_FUNCTION_safe(int oparg)
 {
 #ifdef WITH_TSC
-    state_->LogTscEvent(CALL_START_LLVM);
+    this->state_->LogTscEvent(CALL_START_LLVM);
 #endif
     Value *stack_pointer =
-        fbuilder_->builder_.CreateLoad(fbuilder_->stack_pointer_addr_);
-    fbuilder_->llvm_data_->tbaa_stack.MarkInstruction(stack_pointer);
+        this->builder_.CreateLoad(this->fbuilder_->stack_pointer_addr());
+    llvm_data_->tbaa_stack.MarkInstruction(stack_pointer);
 
     int num_args = oparg & 0xff;
     int num_kwargs = (oparg>>8) & 0xff;
-    Function *call_function = state_->GetGlobalFunction<
+    Function *call_function = this->state_->GetGlobalFunction<
         PyObject *(PyObject **, int, int)>("_PyEval_CallFunction");
-    Value *result = state_->CreateCall(
+    Value *result = this->state_->CreateCall(
         call_function,
         stack_pointer,
-        ConstantInt::get(PyTypeBuilder<int>::get(fbuilder_->context_),
+        ConstantInt::get(PyTypeBuilder<int>::get(this->fbuilder_->context()),
                          num_args),
-        ConstantInt::get(PyTypeBuilder<int>::get(fbuilder_->context_),
+        ConstantInt::get(PyTypeBuilder<int>::get(this->fbuilder_->context()),
                          num_kwargs),
         "CALL_FUNCTION_result");
-    Value *new_stack_pointer = fbuilder_->builder_.CreateGEP(
+    Value *new_stack_pointer = this->builder_.CreateGEP(
         stack_pointer,
-        ConstantInt::getSigned(Type::getInt64Ty(fbuilder_->context_),
+        ConstantInt::getSigned(Type::getInt64Ty(this->fbuilder_->context()),
                                -num_args - 2*num_kwargs - 1));
-    fbuilder_->builder_.CreateStore(new_stack_pointer,
-                                    fbuilder_->stack_pointer_addr_);
-    fbuilder_->PropagateExceptionOnNull(result);
-    fbuilder_->Push(result);
+    this->builder_.CreateStore(new_stack_pointer,
+                               this->fbuilder_->stack_pointer_addr());
+    this->fbuilder_->PropagateExceptionOnNull(result);
+    this->fbuilder_->Push(result);
 
     // Check signals and maybe switch threads after each function call.
-    fbuilder_->CheckPyTicker();
+    this->fbuilder_->CheckPyTicker();
 }
 
 void
 OpcodeCall::CALL_FUNCTION(int oparg)
 {
-    const PyRuntimeFeedback *feedback = fbuilder_->GetFeedback();
+    const PyRuntimeFeedback *feedback = this->fbuilder_->GetFeedback();
     if (feedback == NULL || feedback->FuncsOverflowed())
         this->CALL_FUNCTION_safe(oparg);
     else
@@ -361,24 +365,24 @@ void
 OpcodeCall::CallVarKwFunction(int oparg, int call_flag)
 {
 #ifdef WITH_TSC
-    state_->LogTscEvent(CALL_START_LLVM);
+    this->state_->LogTscEvent(CALL_START_LLVM);
 #endif
     Value *stack_pointer =
-        fbuilder_->builder_.CreateLoad(fbuilder_->stack_pointer_addr_);
-    fbuilder_->llvm_data_->tbaa_stack.MarkInstruction(stack_pointer);
+        this->builder_.CreateLoad(this->fbuilder_->stack_pointer_addr());
+    llvm_data_->tbaa_stack.MarkInstruction(stack_pointer);
 
     int num_args = oparg & 0xff;
     int num_kwargs = (oparg>>8) & 0xff;
-    Function *call_function = state_->GetGlobalFunction<
+    Function *call_function = this->state_->GetGlobalFunction<
         PyObject *(PyObject **, int, int, int)>("_PyEval_CallFunctionVarKw");
-    Value *result = state_->CreateCall(
+    Value *result = this->state_->CreateCall(
         call_function,
         stack_pointer,
-        ConstantInt::get(PyTypeBuilder<int>::get(fbuilder_->context_),
+        ConstantInt::get(PyTypeBuilder<int>::get(this->fbuilder_->context()),
                          num_args),
-        ConstantInt::get(PyTypeBuilder<int>::get(fbuilder_->context_),
+        ConstantInt::get(PyTypeBuilder<int>::get(this->fbuilder_->context()),
                          num_kwargs),
-        ConstantInt::get(PyTypeBuilder<int>::get(fbuilder_->context_),
+        ConstantInt::get(PyTypeBuilder<int>::get(this->fbuilder_->context()),
                          call_flag),
         "CALL_FUNCTION_VAR_KW_result");
     int stack_items = num_args + 2 * num_kwargs + 1;
@@ -388,24 +392,24 @@ OpcodeCall::CallVarKwFunction(int oparg, int call_flag)
     if (call_flag & CALL_FLAG_KW) {
         ++stack_items;
     }
-    Value *new_stack_pointer = fbuilder_->builder_.CreateGEP(
+    Value *new_stack_pointer = this->builder_.CreateGEP(
         stack_pointer,
-        ConstantInt::getSigned(Type::getInt64Ty(fbuilder_->context_),
+        ConstantInt::getSigned(Type::getInt64Ty(this->fbuilder_->context()),
                                -stack_items));
-    fbuilder_->builder_.CreateStore(new_stack_pointer,
-                                    fbuilder_->stack_pointer_addr_);
-    fbuilder_->PropagateExceptionOnNull(result);
-    fbuilder_->Push(result);
+    this->builder_.CreateStore(new_stack_pointer,
+                               this->fbuilder_->stack_pointer_addr());
+    this->fbuilder_->PropagateExceptionOnNull(result);
+    this->fbuilder_->Push(result);
 
     // Check signals and maybe switch threads after each function call.
-    fbuilder_->CheckPyTicker();
+    this->fbuilder_->CheckPyTicker();
 }
 
 void
 OpcodeCall::CALL_FUNCTION_VAR(int oparg)
 {
 #ifdef WITH_TSC
-    state_->LogTscEvent(CALL_START_LLVM);
+    this->state_->LogTscEvent(CALL_START_LLVM);
 #endif
     this->CallVarKwFunction(oparg, CALL_FLAG_VAR);
 }
@@ -414,7 +418,7 @@ void
 OpcodeCall::CALL_FUNCTION_KW(int oparg)
 {
 #ifdef WITH_TSC
-    state_->LogTscEvent(CALL_START_LLVM);
+    this->state_->LogTscEvent(CALL_START_LLVM);
 #endif
     this->CallVarKwFunction(oparg, CALL_FLAG_KW);
 }
@@ -423,7 +427,7 @@ void
 OpcodeCall::CALL_FUNCTION_VAR_KW(int oparg)
 {
 #ifdef WITH_TSC
-    state_->LogTscEvent(CALL_START_LLVM);
+    this->state_->LogTscEvent(CALL_START_LLVM);
 #endif
     this->CallVarKwFunction(oparg, CALL_FLAG_KW | CALL_FLAG_VAR);
 }

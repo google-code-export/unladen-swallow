@@ -22,12 +22,13 @@ OpcodeUnaryops::OpcodeUnaryops(LlvmFunctionBuilder *fbuilder) :
 void
 OpcodeUnaryops::GenericUnaryOp(const char *apifunc)
 {
-    Value *value = fbuilder_->Pop();
-    Function *op = state_->GetGlobalFunction<PyObject*(PyObject*)>(apifunc);
-    Value *result = state_->CreateCall(op, value, "unaryop_result");
-    state_->DecRef(value);
-    fbuilder_->PropagateExceptionOnNull(result);
-    fbuilder_->Push(result);
+    Value *value = this->fbuilder_->Pop();
+    Function *op =
+        this->state_->GetGlobalFunction<PyObject*(PyObject*)>(apifunc);
+    Value *result = this->state_->CreateCall(op, value, "unaryop_result");
+    this->state_->DecRef(value);
+    this->fbuilder_->PropagateExceptionOnNull(result);
+    this->fbuilder_->Push(result);
 }
 
 #define UNARYOP_METH(NAME, APIFUNC)			\
@@ -47,14 +48,14 @@ UNARYOP_METH(UNARY_NEGATIVE, PyNumber_Negative)
 void
 OpcodeUnaryops::UNARY_NOT()
 {
-    Value *value = fbuilder_->Pop();
-    Value *retval = fbuilder_->builder_.CreateSelect(
-        fbuilder_->IsPythonTrue(value),
-        state_->GetGlobalVariableFor((PyObject*)&_Py_ZeroStruct),
-        state_->GetGlobalVariableFor((PyObject*)&_Py_TrueStruct),
+    Value *value = this->fbuilder_->Pop();
+    Value *retval = this->fbuilder_->builder().CreateSelect(
+        this->fbuilder_->IsPythonTrue(value),
+        this->state_->GetGlobalVariableFor((PyObject*)&_Py_ZeroStruct),
+        this->state_->GetGlobalVariableFor((PyObject*)&_Py_TrueStruct),
         "UNARY_NOT_result");
-    state_->IncRef(retval);
-    fbuilder_->Push(retval);
+    this->state_->IncRef(retval);
+    this->fbuilder_->Push(retval);
 }
 
 }

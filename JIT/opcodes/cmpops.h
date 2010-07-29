@@ -6,6 +6,9 @@
 #error This header expects to be included only in C++ source
 #endif
 
+#include "llvm/Support/IRBuilder.h"
+#include "llvm/Support/TargetFolder.h"
+
 namespace llvm {
     class Value;
 }
@@ -24,6 +27,8 @@ public:
     void COMPARE_OP(int cmp_op);
 
 private:
+    typedef llvm::IRBuilder<true, llvm::TargetFolder> BuilderT;
+
     bool COMPARE_OP_fast(int cmp_op,
                          const PyTypeObject *lhs_type,
                          const PyTypeObject *rhs_type);
@@ -45,6 +50,7 @@ private:
 
     LlvmFunctionBuilder *fbuilder_;
     LlvmFunctionState *state_;
+    BuilderT &builder_;
 };
 
 }

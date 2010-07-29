@@ -30,22 +30,6 @@ struct PyGlobalLlvmData;
 
 namespace py {
 
-class OpcodeAttributes;
-class OpcodeBinops;
-class OpcodeBlock;
-class OpcodeCall;
-class OpcodeClosure;
-class OpcodeCmpops;
-class OpcodeContainer;
-class OpcodeControl;
-class OpcodeGlobals;
-class OpcodeLocals;
-class OpcodeLoop;
-class OpcodeName;
-class OpcodeSlice;
-class OpcodeStack;
-class OpcodeUnaryops;
-
 /// Helps the compiler build LLVM functions corresponding to Python
 /// functions.  This class maintains all Value*s which depend on a
 /// single frame/code object. It also contains all functions that
@@ -54,37 +38,63 @@ class LlvmFunctionBuilder {
     LlvmFunctionBuilder(const LlvmFunctionBuilder &);  // Not implemented.
     void operator=(const LlvmFunctionBuilder &);  // Not implemented.
 
-    friend class AttributeAccessor;
-    friend class OpcodeAttributes;
-    friend class OpcodeBinops;
-    friend class OpcodeBlock;
-    friend class OpcodeCall;
-    friend class OpcodeClosure;
-    friend class OpcodeCmpops;
-    friend class OpcodeContainer;
-    friend class OpcodeControl;
-    friend class OpcodeGlobals;
-    friend class OpcodeLocals;
-    friend class OpcodeLoop;
-    friend class OpcodeName;
-    friend class OpcodeSlice;
-    friend class OpcodeStack;
-    friend class OpcodeUnaryops;
-
 public:
     LlvmFunctionBuilder(LlvmFunctionState *state, PyCodeObject *code);
 
     llvm::Function *function() { return function_; }
     typedef llvm::IRBuilder<true, llvm::TargetFolder> BuilderT;
     BuilderT& builder() { return builder_; }
-    llvm::BasicBlock *unreachable_block() { return unreachable_block_; }
     LlvmFunctionState *state() const { return this->state_; }
+    PyCodeObject *code_object() const { return this->code_object_; }
+    PyGlobalLlvmData *llvm_data() const { return this->llvm_data_; }
+    llvm::LLVMContext& context() { return this->context_; } 
+    bool& uses_delete_fast() { return this->uses_delete_fast_; }
+
+    llvm::BasicBlock *unreachable_block() const
+    { 
+        return this->unreachable_block_;
+    }
+    llvm::BasicBlock *unwind_block() const { return this->unwind_block_; }
+    llvm::BasicBlock *do_return_block() const { return this->do_return_block_; }
+
+    llvm::Value *unwind_reason_addr() const
+    {
+        return this->unwind_reason_addr_;
+    }
+    llvm::Value *retval_addr() const
+    {
+        return this->retval_addr_;
+    }
+    llvm::Value *num_blocks_addr() const
+    {
+        return this->num_blocks_addr_;
+    }
+    llvm::Value *blockstack_addr() const
+    {
+        return this->blockstack_addr_;
+    }
+    llvm::Value *stack_pointer_addr() const
+    {
+        return this->stack_pointer_addr_;
+    }
+    llvm::Value *f_lasti_addr() const { return this->f_lasti_addr_; }
+
+    llvm::Value *stack_bottom() const { return this->stack_bottom_; }
+
+    llvm::Value *freevars() const { return this->freevars_; }
+    llvm::Value *frame() const { return this->frame_; }
+    llvm::Value *globals() const { return this->globals_; }
+    llvm::Value *builtins() const { return this->builtins_; }
+    llvm::Value *fastlocals() const { return this->fastlocals_; }
+
+    llvm::Value *GetLocal(int i) const { return this->locals_[i]; }
 
     bool Error() { return this->error_; }
 
     /// Sets the current instruction index.  This is only put into the
     /// frame object when tracing.
     void SetLasti(int current_instruction_index);
+    int GetLasti() const { return this->f_lasti_; }
 
     /// Sets the current line number being executed.  This is used to
     /// make tracebacks correct and to get tracing to fire in the
@@ -255,7 +265,16 @@ public:
     /// exception.
     llvm::BasicBlock *GetExceptionBlock() const;
 
-    bool uses_delete_fast;
+    // Add a Type to the watch list.
+    void WatchType(PyTypeObject *type);
+
+    void WatchDict(int reason);
+
+    // Return a i1 which is true when the use_jit field is set in the
+    // code object
+    llvm::Value *GetUseJitCond();
+
+    void AddYieldResumeBB(llvm::ConstantInt *number, llvm::BasicBlock *block);
 
 private:
     LlvmFunctionState *state_;
@@ -271,12 +290,6 @@ private:
     llvm::DIFactory &debug_info_;
     const llvm::DICompileUnit debug_compile_unit_;
     const llvm::DISubprogram debug_subprogram_;
-    const bool is_generator_;
-
-    // True if something went wrong and we need to stop compilation without
-    // aborting the process. If this is true, a Python error has already
-    // been set.
-    bool error_;
 
     // The most recent index we've started emitting an instruction for.
     int f_lasti_;
@@ -340,6 +353,14 @@ private:
     llvm::Value *retval_addr_;
 
     llvm::SmallPtrSet<PyTypeObject*, 5> types_used_;
+
+    // True if something went wrong and we need to stop compilation without
+    // aborting the process. If this is true, a Python error has already
+    // been set.
+    bool error_;
+
+    const bool is_generator_;
+    bool uses_delete_fast_;
 };
 
 }  // namespace py

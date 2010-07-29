@@ -66,8 +66,7 @@ pystring_to_stringref(const PyObject* str)
 
 LlvmFunctionBuilder::LlvmFunctionBuilder(
     LlvmFunctionState *state, PyCodeObject *code_object)
-    : uses_delete_fast(false),
-      state_(state),
+    : state_(state),
       llvm_data_(state->llvm_data()),
       code_object_(code_object),
       context_(this->llvm_data_->context()),
@@ -94,7 +93,8 @@ LlvmFunctionBuilder::LlvmFunctionBuilder(
                             false,   // Not local to unit.
                             true)),  // Is definition.
       error_(false),
-      is_generator_(code_object->co_flags & CO_GENERATOR)
+      is_generator_(code_object->co_flags & CO_GENERATOR),
+      uses_delete_fast_(false)
 {
     Function::arg_iterator args = this->function_->arg_begin();
     this->frame_ = args++;
@@ -1223,6 +1223,34 @@ LlvmFunctionBuilder::IsPythonTrue(Value *value)
 
     this->builder_.SetInsertPoint(done);
     return this->builder_.CreateLoad(result_addr);
+}
+
+void
+LlvmFunctionBuilder::WatchType(PyTypeObject *type)
+{
+    this->types_used_.insert(type);
+}
+
+void
+LlvmFunctionBuilder::WatchDict(int reason)
+{
+    this->uses_watched_dicts_.set(reason);
+}
+
+
+Value *
+LlvmFunctionBuilder::GetUseJitCond()
+{
+    Value *use_jit = this->builder_.CreateLoad(this->use_jit_addr_,
+                                               "co_use_jit");
+    return this->state()->IsNonZero(use_jit);
+}
+
+void
+LlvmFunctionBuilder::AddYieldResumeBB(llvm::ConstantInt *number,
+                                      llvm::BasicBlock *block)
+{
+    this->yield_resume_switch_->addCase(number, block);
 }
 
 int

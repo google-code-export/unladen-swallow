@@ -86,7 +86,10 @@ static llvm::ManagedStatic<AccessAttrStats> access_attr_stats;
 namespace py {
 
 OpcodeAttributes::OpcodeAttributes(LlvmFunctionBuilder *fbuilder) :
-    fbuilder_(fbuilder), state_(fbuilder->state())
+    fbuilder_(fbuilder),
+    state_(fbuilder->state()),
+    builder_(fbuilder->builder()),
+    llvm_data_(fbuilder->llvm_data())
 {
 }
 
@@ -102,23 +105,23 @@ OpcodeAttributes::LOAD_ATTR(int names_index)
 void
 OpcodeAttributes::LOAD_ATTR_safe(int names_index)
 {
-    Value *attr = fbuilder_->LookupName(names_index);
-    Value *obj = fbuilder_->Pop();
-    Function *pyobj_getattr = state_->GetGlobalFunction<
+    Value *attr = this->fbuilder_->LookupName(names_index);
+    Value *obj = this->fbuilder_->Pop();
+    Function *pyobj_getattr = this->state_->GetGlobalFunction<
         PyObject *(PyObject *, PyObject *)>("PyObject_GetAttr");
-    Value *result = state_->CreateCall(
+    Value *result = this->state_->CreateCall(
         pyobj_getattr, obj, attr, "LOAD_ATTR_result");
-    state_->DecRef(obj);
-    fbuilder_->PropagateExceptionOnNull(result);
-    fbuilder_->Push(result);
+    this->state_->DecRef(obj);
+    this->fbuilder_->PropagateExceptionOnNull(result);
+    this->fbuilder_->Push(result);
 }
 
 bool
 OpcodeAttributes::LOAD_ATTR_fast(int names_index)
 {
     PyObject *name =
-        PyTuple_GET_ITEM(fbuilder_->code_object_->co_names, names_index);
-    AttributeAccessor accessor(fbuilder_, name, ATTR_ACCESS_LOAD);
+        PyTuple_GET_ITEM(this->fbuilder_->code_object()->co_names, names_index);
+    AttributeAccessor accessor(this->fbuilder_, name, ATTR_ACCESS_LOAD);
 
     // Check that we can optimize this load.
     if (!accessor.CanOptimizeAttrAccess()) {
@@ -127,17 +130,17 @@ OpcodeAttributes::LOAD_ATTR_fast(int names_index)
     ACCESS_ATTR_INC_STATS(optimized_loads);
 
     // Emit the appropriate guards.
-    Value *obj_v = fbuilder_->Pop();
-    BasicBlock *do_load = state_->CreateBasicBlock("LOAD_ATTR_do_load");
+    Value *obj_v = this->fbuilder_->Pop();
+    BasicBlock *do_load = this->state_->CreateBasicBlock("LOAD_ATTR_do_load");
     accessor.GuardAttributeAccess(obj_v, do_load);
 
     // Call the inline function that deals with the lookup.  LLVM propagates
     // these constant arguments through the body of the function.
-    fbuilder_->builder_.SetInsertPoint(do_load);
-    PyConstantMirror &mirror = fbuilder_->llvm_data_->constant_mirror();
+    this->builder_.SetInsertPoint(do_load);
+    PyConstantMirror &mirror = llvm_data_->constant_mirror();
     Value *descr_get_v = mirror.GetGlobalForFunctionPointer<descrgetfunc>(
             (void*)accessor.descr_get_, "");
-    Value *getattr_func = state_->GetGlobalFunction<
+    Value *getattr_func = this->state_->GetGlobalFunction<
         PyObject *(PyObject *obj, PyTypeObject *type, PyObject *name,
                    long dictoffset, PyObject *descr, descrgetfunc descr_get,
                    char is_data_descr)>("_PyLlvm_Object_GenericGetAttr");
@@ -150,13 +153,13 @@ OpcodeAttributes::LOAD_ATTR_fast(int names_index)
         descr_get_v,
         accessor.is_data_descr_v_
     };
-    Value *result = state_->CreateCall(getattr_func,
-                                       args, array_endof(args));
+    Value *result = this->state_->CreateCall(getattr_func,
+                                             args, array_endof(args));
 
     // Put the result on the stack and possibly propagate an exception.
-    state_->DecRef(obj_v);
-    fbuilder_->PropagateExceptionOnNull(result);
-    fbuilder_->Push(result);
+    this->state_->DecRef(obj_v);
+    this->fbuilder_->PropagateExceptionOnNull(result);
+    this->fbuilder_->Push(result);
     return true;
 }
 
@@ -172,24 +175,24 @@ OpcodeAttributes::STORE_ATTR(int names_index)
 void
 OpcodeAttributes::STORE_ATTR_safe(int names_index)
 {
-    Value *attr = fbuilder_->LookupName(names_index);
-    Value *obj = fbuilder_->Pop();
-    Value *value = fbuilder_->Pop();
-    Function *pyobj_setattr = state_->GetGlobalFunction<
+    Value *attr = this->fbuilder_->LookupName(names_index);
+    Value *obj = this->fbuilder_->Pop();
+    Value *value = this->fbuilder_->Pop();
+    Function *pyobj_setattr = this->state_->GetGlobalFunction<
         int(PyObject *, PyObject *, PyObject *)>("PyObject_SetAttr");
-    Value *result = state_->CreateCall(
+    Value *result = this->state_->CreateCall(
         pyobj_setattr, obj, attr, value, "STORE_ATTR_result");
-    state_->DecRef(obj);
-    state_->DecRef(value);
-    fbuilder_->PropagateExceptionOnNonZero(result);
+    this->state_->DecRef(obj);
+    this->state_->DecRef(value);
+    this->fbuilder_->PropagateExceptionOnNonZero(result);
 }
 
 bool
 OpcodeAttributes::STORE_ATTR_fast(int names_index)
 {
     PyObject *name =
-        PyTuple_GET_ITEM(fbuilder_->code_object_->co_names, names_index);
-    AttributeAccessor accessor(fbuilder_, name, ATTR_ACCESS_STORE);
+        PyTuple_GET_ITEM(this->fbuilder_->code_object()->co_names, names_index);
+    AttributeAccessor accessor(this->fbuilder_, name, ATTR_ACCESS_STORE);
 
     // Check that we can optimize this store.
     if (!accessor.CanOptimizeAttrAccess()) {
@@ -198,18 +201,19 @@ OpcodeAttributes::STORE_ATTR_fast(int names_index)
     ACCESS_ATTR_INC_STATS(optimized_stores);
 
     // Emit appropriate guards.
-    Value *obj_v = fbuilder_->Pop();
-    BasicBlock *do_store = state_->CreateBasicBlock("STORE_ATTR_do_store");
+    Value *obj_v = this->fbuilder_->Pop();
+    BasicBlock *do_store =
+      this->state_->CreateBasicBlock("STORE_ATTR_do_store");
     accessor.GuardAttributeAccess(obj_v, do_store);
 
     // Call the inline function that deals with the lookup.  LLVM propagates
     // these constant arguments through the body of the function.
-    fbuilder_->builder_.SetInsertPoint(do_store);
-    Value *val_v = fbuilder_->Pop();
-    PyConstantMirror &mirror = fbuilder_->llvm_data_->constant_mirror();
+    this->builder_.SetInsertPoint(do_store);
+    Value *val_v = this->fbuilder_->Pop();
+    PyConstantMirror &mirror = llvm_data_->constant_mirror();
     Value *descr_set_v = mirror.GetGlobalForFunctionPointer<descrsetfunc>(
         (void*)accessor.descr_set_, "");
-    Value *setattr_func = state_->GetGlobalFunction<
+    Value *setattr_func = this->state_->GetGlobalFunction<
         int (PyObject *obj, PyObject *val, PyTypeObject *type, PyObject *name,
              long dictoffset, PyObject *descr, descrsetfunc descr_set,
              char is_data_descr)>("_PyLlvm_Object_GenericSetAttr");
@@ -223,12 +227,12 @@ OpcodeAttributes::STORE_ATTR_fast(int names_index)
         descr_set_v,
         accessor.is_data_descr_v_
     };
-    Value *result = state_->CreateCall(setattr_func, args,
-                                       array_endof(args));
+    Value *result = this->state_->CreateCall(setattr_func, args,
+                                             array_endof(args));
 
-    state_->DecRef(obj_v);
-    state_->DecRef(val_v);
-    fbuilder_->PropagateExceptionOnNonZero(result);
+    this->state_->DecRef(obj_v);
+    this->state_->DecRef(val_v);
+    this->fbuilder_->PropagateExceptionOnNonZero(result);
     return true;
 }
 
@@ -308,7 +312,7 @@ AttributeAccessor::CanOptimizeAttrAccess()
     // Now that we know for sure that we are going to optimize this lookup, add
     // the type to the list of types we need to listen for modifications from
     // and make the llvm::Values.
-    this->fbuilder_->types_used_.insert(type);
+    this->fbuilder_->WatchType(type);
     MakeLlvmValues();
 
     return true;
@@ -339,11 +343,11 @@ AttributeAccessor::MakeLlvmValues()
         state->EmbedPointer<PyTypeObject*>(this->guard_type_);
     this->name_v_ = state->EmbedPointer<PyObject*>(this->name_);
     this->dictoffset_v_ =
-        ConstantInt::get(PyTypeBuilder<long>::get(this->fbuilder_->context_),
+        ConstantInt::get(PyTypeBuilder<long>::get(this->fbuilder_->context()),
                          this->dictoffset_);
     this->descr_v_ = state->EmbedPointer<PyObject*>(this->descr_);
     this->is_data_descr_v_ =
-        ConstantInt::get(PyTypeBuilder<char>::get(this->fbuilder_->context_),
+        ConstantInt::get(PyTypeBuilder<char>::get(this->fbuilder_->context()),
                          this->is_data_descr_);
 }
 
@@ -361,9 +365,7 @@ AttributeAccessor::GuardAttributeAccess(
 
     // Make sure that the code object is still valid.  This may fail if the
     // code object is invalidated inside of a call to the code object.
-    Value *use_jit = builder.CreateLoad(fbuilder->use_jit_addr_,
-                                        "co_use_jit");
-    builder.CreateCondBr(state->IsNonZero(use_jit), guard_type, bail_block);
+    builder.CreateCondBr(fbuilder->GetUseJitCond(), guard_type, bail_block);
 
     // Compare ob_type against type and bail if it's the wrong type.  Since
     // we've subscribed to the type object for modification updates, the code
@@ -379,7 +381,7 @@ AttributeAccessor::GuardAttributeAccess(
     // descriptor type.
     builder.SetInsertPoint(guard_descr);
     if (this->descr_ != NULL) {
-        fbuilder->types_used_.insert(this->guard_descr_type_);
+        fbuilder->WatchType(this->guard_descr_type_);
         Value *descr_type_v =
             builder.CreateLoad(ObjectTy::ob_type(builder, this->descr_v_));
         Value *guard_descr_type_v =
@@ -400,15 +402,15 @@ AttributeAccessor::GuardAttributeAccess(
 void
 OpcodeAttributes::DELETE_ATTR(int index)
 {
-    Value *attr = fbuilder_->LookupName(index);
-    Value *obj = fbuilder_->Pop();
-    Value *value = state_->GetNull<PyObject*>();
-    Function *pyobj_setattr = state_->GetGlobalFunction<
+    Value *attr = this->fbuilder_->LookupName(index);
+    Value *obj = this->fbuilder_->Pop();
+    Value *value = this->state_->GetNull<PyObject*>();
+    Function *pyobj_setattr = this->state_->GetGlobalFunction<
         int(PyObject *, PyObject *, PyObject *)>("PyObject_SetAttr");
-    Value *result = state_->CreateCall(
+    Value *result = this->state_->CreateCall(
         pyobj_setattr, obj, attr, value, "DELETE_ATTR_result");
-    state_->DecRef(obj);
-    fbuilder_->PropagateExceptionOnNonZero(result);
+    this->state_->DecRef(obj);
+    this->fbuilder_->PropagateExceptionOnNonZero(result);
 }
 
 }

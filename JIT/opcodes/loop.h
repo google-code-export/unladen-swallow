@@ -6,6 +6,9 @@
 #error This header expects to be included only in C++ source
 #endif
 
+#include "llvm/Support/IRBuilder.h"
+#include "llvm/Support/TargetFolder.h"
+
 namespace llvm {
     class BasicBlock;
 }
@@ -33,8 +36,11 @@ public:
     void BREAK_LOOP();
 
 private:
+    typedef llvm::IRBuilder<true, llvm::TargetFolder> BuilderT;
+
     LlvmFunctionBuilder *fbuilder_;
     LlvmFunctionState *state_;
+    BuilderT &builder_;
 };
 
 }

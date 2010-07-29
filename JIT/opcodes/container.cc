@@ -46,7 +46,9 @@ static llvm::ManagedStatic<ImportNameStats> import_name_stats;
 namespace py {
 
 OpcodeContainer::OpcodeContainer(LlvmFunctionBuilder *fbuilder) :
-    fbuilder_(fbuilder), state_(fbuilder->state())
+    fbuilder_(fbuilder),
+    state_(fbuilder->state()),
+    builder_(fbuilder->builder())
 {
 }
 
@@ -56,20 +58,20 @@ OpcodeContainer::BuildSequenceLiteral(
     Value *(LlvmFunctionState::*getitemslot)(Value*, int))
 {
     const Type *IntSsizeTy =
-        PyTypeBuilder<Py_ssize_t>::get(fbuilder_->context_);
+        PyTypeBuilder<Py_ssize_t>::get(this->fbuilder_->context());
     Value *seqsize = ConstantInt::getSigned(IntSsizeTy, size);
 
     Function *create =
-        state_->GetGlobalFunction<PyObject *(Py_ssize_t)>(createname);
-    Value *seq = state_->CreateCall(create, seqsize, "sequence_literal");
-    fbuilder_->PropagateExceptionOnNull(seq);
+        this->state_->GetGlobalFunction<PyObject *(Py_ssize_t)>(createname);
+    Value *seq = this->state_->CreateCall(create, seqsize, "sequence_literal");
+    this->fbuilder_->PropagateExceptionOnNull(seq);
 
     // XXX(twouters): do this with a memcpy?
     while (--size >= 0) {
-        Value *itemslot = (state_->*getitemslot)(seq, size);
-        fbuilder_->builder_.CreateStore(fbuilder_->Pop(), itemslot);
+        Value *itemslot = (this->state_->*getitemslot)(seq, size);
+        this->builder_.CreateStore(this->fbuilder_->Pop(), itemslot);
     }
-    fbuilder_->Push(seq);
+    this->fbuilder_->Push(seq);
 }
 
 void
@@ -90,13 +92,13 @@ void
 OpcodeContainer::BUILD_MAP(int size)
 {
     Value *sizehint = ConstantInt::getSigned(
-        PyTypeBuilder<Py_ssize_t>::get(fbuilder_->context_), size);
-    Function *create_dict = state_->GetGlobalFunction<
+        PyTypeBuilder<Py_ssize_t>::get(this->fbuilder_->context()), size);
+    Function *create_dict = this->state_->GetGlobalFunction<
         PyObject *(Py_ssize_t)>("_PyDict_NewPresized");
-    Value *result = state_->CreateCall(create_dict, sizehint,
-                                       "BULD_MAP_result");
-    fbuilder_->PropagateExceptionOnNull(result);
-    fbuilder_->Push(result);
+    Value *result = this->state_->CreateCall(create_dict, sizehint,
+                                             "BULD_MAP_result");
+    this->fbuilder_->PropagateExceptionOnNull(result);
+    this->fbuilder_->Push(result);
 }
 
 void
@@ -106,30 +108,30 @@ OpcodeContainer::UNPACK_SEQUENCE(int size)
     // STORE_* ones that follow into a single block of code circumventing the
     // stack altogether. And omitting the horrible external stack munging that
     // UnpackIterable does.
-    Value *iterable = fbuilder_->Pop();
-    Function *unpack_iterable = state_->GetGlobalFunction<
+    Value *iterable = this->fbuilder_->Pop();
+    Function *unpack_iterable = this->state_->GetGlobalFunction<
         int(PyObject *, int, PyObject **)>("_PyLlvm_FastUnpackIterable");
-    Value *new_stack_pointer = fbuilder_->builder_.CreateGEP(
-        fbuilder_->builder_.CreateLoad(fbuilder_->stack_pointer_addr_),
+    Value *new_stack_pointer = this->builder_.CreateGEP(
+        this->builder_.CreateLoad(this->fbuilder_->stack_pointer_addr()),
         ConstantInt::getSigned(
-            PyTypeBuilder<Py_ssize_t>::get(fbuilder_->context_), size));
-    fbuilder_->llvm_data_->tbaa_stack.MarkInstruction(new_stack_pointer);
+            PyTypeBuilder<Py_ssize_t>::get(this->fbuilder_->context()), size));
+    this->fbuilder_->llvm_data()->tbaa_stack.MarkInstruction(new_stack_pointer);
 
-    Value *result = state_->CreateCall(
+    Value *result = this->state_->CreateCall(
         unpack_iterable, iterable,
         ConstantInt::get(
-            PyTypeBuilder<int>::get(fbuilder_->context_), size, true),
+            PyTypeBuilder<int>::get(this->fbuilder_->context()), size, true),
         // _PyLlvm_FastUnpackIterable really takes the *new* stack pointer as
         // an argument, because it builds the result stack in reverse.
         new_stack_pointer);
-    state_->DecRef(iterable);
-    fbuilder_->PropagateExceptionOnNonZero(result);
+    this->state_->DecRef(iterable);
+    this->fbuilder_->PropagateExceptionOnNonZero(result);
     // Not setting the new stackpointer on failure does mean that if
     // _PyLlvm_FastUnpackIterable failed after pushing some values onto the
     // stack, and it didn't clean up after itself, we lose references.  This
     // is what eval.cc does as well.
-    fbuilder_->builder_.CreateStore(new_stack_pointer,
-                                    fbuilder_->stack_pointer_addr_);
+    this->builder_.CreateStore(new_stack_pointer,
+                               this->fbuilder_->stack_pointer_addr());
 }
 
 #define INT_OBJ_OBJ_OBJ int(PyObject*, PyObject*, PyObject*)
@@ -137,48 +139,50 @@ OpcodeContainer::UNPACK_SEQUENCE(int size)
 void
 OpcodeContainer::STORE_SUBSCR_list_int()
 {
-    BasicBlock *success = state_->CreateBasicBlock("STORE_SUBSCR_success");
-    BasicBlock *bailpoint = state_->CreateBasicBlock("STORE_SUBSCR_bail");
+    BasicBlock *success =
+        this->state_->CreateBasicBlock("STORE_SUBSCR_success");
+    BasicBlock *bailpoint =
+        this->state_->CreateBasicBlock("STORE_SUBSCR_bail");
 
-    Value *key = fbuilder_->Pop();
-    Value *obj = fbuilder_->Pop();
-    Value *value = fbuilder_->Pop();
+    Value *key = this->fbuilder_->Pop();
+    Value *obj = this->fbuilder_->Pop();
+    Value *value = this->fbuilder_->Pop();
     Function *setitem =
-        state_->GetGlobalFunction<INT_OBJ_OBJ_OBJ>(
+        this->state_->GetGlobalFunction<INT_OBJ_OBJ_OBJ>(
             "_PyLlvm_StoreSubscr_List");
 
-    Value *result = state_->CreateCall(setitem, obj, key, value,
-                                       "STORE_SUBSCR_result");
-    fbuilder_->builder_.CreateCondBr(state_->IsNonZero(result),
-                                     bailpoint, success);
+    Value *result = this->state_->CreateCall(setitem, obj, key, value,
+                                             "STORE_SUBSCR_result");
+    this->builder_.CreateCondBr(this->state_->IsNonZero(result),
+                                bailpoint, success);
 
-    fbuilder_->builder_.SetInsertPoint(bailpoint);
-    fbuilder_->Push(value);
-    fbuilder_->Push(obj);
-    fbuilder_->Push(key);
-    fbuilder_->CreateGuardBailPoint(_PYGUARD_STORE_SUBSCR);
+    this->builder_.SetInsertPoint(bailpoint);
+    this->fbuilder_->Push(value);
+    this->fbuilder_->Push(obj);
+    this->fbuilder_->Push(key);
+    this->fbuilder_->CreateGuardBailPoint(_PYGUARD_STORE_SUBSCR);
 
-    fbuilder_->builder_.SetInsertPoint(success);
-    state_->DecRef(value);
-    state_->DecRef(obj);
-    state_->DecRef(key);
+    this->builder_.SetInsertPoint(success);
+    this->state_->DecRef(value);
+    this->state_->DecRef(obj);
+    this->state_->DecRef(key);
 }
 
 void
 OpcodeContainer::STORE_SUBSCR_safe()
 {
     // Performing obj[key] = val
-    Value *key = fbuilder_->Pop();
-    Value *obj = fbuilder_->Pop();
-    Value *value = fbuilder_->Pop();
+    Value *key = this->fbuilder_->Pop();
+    Value *obj = this->fbuilder_->Pop();
+    Value *value = this->fbuilder_->Pop();
     Function *setitem =
-        state_->GetGlobalFunction<INT_OBJ_OBJ_OBJ>("PyObject_SetItem");
-    Value *result = state_->CreateCall(setitem, obj, key, value,
-                                       "STORE_SUBSCR_result");
-    state_->DecRef(value);
-    state_->DecRef(obj);
-    state_->DecRef(key);
-    fbuilder_->PropagateExceptionOnNonZero(result);
+        this->state_->GetGlobalFunction<INT_OBJ_OBJ_OBJ>("PyObject_SetItem");
+    Value *result = this->state_->CreateCall(setitem, obj, key, value,
+                                             "STORE_SUBSCR_result");
+    this->state_->DecRef(value);
+    this->state_->DecRef(obj);
+    this->state_->DecRef(key);
+    this->fbuilder_->PropagateExceptionOnNonZero(result);
 }
 
 #undef INT_OBJ_OBJ_OBJ
@@ -188,8 +192,8 @@ OpcodeContainer::STORE_SUBSCR()
 {
     OpcodeBinops::IncStatsTotal();
 
-    const PyTypeObject *lhs_type = fbuilder_->GetTypeFeedback(0);
-    const PyTypeObject *rhs_type = fbuilder_->GetTypeFeedback(1);
+    const PyTypeObject *lhs_type = this->fbuilder_->GetTypeFeedback(0);
+    const PyTypeObject *rhs_type = this->fbuilder_->GetTypeFeedback(1);
 
     if (lhs_type == &PyList_Type && rhs_type == &PyInt_Type) {
         OpcodeBinops::IncStatsOptimized();
@@ -206,51 +210,51 @@ OpcodeContainer::STORE_SUBSCR()
 void
 OpcodeContainer::DELETE_SUBSCR()
 {
-    Value *key = fbuilder_->Pop();
-    Value *obj = fbuilder_->Pop();
-    Function *delitem = state_->GetGlobalFunction<
+    Value *key = this->fbuilder_->Pop();
+    Value *obj = this->fbuilder_->Pop();
+    Function *delitem = this->state_->GetGlobalFunction<
           int(PyObject *, PyObject *)>("PyObject_DelItem");
-    Value *result = state_->CreateCall(delitem, obj, key,
-                                       "DELETE_SUBSCR_result");
-    state_->DecRef(obj);
-    state_->DecRef(key);
-    fbuilder_->PropagateExceptionOnNonZero(result);
+    Value *result = this->state_->CreateCall(delitem, obj, key,
+                                             "DELETE_SUBSCR_result");
+    this->state_->DecRef(obj);
+    this->state_->DecRef(key);
+    this->fbuilder_->PropagateExceptionOnNonZero(result);
 }
 
 void
 OpcodeContainer::LIST_APPEND()
 {
-    Value *item = fbuilder_->Pop();
-    Value *listobj = fbuilder_->Pop();
-    Function *list_append = state_->GetGlobalFunction<
+    Value *item = this->fbuilder_->Pop();
+    Value *listobj = this->fbuilder_->Pop();
+    Function *list_append = this->state_->GetGlobalFunction<
         int(PyObject *, PyObject *)>("PyList_Append");
-    Value *result = state_->CreateCall(list_append, listobj, item,
-                                       "LIST_APPEND_result");
-    state_->DecRef(listobj);
-    state_->DecRef(item);
-    fbuilder_->PropagateExceptionOnNonZero(result);
+    Value *result = this->state_->CreateCall(list_append, listobj, item,
+                                             "LIST_APPEND_result");
+    this->state_->DecRef(listobj);
+    this->state_->DecRef(item);
+    this->fbuilder_->PropagateExceptionOnNonZero(result);
 }
 
 void
 OpcodeContainer::STORE_MAP()
 {
-    Value *key = fbuilder_->Pop();
-    Value *value = fbuilder_->Pop();
-    Value *dict = fbuilder_->Pop();
-    fbuilder_->Push(dict);
-    Value *dict_type = fbuilder_->builder_.CreateLoad(
-        ObjectTy::ob_type(fbuilder_->builder_, dict));
-    Value *is_exact_dict = fbuilder_->builder_.CreateICmpEQ(
-        dict_type, state_->GetGlobalVariableFor((PyObject*)&PyDict_Type));
-    state_->Assert(is_exact_dict,
-                   "dict argument to STORE_MAP is not exactly a PyDict");
-    Function *setitem = state_->GetGlobalFunction<
+    Value *key = this->fbuilder_->Pop();
+    Value *value = this->fbuilder_->Pop();
+    Value *dict = this->fbuilder_->Pop();
+    this->fbuilder_->Push(dict);
+    Value *dict_type = this->builder_.CreateLoad(
+        ObjectTy::ob_type(this->builder_, dict));
+    Value *is_exact_dict = this->builder_.CreateICmpEQ(
+        dict_type, this->state_->GetGlobalVariableFor((PyObject*)&PyDict_Type));
+    this->state_->Assert(is_exact_dict,
+                         "dict argument to STORE_MAP is not exactly a PyDict");
+    Function *setitem = this->state_->GetGlobalFunction<
         int(PyObject *, PyObject *, PyObject *)>("PyDict_SetItem");
-    Value *result = state_->CreateCall(setitem, dict, key, value,
-                                       "STORE_MAP_result");
-    state_->DecRef(value);
-    state_->DecRef(key);
-    fbuilder_->PropagateExceptionOnNonZero(result);
+    Value *result = this->state_->CreateCall(setitem, dict, key, value,
+                                             "STORE_MAP_result");
+    this->state_->DecRef(value);
+    this->state_->DecRef(key);
+    this->fbuilder_->PropagateExceptionOnNonZero(result);
 }
 
 #define FUNC_TYPE PyObject *(PyObject *, PyObject *, PyObject *)
@@ -263,18 +267,18 @@ OpcodeContainer::IMPORT_NAME()
     if (this->IMPORT_NAME_fast())
         return;
 
-    Value *mod_name = fbuilder_->Pop();
-    Value *names = fbuilder_->Pop();
-    Value *level = fbuilder_->Pop();
+    Value *mod_name = this->fbuilder_->Pop();
+    Value *names = this->fbuilder_->Pop();
+    Value *level = this->fbuilder_->Pop();
 
-    Value *module = state_->CreateCall(
-        state_->GetGlobalFunction<FUNC_TYPE>("_PyEval_ImportName"),
+    Value *module = this->state_->CreateCall(
+        this->state_->GetGlobalFunction<FUNC_TYPE>("_PyEval_ImportName"),
         level, names, mod_name);
-    state_->DecRef(level);
-    state_->DecRef(names);
-    state_->DecRef(mod_name);
-    fbuilder_->PropagateExceptionOnNull(module);
-    fbuilder_->Push(module);
+    this->state_->DecRef(level);
+    this->state_->DecRef(names);
+    this->state_->DecRef(mod_name);
+    this->fbuilder_->PropagateExceptionOnNull(module);
+    this->fbuilder_->Push(module);
 }
 
 #undef FUNC_TYPE
@@ -282,7 +286,7 @@ OpcodeContainer::IMPORT_NAME()
 bool
 OpcodeContainer::IMPORT_NAME_fast()
 {
-    PyCodeObject *code = fbuilder_->code_object_;
+    PyCodeObject *code = fbuilder_->code_object();
 
     // If we're not already monitoring the builtins dict, monitor it.  Normally
     // we pick it up from the eval loop, but if it isn't here, then we make a
@@ -293,7 +297,7 @@ OpcodeContainer::IMPORT_NAME_fast()
         _PyCode_WatchDict(code, WATCHING_BUILTINS, builtins);
     }
 
-    const PyRuntimeFeedback *feedback = fbuilder_->GetFeedback();
+    const PyRuntimeFeedback *feedback = this->fbuilder_->GetFeedback();
     if (feedback == NULL || feedback->ObjectsOverflowed()) {
         return false;
     }
@@ -319,35 +323,34 @@ OpcodeContainer::IMPORT_NAME_fast()
             return false;
         }
 
-        fbuilder_->uses_watched_dicts_.set(WATCHING_BUILTINS);
-        fbuilder_->uses_watched_dicts_.set(WATCHING_SYS_MODULES);
+        fbuilder_->WatchDict(WATCHING_BUILTINS);
+        fbuilder_->WatchDict(WATCHING_SYS_MODULES);
     }
 
     BasicBlock *keep_going =
-        state_->CreateBasicBlock("IMPORT_NAME_keep_going");
+        this->state_->CreateBasicBlock("IMPORT_NAME_keep_going");
     BasicBlock *invalid_assumptions =
-        state_->CreateBasicBlock("IMPORT_NAME_invalid_assumptions");
+        this->state_->CreateBasicBlock("IMPORT_NAME_invalid_assumptions");
 
-    Value *use_jit = fbuilder_->builder_.CreateLoad(fbuilder_->use_jit_addr_);
-    fbuilder_->builder_.CreateCondBr(state_->IsNonZero(use_jit),
-                                     keep_going,
-                                     invalid_assumptions);
+    this->builder_.CreateCondBr(this->fbuilder_->GetUseJitCond(),
+                                keep_going,
+                                invalid_assumptions);
 
     /* Our assumptions about the state of sys.modules no longer hold;
        bail back to the interpreter. */
-    fbuilder_->builder_.SetInsertPoint(invalid_assumptions);
-    fbuilder_->CreateBailPoint(_PYFRAME_FATAL_GUARD_FAIL);
+    this->builder_.SetInsertPoint(invalid_assumptions);
+    this->fbuilder_->CreateBailPoint(_PYFRAME_FATAL_GUARD_FAIL);
 
-    fbuilder_->builder_.SetInsertPoint(keep_going);
+    this->builder_.SetInsertPoint(keep_going);
     /* TODO(collinwinter): we pop to get rid of the inputs to IMPORT_NAME.
        Find a way to omit this work. */
-    state_->DecRef(fbuilder_->Pop());
-    state_->DecRef(fbuilder_->Pop());
-    state_->DecRef(fbuilder_->Pop());
+    this->state_->DecRef(this->fbuilder_->Pop());
+    this->state_->DecRef(this->fbuilder_->Pop());
+    this->state_->DecRef(this->fbuilder_->Pop());
 
-    Value *mod = state_->GetGlobalVariableFor(module);
-    state_->IncRef(mod);
-    fbuilder_->Push(mod);
+    Value *mod = this->state_->GetGlobalVariableFor(module);
+    this->state_->IncRef(mod);
+    this->fbuilder_->Push(mod);
 
     IMPORT_NAME_INC_STATS(optimized);
     return true;

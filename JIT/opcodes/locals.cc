@@ -16,19 +16,21 @@ using llvm::Value;
 namespace py {
 
 OpcodeLocals::OpcodeLocals(LlvmFunctionBuilder *fbuilder) :
-    fbuilder_(fbuilder), state_(fbuilder->state())
+    fbuilder_(fbuilder),
+    state_(fbuilder->state()),
+    builder_(fbuilder->builder())
 {
 }
 
 void
 OpcodeLocals::LOAD_CONST(int index)
 {
-    PyObject *co_consts = fbuilder_->code_object_->co_consts;
-    Value *const_ = fbuilder_->builder_.CreateBitCast(
-        state_->GetGlobalVariableFor(PyTuple_GET_ITEM(co_consts, index)),
-        PyTypeBuilder<PyObject*>::get(fbuilder_->context_));
-    state_->IncRef(const_);
-    fbuilder_->Push(const_);
+    PyObject *co_consts = this->fbuilder_->code_object()->co_consts;
+    Value *const_ = this->builder_.CreateBitCast(
+        this->state_->GetGlobalVariableFor(PyTuple_GET_ITEM(co_consts, index)),
+        PyTypeBuilder<PyObject*>::get(this->fbuilder_->context()));
+    this->state_->IncRef(const_);
+    this->fbuilder_->Push(const_);
 }
 
 // TODO(collinwinter): we'd like to implement this by simply marking the load
@@ -40,7 +42,8 @@ OpcodeLocals::LOAD_FAST(int index)
 {
     // Simple check: if DELETE_FAST is never used, function parameters cannot
     // be NULL.
-    if (!fbuilder_->uses_delete_fast && index < fbuilder_->GetParamCount())
+    if (!this->fbuilder_->uses_delete_fast() &&
+        index < this->fbuilder_->GetParamCount())
         this->LOAD_FAST_fast(index);
     else
         this->LOAD_FAST_safe(index);
@@ -49,60 +52,61 @@ OpcodeLocals::LOAD_FAST(int index)
 void
 OpcodeLocals::LOAD_FAST_fast(int index)
 {
-    Value *local = fbuilder_->builder_.CreateLoad(
-        fbuilder_->locals_[index], "FAST_loaded");
+    Value *local = this->builder_.CreateLoad(
+        this->fbuilder_->GetLocal(index), "FAST_loaded");
 #ifndef NDEBUG
-    Value *frame_local_slot = fbuilder_->builder_.CreateGEP(
-        fbuilder_->fastlocals_,
-        ConstantInt::get(Type::getInt32Ty(fbuilder_->context_),
+    Value *frame_local_slot = this->builder_.CreateGEP(
+        this->fbuilder_->fastlocals(),
+        ConstantInt::get(Type::getInt32Ty(this->fbuilder_->context()),
                          index));
-    Value *frame_local = fbuilder_->builder_.CreateLoad(frame_local_slot);
-    Value *sane_locals = fbuilder_->builder_.CreateICmpEQ(frame_local, local);
-    state_->Assert(sane_locals, "alloca locals do not match frame locals!");
+    Value *frame_local = this->builder_.CreateLoad(frame_local_slot);
+    Value *sane_locals = this->builder_.CreateICmpEQ(frame_local, local);
+    this->state_->Assert(sane_locals, "alloca locals do not match frame locals!");
 #endif  /* NDEBUG */
-    state_->IncRef(local);
-    fbuilder_->Push(local);
+    this->state_->IncRef(local);
+    this->fbuilder_->Push(local);
 }
 
 void
 OpcodeLocals::LOAD_FAST_safe(int index)
 {
     BasicBlock *unbound_local =
-        state_->CreateBasicBlock("LOAD_FAST_unbound");
+        this->state_->CreateBasicBlock("LOAD_FAST_unbound");
     BasicBlock *success =
-        state_->CreateBasicBlock("LOAD_FAST_success");
+        this->state_->CreateBasicBlock("LOAD_FAST_success");
 
-    Value *local = fbuilder_->builder_.CreateLoad(
-        fbuilder_->locals_[index], "FAST_loaded");
+    Value *local = this->builder_.CreateLoad(
+        this->fbuilder_->GetLocal(index), "FAST_loaded");
 #ifndef NDEBUG
-    Value *frame_local_slot = fbuilder_->builder_.CreateGEP(
-        fbuilder_->fastlocals_,
-        ConstantInt::get(Type::getInt32Ty(fbuilder_->context_),
+    Value *frame_local_slot = this->builder_.CreateGEP(
+        this->fbuilder_->fastlocals(),
+        ConstantInt::get(Type::getInt32Ty(this->fbuilder_->context()),
                          index));
-    Value *frame_local = fbuilder_->builder_.CreateLoad(frame_local_slot);
-    Value *sane_locals = fbuilder_->builder_.CreateICmpEQ(frame_local, local);
-    state_->Assert(sane_locals, "alloca locals do not match frame locals!");
+    Value *frame_local = this->builder_.CreateLoad(frame_local_slot);
+    Value *sane_locals = this->builder_.CreateICmpEQ(frame_local, local);
+    this->state_->Assert(sane_locals,
+                         "alloca locals do not match frame locals!");
 #endif  /* NDEBUG */
-    fbuilder_->builder_.CreateCondBr(state_->IsNull(local),
-                                     unbound_local, success);
+    this->builder_.CreateCondBr(this->state_->IsNull(local),
+                                unbound_local, success);
 
-    fbuilder_->builder_.SetInsertPoint(unbound_local);
+    this->builder_.SetInsertPoint(unbound_local);
     Function *do_raise =
-        state_->GetGlobalFunction<void(PyFrameObject*, int)>(
+        this->state_->GetGlobalFunction<void(PyFrameObject*, int)>(
             "_PyEval_RaiseForUnboundLocal");
-    state_->CreateCall(do_raise, fbuilder_->frame_,
-                       state_->GetSigned<int>(index));
-    fbuilder_->PropagateException();
+    this->state_->CreateCall(do_raise, this->fbuilder_->frame(),
+                             this->state_->GetSigned<int>(index));
+    this->fbuilder_->PropagateException();
 
-    fbuilder_->builder_.SetInsertPoint(success);
-    state_->IncRef(local);
-    fbuilder_->Push(local);
+    this->builder_.SetInsertPoint(success);
+    this->state_->IncRef(local);
+    this->fbuilder_->Push(local);
 }
 
 void
 OpcodeLocals::STORE_FAST(int index)
 {
-    this->SetLocal(index, fbuilder_->Pop());
+    this->SetLocal(index, this->fbuilder_->Pop());
 }
 
 void
@@ -110,55 +114,55 @@ OpcodeLocals::SetLocal(int locals_index, llvm::Value *new_value)
 {
     // We write changes twice: once to our LLVM-visible locals, and again to the
     // PyFrameObject. This makes vars(), locals() and dir() happy.
-    Value *frame_local_slot = fbuilder_->builder_.CreateGEP(
-        fbuilder_->fastlocals_, 
-        ConstantInt::get(Type::getInt32Ty(fbuilder_->context_),
+    Value *frame_local_slot = this->builder_.CreateGEP(
+        this->fbuilder_->fastlocals(), 
+        ConstantInt::get(Type::getInt32Ty(this->fbuilder_->context()),
                          locals_index));
-    fbuilder_->llvm_data_->tbaa_locals.MarkInstruction(frame_local_slot);
-    fbuilder_->builder_.CreateStore(new_value, frame_local_slot);
+    this->fbuilder_->llvm_data()->tbaa_locals.MarkInstruction(frame_local_slot);
+    this->builder_.CreateStore(new_value, frame_local_slot);
 
-    Value *llvm_local_slot = fbuilder_->locals_[locals_index];
+    Value *llvm_local_slot = this->fbuilder_->GetLocal(locals_index);
     Value *orig_value =
-        fbuilder_->builder_.CreateLoad(llvm_local_slot,
-                                       "llvm_local_overwritten");
-    fbuilder_->builder_.CreateStore(new_value, llvm_local_slot);
-    state_->XDecRef(orig_value);
+        this->builder_.CreateLoad(llvm_local_slot,
+                                  "llvm_local_overwritten");
+    this->builder_.CreateStore(new_value, llvm_local_slot);
+    this->state_->XDecRef(orig_value);
 }
 
 void
 OpcodeLocals::DELETE_FAST(int index)
 {
     BasicBlock *failure =
-        state_->CreateBasicBlock("DELETE_FAST_failure");
+        this->state_->CreateBasicBlock("DELETE_FAST_failure");
     BasicBlock *success =
-        state_->CreateBasicBlock("DELETE_FAST_success");
-    Value *local_slot = fbuilder_->locals_[index];
-    Value *orig_value = fbuilder_->builder_.CreateLoad(
+        this->state_->CreateBasicBlock("DELETE_FAST_success");
+    Value *local_slot = this->fbuilder_->GetLocal(index);
+    Value *orig_value = this->builder_.CreateLoad(
         local_slot, "DELETE_FAST_old_reference");
-    fbuilder_->builder_.CreateCondBr(state_->IsNull(orig_value),
-                                     failure, success);
+    this->builder_.CreateCondBr(this->state_->IsNull(orig_value),
+                                failure, success);
 
-    fbuilder_->builder_.SetInsertPoint(failure);
-    Function *do_raise = state_->GetGlobalFunction<
+    this->builder_.SetInsertPoint(failure);
+    Function *do_raise = this->state_->GetGlobalFunction<
         void(PyFrameObject *, int)>("_PyEval_RaiseForUnboundLocal");
-    state_->CreateCall(
-        do_raise, fbuilder_->frame_,
+    this->state_->CreateCall(
+        do_raise, this->fbuilder_->frame(),
         ConstantInt::getSigned(
-            PyTypeBuilder<int>::get(fbuilder_->context_), index));
-    fbuilder_->PropagateException();
+            PyTypeBuilder<int>::get(this->fbuilder_->context()), index));
+    this->fbuilder_->PropagateException();
 
     /* We clear both the LLVM-visible locals and the PyFrameObject's locals to
        make vars(), dir() and locals() happy. */
-    fbuilder_->builder_.SetInsertPoint(success);
-    Value *frame_local_slot = fbuilder_->builder_.CreateGEP(
-        fbuilder_->fastlocals_,
-        ConstantInt::get(Type::getInt32Ty(fbuilder_->context_),
+    this->builder_.SetInsertPoint(success);
+    Value *frame_local_slot = this->builder_.CreateGEP(
+        this->fbuilder_->fastlocals(),
+        ConstantInt::get(Type::getInt32Ty(this->fbuilder_->context()),
                          index));
-    fbuilder_->builder_.CreateStore(state_->GetNull<PyObject*>(),
-                                    frame_local_slot);
-    fbuilder_->builder_.CreateStore(state_->GetNull<PyObject*>(),
-                                    local_slot);
-    state_->DecRef(orig_value);
+    this->builder_.CreateStore(this->state_->GetNull<PyObject*>(),
+                               frame_local_slot);
+    this->builder_.CreateStore(this->state_->GetNull<PyObject*>(),
+                               local_slot);
+    this->state_->DecRef(orig_value);
 }
 
 }

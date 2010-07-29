@@ -14,6 +14,8 @@ namespace llvm {
     class Value;
 }
 
+class PyGlobalLlvmData;
+
 namespace py {
 
 class LlvmFunctionBuilder;
@@ -27,7 +29,6 @@ enum AttrAccessKind {
     ATTR_ACCESS_LOAD,
     ATTR_ACCESS_STORE
 };
-
 
 // This class encapsulates the common data and code for doing optimized
 // attribute access.  This object helps perform checks, generate guard
@@ -137,8 +138,12 @@ private:
     void STORE_ATTR_safe(int names_index);
     bool STORE_ATTR_fast(int names_index);
 
-    LlvmFunctionBuilder *fbuilder_;
+    typedef llvm::IRBuilder<true, llvm::TargetFolder> BuilderT;
+
+    LlvmFunctionBuilder *const fbuilder_;
     LlvmFunctionState *state_;
+    BuilderT &builder_;
+    PyGlobalLlvmData *const llvm_data_;
 };
 
 }

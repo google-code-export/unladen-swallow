@@ -6,6 +6,9 @@
 #error This header expects to be included only in C++ source
 #endif
 
+#include "llvm/Support/IRBuilder.h"
+#include "llvm/Support/TargetFolder.h"
+
 namespace py {
 
 class LlvmFunctionBuilder;
@@ -23,8 +26,12 @@ public:
     void STORE_DEREF(int index);
 
 private:
+    typedef llvm::IRBuilder<true, llvm::TargetFolder> BuilderT;
+
     LlvmFunctionBuilder *fbuilder_;
     LlvmFunctionState *state_;
+    BuilderT &builder_;
+    PyGlobalLlvmData *const llvm_data_;
 };
 
 }

@@ -7,6 +7,8 @@
 #endif
 
 #include "JIT/RuntimeFeedback.h"
+#include "llvm/Support/IRBuilder.h"
+#include "llvm/Support/TargetFolder.h"
 
 namespace py {
 
@@ -25,6 +27,8 @@ public:
     void CALL_FUNCTION_VAR_KW(int num_args);
 
 private:
+    typedef llvm::IRBuilder<true, llvm::TargetFolder> BuilderT;
+
     // Helper method for CALL_FUNCTION_(VAR|KW|VAR_KW); calls
     // _PyEval_CallFunctionVarKw() with the given flags and the current
     // stack pointer.
@@ -44,6 +48,8 @@ private:
 
     LlvmFunctionBuilder *fbuilder_;
     LlvmFunctionState *state_;
+    BuilderT &builder_;
+    PyGlobalLlvmData *const llvm_data_;
 };
 
 }

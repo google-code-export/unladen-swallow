@@ -6,6 +6,9 @@
 #error This header expects to be included only in C++ source
 #endif
 
+#include "llvm/Support/IRBuilder.h"
+#include "llvm/Support/TargetFolder.h"
+
 namespace llvm {
     class Value;
 }
@@ -27,6 +30,8 @@ public:
     void DELETE_FAST(int index);
 
 private:
+    typedef llvm::IRBuilder<true, llvm::TargetFolder> BuilderT;
+
     // A safe version that always works, and a fast version that omits NULL
     // checks where we know the local cannot be NULL.
     void LOAD_FAST_fast(int index);
@@ -39,6 +44,7 @@ private:
 
     LlvmFunctionBuilder *fbuilder_;
     LlvmFunctionState *state_;
+    BuilderT &builder_;
 };
 
 }

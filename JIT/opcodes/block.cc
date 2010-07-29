@@ -23,7 +23,10 @@ using llvm::array_endof;
 namespace py {
 
 OpcodeBlock::OpcodeBlock(LlvmFunctionBuilder *fbuilder) :
-    fbuilder_(fbuilder), state_(fbuilder->state())
+    fbuilder_(fbuilder),
+    state_(fbuilder->state()),
+    builder_(fbuilder->builder()),
+    llvm_data_(fbuilder->llvm_data())
 {
 }
 
@@ -38,16 +41,16 @@ OpcodeBlock::SETUP_LOOP(llvm::BasicBlock *target,
 void
 OpcodeBlock::POP_BLOCK()
 {
-    Value *block_info = state_->CreateCall(
-        state_->GetGlobalFunction<PyTryBlock *(PyTryBlock *, char *)>(
+    Value *block_info = this->state_->CreateCall(
+        this->state_->GetGlobalFunction<PyTryBlock *(PyTryBlock *, char *)>(
             "_PyLlvm_Frame_BlockPop"),
-        fbuilder_->blockstack_addr_,
-        fbuilder_->num_blocks_addr_);
-    Value *pop_to_level = fbuilder_->builder_.CreateLoad(
-        PyTypeBuilder<PyTryBlock>::b_level(fbuilder_->builder_, block_info));
+        this->fbuilder_->blockstack_addr(),
+        this->fbuilder_->num_blocks_addr());
+    Value *pop_to_level = this->builder_.CreateLoad(
+        PyTypeBuilder<PyTryBlock>::b_level(this->builder_, block_info));
     Value *pop_to_addr =
-        fbuilder_->builder_.CreateGEP(fbuilder_->stack_bottom_, pop_to_level);
-    fbuilder_->PopAndDecrefTo(pop_to_addr);
+        this->builder_.CreateGEP(this->fbuilder_->stack_bottom(), pop_to_level);
+    this->fbuilder_->PopAndDecrefTo(pop_to_addr);
 }
 
 void
@@ -70,26 +73,26 @@ void
 OpcodeBlock::CallBlockSetup(int block_type, llvm::BasicBlock *handler,
                             int handler_opindex)
 {
-    Value *stack_level = fbuilder_->GetStackLevel();
+    Value *stack_level = this->fbuilder_->GetStackLevel();
     Value *unwind_target_index =
-        fbuilder_->AddUnwindTarget(handler, handler_opindex);
+        this->fbuilder_->AddUnwindTarget(handler, handler_opindex);
     Function *blocksetup =
-        state_->GetGlobalFunction<void(PyTryBlock *, char *, int, int, int)>(
+        this->state_->GetGlobalFunction<void(PyTryBlock *, char *, int, int, int)>(
             "_PyLlvm_Frame_BlockSetup");
     Value *args[] = {
-        fbuilder_->blockstack_addr_, fbuilder_->num_blocks_addr_,
-        ConstantInt::get(PyTypeBuilder<int>::get(fbuilder_->context_),
+        this->fbuilder_->blockstack_addr(), this->fbuilder_->num_blocks_addr(),
+        ConstantInt::get(PyTypeBuilder<int>::get(this->fbuilder_->context()),
                          block_type),
         unwind_target_index,
         stack_level
     };
-    state_->CreateCall(blocksetup, args, array_endof(args));
+    this->state_->CreateCall(blocksetup, args, array_endof(args));
 }
 
 void
 OpcodeBlock::END_FINALLY()
 {
-    Value *finally_discriminator = fbuilder_->Pop();
+    Value *finally_discriminator = this->fbuilder_->Pop();
     // END_FINALLY is fairly complicated. It decides what to do based
     // on the top value in the stack.  If that value is an int, it's
     // interpreted as one of the unwind reasons.  If it's an exception
@@ -99,115 +102,116 @@ OpcodeBlock::END_FINALLY()
     // flow.
 
     BasicBlock *unwind_code =
-        state_->CreateBasicBlock("unwind_code");
+        this->state_->CreateBasicBlock("unwind_code");
     BasicBlock *test_exception =
-        state_->CreateBasicBlock("test_exception");
+        this->state_->CreateBasicBlock("test_exception");
     BasicBlock *reraise_exception =
-        state_->CreateBasicBlock("reraise_exception");
-    BasicBlock *check_none = state_->CreateBasicBlock("check_none");
-    BasicBlock *not_none = state_->CreateBasicBlock("not_none");
+        this->state_->CreateBasicBlock("reraise_exception");
+    BasicBlock *check_none = this->state_->CreateBasicBlock("check_none");
+    BasicBlock *not_none = this->state_->CreateBasicBlock("not_none");
     BasicBlock *finally_fallthrough =
-        state_->CreateBasicBlock("finally_fallthrough");
+        this->state_->CreateBasicBlock("finally_fallthrough");
 
-    fbuilder_->builder_.CreateCondBr(
-        state_->IsInstanceOfFlagClass(finally_discriminator,
-                                      Py_TPFLAGS_INT_SUBCLASS),
+    this->builder_.CreateCondBr(
+        this->state_->IsInstanceOfFlagClass(finally_discriminator,
+                                            Py_TPFLAGS_INT_SUBCLASS),
         unwind_code, test_exception);
 
-    fbuilder_->builder_.SetInsertPoint(unwind_code);
+    this->builder_.SetInsertPoint(unwind_code);
     // The top of the stack was an int, interpreted as an unwind code.
     // If we're resuming a return or continue, the return value or
     // loop target (respectively) is now on top of the stack and needs
     // to be popped off.
-    Value *unwind_reason = fbuilder_->builder_.CreateTrunc(
-        state_->CreateCall(
-            state_->GetGlobalFunction<long(PyObject *)>("PyInt_AsLong"),
+    Value *unwind_reason = this->builder_.CreateTrunc(
+        this->state_->CreateCall(
+            this->state_->GetGlobalFunction<long(PyObject *)>("PyInt_AsLong"),
             finally_discriminator),
-        Type::getInt8Ty(fbuilder_->context_),
+        Type::getInt8Ty(this->fbuilder_->context()),
         "unwind_reason");
-    state_->DecRef(finally_discriminator);
+    this->state_->DecRef(finally_discriminator);
     // Save the unwind reason for when we jump to the unwind block.
-    fbuilder_->builder_.CreateStore(unwind_reason,
-                                    fbuilder_->unwind_reason_addr_);
+    this->builder_.CreateStore(unwind_reason,
+                               this->fbuilder_->unwind_reason_addr());
     // Check if we need to pop the return value or loop target.
-    BasicBlock *pop_retval = state_->CreateBasicBlock("pop_retval");
+    BasicBlock *pop_retval = this->state_->CreateBasicBlock("pop_retval");
     llvm::SwitchInst *should_pop_retval =
-        fbuilder_->builder_.CreateSwitch(unwind_reason,
-                                         fbuilder_->unwind_block_, 2);
+        this->builder_.CreateSwitch(unwind_reason,
+                                    this->fbuilder_->unwind_block(), 2);
     should_pop_retval->addCase(
-        ConstantInt::get(Type::getInt8Ty(fbuilder_->context_),
+        ConstantInt::get(Type::getInt8Ty(this->fbuilder_->context()),
                          UNWIND_RETURN),
         pop_retval);
     should_pop_retval->addCase(
-        ConstantInt::get(Type::getInt8Ty(fbuilder_->context_),
+        ConstantInt::get(Type::getInt8Ty(this->fbuilder_->context()),
                          UNWIND_CONTINUE),
         pop_retval);
 
-    fbuilder_->builder_.SetInsertPoint(pop_retval);
+    this->builder_.SetInsertPoint(pop_retval);
     // We're continuing a return or continue.  Retrieve its argument.
-    fbuilder_->builder_.CreateStore(fbuilder_->Pop(), fbuilder_->retval_addr_);
-    fbuilder_->builder_.CreateBr(fbuilder_->unwind_block_);
+    this->builder_.CreateStore(this->fbuilder_->Pop(),
+                               this->fbuilder_->retval_addr());
+    this->builder_.CreateBr(this->fbuilder_->unwind_block());
 
-    fbuilder_->builder_.SetInsertPoint(test_exception);
-    Value *is_exception_or_string = state_->CreateCall(
-        state_->GetGlobalFunction<int(PyObject *)>(
+    this->builder_.SetInsertPoint(test_exception);
+    Value *is_exception_or_string = this->state_->CreateCall(
+        this->state_->GetGlobalFunction<int(PyObject *)>(
             "_PyLlvm_WrapIsExceptionOrString"),
         finally_discriminator);
-    fbuilder_->builder_.CreateCondBr(
-        state_->IsNonZero(is_exception_or_string),
+    this->builder_.CreateCondBr(
+        this->state_->IsNonZero(is_exception_or_string),
         reraise_exception, check_none);
 
-    fbuilder_->builder_.SetInsertPoint(reraise_exception);
+    this->builder_.SetInsertPoint(reraise_exception);
     Value *err_type = finally_discriminator;
-    Value *err_value = fbuilder_->Pop();
-    Value *err_traceback = fbuilder_->Pop();
-    state_->CreateCall(
-        state_->GetGlobalFunction<void(PyObject *, PyObject *, PyObject *)>(
-            "PyErr_Restore"),
+    Value *err_value = this->fbuilder_->Pop();
+    Value *err_traceback = this->fbuilder_->Pop();
+    this->state_->CreateCall(
+        this->state_->GetGlobalFunction<
+            void(PyObject *, PyObject *, PyObject *)>("PyErr_Restore"),
         err_type, err_value, err_traceback);
     // This is a "re-raise" rather than a new exception, so we don't
     // jump to the propagate_exception_block_.
-    fbuilder_->builder_.CreateStore(state_->GetNull<PyObject*>(),
-                                    fbuilder_->retval_addr_);
-    fbuilder_->builder_.CreateStore(
-        ConstantInt::get(Type::getInt8Ty(fbuilder_->context_),
+    this->builder_.CreateStore(this->state_->GetNull<PyObject*>(),
+                               this->fbuilder_->retval_addr());
+    this->builder_.CreateStore(
+        ConstantInt::get(Type::getInt8Ty(this->fbuilder_->context()),
                          UNWIND_EXCEPTION),
-        fbuilder_->unwind_reason_addr_);
-    fbuilder_->builder_.CreateBr(fbuilder_->unwind_block_);
+        this->fbuilder_->unwind_reason_addr());
+    this->builder_.CreateBr(this->fbuilder_->unwind_block());
 
-    fbuilder_->builder_.SetInsertPoint(check_none);
+    this->builder_.SetInsertPoint(check_none);
     // The contents of the try block push None onto the stack just
     // before falling through to the finally block.  If we didn't get
     // an unwind reason or an exception, we expect to fall through,
     // but for sanity we also double-check that the None is present.
-    Value *is_none = fbuilder_->builder_.CreateICmpEQ(
+    Value *is_none = this->builder_.CreateICmpEQ(
         finally_discriminator,
-        state_->GetGlobalVariableFor(&_Py_NoneStruct));
-    state_->DecRef(finally_discriminator);
-    fbuilder_->builder_.CreateCondBr(is_none, finally_fallthrough, not_none);
+        this->state_->GetGlobalVariableFor(&_Py_NoneStruct));
+    this->state_->DecRef(finally_discriminator);
+    this->builder_.CreateCondBr(is_none, finally_fallthrough, not_none);
 
-    fbuilder_->builder_.SetInsertPoint(not_none);
+    this->builder_.SetInsertPoint(not_none);
     // If we didn't get a None, raise a SystemError.
-    Value *system_error = fbuilder_->builder_.CreateLoad(
-        state_->GET_GLOBAL_VARIABLE(PyObject *, PyExc_SystemError));
-    Value *err_msg = fbuilder_->llvm_data_->GetGlobalStringPtr(
+    Value *system_error = this->builder_.CreateLoad(
+        this->state_->GET_GLOBAL_VARIABLE(PyObject *, PyExc_SystemError));
+    Value *err_msg = llvm_data_->GetGlobalStringPtr(
         "'finally' pops bad exception");
-    state_->CreateCall(
-        state_->GetGlobalFunction<void(PyObject *, const char *)>(
+    this->state_->CreateCall(
+        this->state_->GetGlobalFunction<void(PyObject *, const char *)>(
             "PyErr_SetString"),
         system_error, err_msg);
-    fbuilder_->builder_.CreateStore(
-        ConstantInt::get(Type::getInt8Ty(fbuilder_->context_),
+    this->builder_.CreateStore(
+        ConstantInt::get(Type::getInt8Ty(this->fbuilder_->context()),
                          UNWIND_EXCEPTION),
-        fbuilder_->unwind_reason_addr_);
-    fbuilder_->builder_.CreateBr(fbuilder_->unwind_block_);
+        this->fbuilder_->unwind_reason_addr());
+    this->builder_.CreateBr(this->fbuilder_->unwind_block());
 
     // After falling through into a finally block, we also fall
     // through out of the block.  This has the nice side-effect of
     // avoiding jumps and switch instructions in the common case,
     // although returning out of a finally may still be slower than
     // ideal.
-    fbuilder_->builder_.SetInsertPoint(finally_fallthrough);
+    this->builder_.SetInsertPoint(finally_fallthrough);
 }
 
 void
@@ -235,63 +239,64 @@ OpcodeBlock::WITH_CLEANUP()
        should still be resumed.)
     */
 
-    Value *exc_type = state_->CreateAllocaInEntryBlock(
-        PyTypeBuilder<PyObject*>::get(fbuilder_->context_),
+    Value *exc_type = this->state_->CreateAllocaInEntryBlock(
+        PyTypeBuilder<PyObject*>::get(this->fbuilder_->context()),
         NULL, "WITH_CLEANUP_exc_type");
-    Value *exc_value = state_->CreateAllocaInEntryBlock(
-        PyTypeBuilder<PyObject*>::get(fbuilder_->context_),
+    Value *exc_value = this->state_->CreateAllocaInEntryBlock(
+        PyTypeBuilder<PyObject*>::get(this->fbuilder_->context()),
         NULL, "WITH_CLEANUP_exc_value");
-    Value *exc_traceback = state_->CreateAllocaInEntryBlock(
-        PyTypeBuilder<PyObject*>::get(fbuilder_->context_),
+    Value *exc_traceback = this->state_->CreateAllocaInEntryBlock(
+        PyTypeBuilder<PyObject*>::get(this->fbuilder_->context()),
         NULL, "WITH_CLEANUP_exc_traceback");
-    Value *exit_func = state_->CreateAllocaInEntryBlock(
-        PyTypeBuilder<PyObject*>::get(fbuilder_->context_),
+    Value *exit_func = this->state_->CreateAllocaInEntryBlock(
+        PyTypeBuilder<PyObject*>::get(this->fbuilder_->context()),
         NULL, "WITH_CLEANUP_exit_func");
 
     BasicBlock *handle_none =
-        state_->CreateBasicBlock("WITH_CLEANUP_handle_none");
+        this->state_->CreateBasicBlock("WITH_CLEANUP_handle_none");
     BasicBlock *check_int =
-        state_->CreateBasicBlock("WITH_CLEANUP_check_int");
+        this->state_->CreateBasicBlock("WITH_CLEANUP_check_int");
     BasicBlock *handle_int =
-        state_->CreateBasicBlock("WITH_CLEANUP_handle_int");
+        this->state_->CreateBasicBlock("WITH_CLEANUP_handle_int");
     BasicBlock *handle_ret_cont =
-        state_->CreateBasicBlock("WITH_CLEANUP_handle_ret_cont");
+        this->state_->CreateBasicBlock("WITH_CLEANUP_handle_ret_cont");
     BasicBlock *handle_default =
-        state_->CreateBasicBlock("WITH_CLEANUP_handle_default");
+        this->state_->CreateBasicBlock("WITH_CLEANUP_handle_default");
     BasicBlock *handle_else =
-        state_->CreateBasicBlock("WITH_CLEANUP_handle_else");
+        this->state_->CreateBasicBlock("WITH_CLEANUP_handle_else");
     BasicBlock *main_block =
-        state_->CreateBasicBlock("WITH_CLEANUP_main_block");
+        this->state_->CreateBasicBlock("WITH_CLEANUP_main_block");
 
-    Value *none = state_->GetGlobalVariableFor(&_Py_NoneStruct);
-    fbuilder_->builder_.CreateStore(fbuilder_->Pop(), exc_type);
+    Value *none = this->state_->GetGlobalVariableFor(&_Py_NoneStruct);
+    this->builder_.CreateStore(this->fbuilder_->Pop(), exc_type);
 
-    Value *is_none = fbuilder_->builder_.CreateICmpEQ(
-        fbuilder_->builder_.CreateLoad(exc_type), none,
+    Value *is_none = this->builder_.CreateICmpEQ(
+        this->builder_.CreateLoad(exc_type), none,
         "reason_is_none");
-    fbuilder_->builder_.CreateCondBr(is_none, handle_none, check_int);
+    this->builder_.CreateCondBr(is_none, handle_none, check_int);
 
-    fbuilder_->builder_.SetInsertPoint(handle_none);
-    fbuilder_->builder_.CreateStore(fbuilder_->Pop(), exit_func);
-    fbuilder_->Push(fbuilder_->builder_.CreateLoad(exc_type));
-    fbuilder_->builder_.CreateStore(none, exc_value);
-    fbuilder_->builder_.CreateStore(none, exc_traceback);
-    fbuilder_->builder_.CreateBr(main_block);
+    this->builder_.SetInsertPoint(handle_none);
+    this->builder_.CreateStore(this->fbuilder_->Pop(), exit_func);
+    this->fbuilder_->Push(this->builder_.CreateLoad(exc_type));
+    this->builder_.CreateStore(none, exc_value);
+    this->builder_.CreateStore(none, exc_traceback);
+    this->builder_.CreateBr(main_block);
 
-    fbuilder_->builder_.SetInsertPoint(check_int);
-    Value *is_int = state_->CreateCall(
-        state_->GetGlobalFunction<int(PyObject *)>("_PyLlvm_WrapIntCheck"),
-        fbuilder_->builder_.CreateLoad(exc_type),
+    this->builder_.SetInsertPoint(check_int);
+    Value *is_int = this->state_->CreateCall(
+        this->state_->GetGlobalFunction<int(PyObject *)>(
+            "_PyLlvm_WrapIntCheck"),
+        this->builder_.CreateLoad(exc_type),
         "WITH_CLEANUP_pyint_check");
-    fbuilder_->builder_.CreateCondBr(state_->IsNonZero(is_int),
-                                     handle_int, handle_else);
+    this->builder_.CreateCondBr(this->state_->IsNonZero(is_int),
+                                handle_int, handle_else);
 
-    fbuilder_->builder_.SetInsertPoint(handle_int);
-    Value *unboxed = fbuilder_->builder_.CreateTrunc(
-        state_->CreateCall(
-            state_->GetGlobalFunction<long(PyObject *)>("PyInt_AsLong"),
-            fbuilder_->builder_.CreateLoad(exc_type)),
-        Type::getInt8Ty(fbuilder_->context_),
+    this->builder_.SetInsertPoint(handle_int);
+    Value *unboxed = this->builder_.CreateTrunc(
+        this->state_->CreateCall(
+            this->state_->GetGlobalFunction<long(PyObject *)>("PyInt_AsLong"),
+            this->builder_.CreateLoad(exc_type)),
+        Type::getInt8Ty(this->fbuilder_->context()),
         "unboxed_unwind_reason");
     // The LLVM equivalent of
     // switch (reason)
@@ -302,96 +307,96 @@ OpcodeBlock::WITH_CLEANUP()
     //   default:
     //     break;
     llvm::SwitchInst *unwind_kind =
-        fbuilder_->builder_.CreateSwitch(unboxed, handle_default, 2);
-    unwind_kind->addCase(ConstantInt::get(Type::getInt8Ty(fbuilder_->context_),
-                                          UNWIND_RETURN),
-                         handle_ret_cont);
-    unwind_kind->addCase(ConstantInt::get(Type::getInt8Ty(fbuilder_->context_),
-                                          UNWIND_CONTINUE),
-                         handle_ret_cont);
+        this->builder_.CreateSwitch(unboxed, handle_default, 2);
+    unwind_kind->addCase(
+        ConstantInt::get(Type::getInt8Ty(this->fbuilder_->context()),
+                         UNWIND_RETURN), handle_ret_cont);
+    unwind_kind->addCase(
+        ConstantInt::get(Type::getInt8Ty(this->fbuilder_->context()),
+                         UNWIND_CONTINUE), handle_ret_cont);
 
-    fbuilder_->builder_.SetInsertPoint(handle_ret_cont);
-    Value *retval = fbuilder_->Pop();
-    fbuilder_->builder_.CreateStore(fbuilder_->Pop(), exit_func);
-    fbuilder_->Push(retval);
-    fbuilder_->Push(fbuilder_->builder_.CreateLoad(exc_type));
-    fbuilder_->builder_.CreateStore(none, exc_type);
-    fbuilder_->builder_.CreateStore(none, exc_value);
-    fbuilder_->builder_.CreateStore(none, exc_traceback);
-    fbuilder_->builder_.CreateBr(main_block);
+    this->builder_.SetInsertPoint(handle_ret_cont);
+    Value *retval = this->fbuilder_->Pop();
+    this->builder_.CreateStore(this->fbuilder_->Pop(), exit_func);
+    this->fbuilder_->Push(retval);
+    this->fbuilder_->Push(this->builder_.CreateLoad(exc_type));
+    this->builder_.CreateStore(none, exc_type);
+    this->builder_.CreateStore(none, exc_value);
+    this->builder_.CreateStore(none, exc_traceback);
+    this->builder_.CreateBr(main_block);
 
-    fbuilder_->builder_.SetInsertPoint(handle_default);
-    fbuilder_->builder_.CreateStore(fbuilder_->Pop(), exit_func);
-    fbuilder_->Push(fbuilder_->builder_.CreateLoad(exc_type));
-    fbuilder_->builder_.CreateStore(none, exc_type);
-    fbuilder_->builder_.CreateStore(none, exc_value);
-    fbuilder_->builder_.CreateStore(none, exc_traceback);
-    fbuilder_->builder_.CreateBr(main_block);
+    this->builder_.SetInsertPoint(handle_default);
+    this->builder_.CreateStore(this->fbuilder_->Pop(), exit_func);
+    this->fbuilder_->Push(this->builder_.CreateLoad(exc_type));
+    this->builder_.CreateStore(none, exc_type);
+    this->builder_.CreateStore(none, exc_value);
+    this->builder_.CreateStore(none, exc_traceback);
+    this->builder_.CreateBr(main_block);
 
     // This is the (TOP, SECOND, THIRD) = exc_info() case above.
-    fbuilder_->builder_.SetInsertPoint(handle_else);
-    fbuilder_->builder_.CreateStore(fbuilder_->Pop(), exc_value);
-    fbuilder_->builder_.CreateStore(fbuilder_->Pop(), exc_traceback);
-    fbuilder_->builder_.CreateStore(fbuilder_->Pop(), exit_func);
-    fbuilder_->Push(fbuilder_->builder_.CreateLoad(exc_traceback));
-    fbuilder_->Push(fbuilder_->builder_.CreateLoad(exc_value));
-    fbuilder_->Push(fbuilder_->builder_.CreateLoad(exc_type));
-    fbuilder_->builder_.CreateBr(main_block);
+    this->builder_.SetInsertPoint(handle_else);
+    this->builder_.CreateStore(this->fbuilder_->Pop(), exc_value);
+    this->builder_.CreateStore(this->fbuilder_->Pop(), exc_traceback);
+    this->builder_.CreateStore(this->fbuilder_->Pop(), exit_func);
+    this->fbuilder_->Push(this->builder_.CreateLoad(exc_traceback));
+    this->fbuilder_->Push(this->builder_.CreateLoad(exc_value));
+    this->fbuilder_->Push(this->builder_.CreateLoad(exc_type));
+    this->builder_.CreateBr(main_block);
 
-    fbuilder_->builder_.SetInsertPoint(main_block);
+    this->builder_.SetInsertPoint(main_block);
     // Build a vector because there is no CreateCall5().
     // This is easier than building the tuple ourselves, but doing so would
     // probably be faster.
     std::vector<Value*> args;
-    args.push_back(fbuilder_->builder_.CreateLoad(exit_func));
-    args.push_back(fbuilder_->builder_.CreateLoad(exc_type));
-    args.push_back(fbuilder_->builder_.CreateLoad(exc_value));
-    args.push_back(fbuilder_->builder_.CreateLoad(exc_traceback));
-    args.push_back(state_->GetNull<PyObject*>());
-    Value *ret = state_->CreateCall(
-        state_->GetGlobalFunction<PyObject *(PyObject *, ...)>(
+    args.push_back(this->builder_.CreateLoad(exit_func));
+    args.push_back(this->builder_.CreateLoad(exc_type));
+    args.push_back(this->builder_.CreateLoad(exc_value));
+    args.push_back(this->builder_.CreateLoad(exc_traceback));
+    args.push_back(this->state_->GetNull<PyObject*>());
+    Value *ret = this->state_->CreateCall(
+        this->state_->GetGlobalFunction<PyObject *(PyObject *, ...)>(
             "PyObject_CallFunctionObjArgs"),
         args.begin(), args.end());
-    state_->DecRef(fbuilder_->builder_.CreateLoad(exit_func));
-    fbuilder_->PropagateExceptionOnNull(ret);
+    this->state_->DecRef(this->builder_.CreateLoad(exit_func));
+    this->fbuilder_->PropagateExceptionOnNull(ret);
 
     BasicBlock *check_silence =
-        state_->CreateBasicBlock("WITH_CLEANUP_check_silence");
+        this->state_->CreateBasicBlock("WITH_CLEANUP_check_silence");
     BasicBlock *no_silence =
-        state_->CreateBasicBlock("WITH_CLEANUP_no_silence");
+        this->state_->CreateBasicBlock("WITH_CLEANUP_no_silence");
     BasicBlock *cleanup =
-        state_->CreateBasicBlock("WITH_CLEANUP_cleanup");
+        this->state_->CreateBasicBlock("WITH_CLEANUP_cleanup");
     BasicBlock *next =
-        state_->CreateBasicBlock("WITH_CLEANUP_next");
+        this->state_->CreateBasicBlock("WITH_CLEANUP_next");
 
     // Don't bother checking whether to silence the exception if there's
     // no exception to silence.
-    fbuilder_->builder_.CreateCondBr(
-        fbuilder_->builder_.CreateICmpEQ(
-            fbuilder_->builder_.CreateLoad(exc_type), none),
+    this->builder_.CreateCondBr(
+        this->builder_.CreateICmpEQ(
+            this->builder_.CreateLoad(exc_type), none),
         no_silence, check_silence);
 
-    fbuilder_->builder_.SetInsertPoint(no_silence);
-    state_->DecRef(ret);
-    fbuilder_->builder_.CreateBr(next);
+    this->builder_.SetInsertPoint(no_silence);
+    this->state_->DecRef(ret);
+    this->builder_.CreateBr(next);
 
-    fbuilder_->builder_.SetInsertPoint(check_silence);
-    fbuilder_->builder_.CreateCondBr(fbuilder_->IsPythonTrue(ret),
-                                     cleanup, next);
+    this->builder_.SetInsertPoint(check_silence);
+    this->builder_.CreateCondBr(this->fbuilder_->IsPythonTrue(ret),
+                                cleanup, next);
 
-    fbuilder_->builder_.SetInsertPoint(cleanup);
+    this->builder_.SetInsertPoint(cleanup);
     // There was an exception and a true return. Swallow the exception.
-    fbuilder_->Pop();
-    fbuilder_->Pop();
-    fbuilder_->Pop();
-    state_->IncRef(none);
-    fbuilder_->Push(none);
-    state_->DecRef(fbuilder_->builder_.CreateLoad(exc_type));
-    state_->DecRef(fbuilder_->builder_.CreateLoad(exc_value));
-    state_->DecRef(fbuilder_->builder_.CreateLoad(exc_traceback));
-    fbuilder_->builder_.CreateBr(next);
+    this->fbuilder_->Pop();
+    this->fbuilder_->Pop();
+    this->fbuilder_->Pop();
+    this->state_->IncRef(none);
+    this->fbuilder_->Push(none);
+    this->state_->DecRef(this->builder_.CreateLoad(exc_type));
+    this->state_->DecRef(this->builder_.CreateLoad(exc_value));
+    this->state_->DecRef(this->builder_.CreateLoad(exc_traceback));
+    this->builder_.CreateBr(next);
 
-    fbuilder_->builder_.SetInsertPoint(next);
+    this->builder_.SetInsertPoint(next);
 }
 
 }

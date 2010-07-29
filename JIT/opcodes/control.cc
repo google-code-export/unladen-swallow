@@ -53,7 +53,9 @@ static llvm::ManagedStatic<CondBranchStats> cond_branch_stats;
 namespace py {
 
 OpcodeControl::OpcodeControl(LlvmFunctionBuilder *fbuilder) :
-    fbuilder_(fbuilder), state_(fbuilder->state())
+    fbuilder_(fbuilder),
+    state_(fbuilder->state()),
+    builder_(fbuilder->builder())
 {
 }
 
@@ -63,71 +65,71 @@ OpcodeControl::DoRaise(Value *exc_type, Value *exc_inst, Value *exc_tb)
     // Accept code after a raise statement, even though it's never executed.
     // Otherwise, CPython's willingness to insert code after block
     // terminators causes problems.
-    BasicBlock *dead_code = state_->CreateBasicBlock("dead_code");
+    BasicBlock *dead_code = this->state_->CreateBasicBlock("dead_code");
 
     // All raises set 'why' to UNWIND_EXCEPTION and the return value to NULL.
     // This is redundant with the propagate_exception_block_, but mem2reg will
     // remove the redundancy.
-    fbuilder_->builder_.CreateStore(
-        ConstantInt::get(Type::getInt8Ty(fbuilder_->context_),
+    this->builder_.CreateStore(
+        ConstantInt::get(Type::getInt8Ty(this->fbuilder_->context()),
                          UNWIND_EXCEPTION),
-        fbuilder_->unwind_reason_addr_);
-    fbuilder_->builder_.CreateStore(state_->GetNull<PyObject*>(),
-                                    fbuilder_->retval_addr_);
+        this->fbuilder_->unwind_reason_addr());
+    this->builder_.CreateStore(this->state_->GetNull<PyObject*>(),
+                               this->fbuilder_->retval_addr());
 
 #ifdef WITH_TSC
-    state_->LogTscEvent(EXCEPT_RAISE_LLVM);
+    this->state_->LogTscEvent(EXCEPT_RAISE_LLVM);
 #endif
-    Function *do_raise = state_->GetGlobalFunction<
+    Function *do_raise = this->state_->GetGlobalFunction<
         int(PyObject*, PyObject *, PyObject *)>("_PyEval_DoRaise");
     // _PyEval_DoRaise eats references.
-    Value *is_reraise = state_->CreateCall(
+    Value *is_reraise = this->state_->CreateCall(
         do_raise, exc_type, exc_inst, exc_tb, "raise_is_reraise");
     // If this is a "re-raise", we jump straight to the unwind block.
     // If it's a new raise, we call PyTraceBack_Here from the
     // propagate_exception_block_.
-    fbuilder_->builder_.CreateCondBr(
-        fbuilder_->builder_.CreateICmpEQ(
+    this->builder_.CreateCondBr(
+        this->builder_.CreateICmpEQ(
             is_reraise,
             ConstantInt::get(is_reraise->getType(), UNWIND_RERAISE)),
-        fbuilder_->unwind_block_, fbuilder_->GetExceptionBlock());
+        this->fbuilder_->unwind_block(), this->fbuilder_->GetExceptionBlock());
 
-    fbuilder_->builder_.SetInsertPoint(dead_code);
+    this->builder_.SetInsertPoint(dead_code);
 }
 
 void
 OpcodeControl::RAISE_VARARGS_ZERO()
 {
-    Value *exc_tb = state_->GetNull<PyObject*>();
-    Value *exc_inst = state_->GetNull<PyObject*>();
-    Value *exc_type = state_->GetNull<PyObject*>();
+    Value *exc_tb = this->state_->GetNull<PyObject*>();
+    Value *exc_inst = this->state_->GetNull<PyObject*>();
+    Value *exc_type = this->state_->GetNull<PyObject*>();
     this->DoRaise(exc_type, exc_inst, exc_tb);
 }
 
 void
 OpcodeControl::RAISE_VARARGS_ONE()
 {
-    Value *exc_tb = state_->GetNull<PyObject*>();
-    Value *exc_inst = state_->GetNull<PyObject*>();
-    Value *exc_type = fbuilder_->Pop();
+    Value *exc_tb = this->state_->GetNull<PyObject*>();
+    Value *exc_inst = this->state_->GetNull<PyObject*>();
+    Value *exc_type = this->fbuilder_->Pop();
     this->DoRaise(exc_type, exc_inst, exc_tb);
 }
 
 void
 OpcodeControl::RAISE_VARARGS_TWO()
 {
-    Value *exc_tb = state_->GetNull<PyObject*>();
-    Value *exc_inst = fbuilder_->Pop();
-    Value *exc_type = fbuilder_->Pop();
+    Value *exc_tb = this->state_->GetNull<PyObject*>();
+    Value *exc_inst = this->fbuilder_->Pop();
+    Value *exc_type = this->fbuilder_->Pop();
     this->DoRaise(exc_type, exc_inst, exc_tb);
 }
 
 void
 OpcodeControl::RAISE_VARARGS_THREE()
 {
-    Value *exc_tb = fbuilder_->Pop();
-    Value *exc_inst = fbuilder_->Pop();
-    Value *exc_type = fbuilder_->Pop();
+    Value *exc_tb = this->fbuilder_->Pop();
+    Value *exc_inst = this->fbuilder_->Pop();
+    Value *exc_type = this->fbuilder_->Pop();
     this->DoRaise(exc_type, exc_inst, exc_tb);
 }
 
@@ -137,64 +139,65 @@ OpcodeControl::RETURN_VALUE()
     // Accept code after a return statement, even though it's never executed.
     // Otherwise, CPython's willingness to insert code after block
     // terminators causes problems.
-    BasicBlock *dead_code = state_->CreateBasicBlock("dead_code");
+    BasicBlock *dead_code = this->state_->CreateBasicBlock("dead_code");
 
-    Value *retval = fbuilder_->Pop();
-    fbuilder_->Return(retval);
+    Value *retval = this->fbuilder_->Pop();
+    this->fbuilder_->Return(retval);
 
-    fbuilder_->builder_.SetInsertPoint(dead_code);
+    this->builder_.SetInsertPoint(dead_code);
 }
 
 void
 OpcodeControl::YIELD_VALUE()
 {
-    assert(fbuilder_->is_generator_ && "yield in non-generator!");
+    assert(this->fbuilder_->is_generator() && "yield in non-generator!");
     BasicBlock *yield_resume =
-        state_->CreateBasicBlock("yield_resume");
+        this->state_->CreateBasicBlock("yield_resume");
     // Save the current opcode index into f_lasti when we yield so
     // that, if tracing gets turned on while we're outside this
     // function we can jump back to the interpreter at the right
     // place.
     ConstantInt *yield_number =
-        ConstantInt::getSigned(PyTypeBuilder<int>::get(fbuilder_->context_),
-                               fbuilder_->f_lasti_);
-    fbuilder_->yield_resume_switch_->addCase(yield_number, yield_resume);
+        ConstantInt::getSigned(
+            PyTypeBuilder<int>::get(this->fbuilder_->context()),
+            this->fbuilder_->GetLasti());
+    this->fbuilder_->AddYieldResumeBB(yield_number, yield_resume);
 
-    Value *retval = fbuilder_->Pop();
+    Value *retval = this->fbuilder_->Pop();
 
     // Save everything to the frame object so it'll be there when we
     // resume from the yield.
-    fbuilder_->CopyToFrameObject();
+    this->fbuilder_->CopyToFrameObject();
 
     // Save the right block to jump back to when we resume this generator.
-    fbuilder_->builder_.CreateStore(yield_number, fbuilder_->f_lasti_addr_);
+    this->builder_.CreateStore(yield_number, this->fbuilder_->f_lasti_addr());
 
     // Yields return from the current function without unwinding the
     // stack.  They do trace the return and call _PyEval_ResetExcInfo
     // like everything else, so we jump to the common return block
     // instead of returning directly.
-    fbuilder_->builder_.CreateStore(retval, fbuilder_->retval_addr_);
-    fbuilder_->builder_.CreateStore(
-        ConstantInt::get(Type::getInt8Ty(fbuilder_->context_),
+    this->builder_.CreateStore(retval, this->fbuilder_->retval_addr());
+    this->builder_.CreateStore(
+        ConstantInt::get(Type::getInt8Ty(this->fbuilder_->context()),
                          UNWIND_YIELD),
-        fbuilder_->unwind_reason_addr_);
-    fbuilder_->builder_.CreateBr(fbuilder_->do_return_block_);
+        this->fbuilder_->unwind_reason_addr());
+    this->builder_.CreateBr(this->fbuilder_->do_return_block());
 
     // Continue inserting code inside the resume block.
-    fbuilder_->builder_.SetInsertPoint(yield_resume);
+    this->builder_.SetInsertPoint(yield_resume);
     // Set frame->f_lasti back to negative so that exceptions are
     // generated with llvm-provided line numbers.
-    fbuilder_->builder_.CreateStore(
+    this->builder_.CreateStore(
         ConstantInt::getSigned(
-            PyTypeBuilder<int>::get(fbuilder_->context_), -2),
-        fbuilder_->f_lasti_addr_);
+            PyTypeBuilder<int>::get(this->fbuilder_->context()), -2),
+        this->fbuilder_->f_lasti_addr());
 }
 
 void
 OpcodeControl::JUMP_ABSOLUTE(llvm::BasicBlock *target,
                              llvm::BasicBlock *fallthrough)
 {
-    fbuilder_->builder_.CreateBr(target);
+    this->builder_.CreateBr(target);
 }
 
 enum BranchInput {
@@ -246,15 +249,16 @@ OpcodeControl::GetPyCondBranchBailBlock(unsigned true_idx,
                                         BasicBlock **bail_block)
 {
     COND_BRANCH_INC_STATS(total);
-    BranchInput branch_dir = predict_branch_input(fbuilder_->GetFeedback());
+    BranchInput branch_dir =
+        predict_branch_input(this->fbuilder_->GetFeedback());
 
     if (branch_dir == BranchInputFalse) {
         *bail_idx = false_idx;
-        *false_block = *bail_block = state_->CreateBasicBlock("FALSE_bail");
+        *false_block = *bail_block = this->state_->CreateBasicBlock("FALSE_bail");
     }
     else if (branch_dir == BranchInputTrue) {
         *bail_idx = true_idx;
-        *true_block = *bail_block = state_->CreateBasicBlock("TRUE_bail");
+        *true_block = *bail_block = this->state_->CreateBasicBlock("TRUE_bail");
     }
     else {
         *bail_idx = 0;
@@ -267,12 +271,12 @@ OpcodeControl::FillPyCondBranchBailBlock(BasicBlock *bail_to,
                                          unsigned bail_idx)
 {
     COND_BRANCH_INC_STATS(optimized);
-    BasicBlock *current = fbuilder_->builder_.GetInsertBlock();
+    BasicBlock *current = this->builder_.GetInsertBlock();
 
-    fbuilder_->builder_.SetInsertPoint(bail_to);
-    fbuilder_->CreateGuardBailPoint(bail_idx, _PYGUARD_BRANCH);
+    this->builder_.SetInsertPoint(bail_to);
+    this->fbuilder_->CreateGuardBailPoint(bail_idx, _PYGUARD_BRANCH);
 
-    fbuilder_->builder_.SetInsertPoint(current);
+    this->builder_.SetInsertPoint(current);
 }
 
 void
@@ -287,9 +291,9 @@ OpcodeControl::POP_JUMP_IF_FALSE(unsigned target_idx,
                                    /*on false: */ fallthrough_idx, &fallthrough,
                                    &bail_idx, &bail_to);
 
-    Value *test_value = fbuilder_->Pop();
-    Value *is_true = fbuilder_->IsPythonTrue(test_value);
-    fbuilder_->builder_.CreateCondBr(is_true, fallthrough, target);
+    Value *test_value = this->fbuilder_->Pop();
+    Value *is_true = this->fbuilder_->IsPythonTrue(test_value);
+    this->builder_.CreateCondBr(is_true, fallthrough, target);
 
     if (bail_to)
         this->FillPyCondBranchBailBlock(bail_to, bail_idx);
@@ -307,9 +311,9 @@ OpcodeControl::POP_JUMP_IF_TRUE(unsigned target_idx,
                                    /*on false: */ target_idx, &target,
                                    &bail_idx, &bail_to);
 
-    Value *test_value = fbuilder_->Pop();
-    Value *is_true = fbuilder_->IsPythonTrue(test_value);
-    fbuilder_->builder_.CreateCondBr(is_true, target, fallthrough);
+    Value *test_value = this->fbuilder_->Pop();
+    Value *is_true = this->fbuilder_->IsPythonTrue(test_value);
+    this->builder_.CreateCondBr(is_true, target, fallthrough);
 
     if (bail_to)
         this->FillPyCondBranchBailBlock(bail_to, bail_idx);
@@ -328,18 +332,18 @@ OpcodeControl::JUMP_IF_FALSE_OR_POP(unsigned target_idx,
                                    &bail_idx, &bail_to);
 
     BasicBlock *true_path =
-        state_->CreateBasicBlock("JUMP_IF_FALSE_OR_POP_pop");
-    Value *test_value = fbuilder_->Pop();
-    fbuilder_->Push(test_value);
+        this->state_->CreateBasicBlock("JUMP_IF_FALSE_OR_POP_pop");
+    Value *test_value = this->fbuilder_->Pop();
+    this->fbuilder_->Push(test_value);
     // IsPythonTrue() will steal the reference to test_value, so make sure
     // the stack owns one too.
-    state_->IncRef(test_value);
-    Value *is_true = fbuilder_->IsPythonTrue(test_value);
-    fbuilder_->builder_.CreateCondBr(is_true, true_path, target);
-    fbuilder_->builder_.SetInsertPoint(true_path);
-    test_value = fbuilder_->Pop();
-    state_->DecRef(test_value);
-    fbuilder_->builder_.CreateBr(fallthrough);
+    this->state_->IncRef(test_value);
+    Value *is_true = this->fbuilder_->IsPythonTrue(test_value);
+    this->builder_.CreateCondBr(is_true, true_path, target);
+    this->builder_.SetInsertPoint(true_path);
+    test_value = this->fbuilder_->Pop();
+    this->state_->DecRef(test_value);
+    this->builder_.CreateBr(fallthrough);
 
     if (bail_to)
         this->FillPyCondBranchBailBlock(bail_to, bail_idx);
@@ -358,18 +362,18 @@ OpcodeControl::JUMP_IF_TRUE_OR_POP(unsigned target_idx,
                                    &bail_idx, &bail_to);
 
     BasicBlock *false_path =
-        state_->CreateBasicBlock("JUMP_IF_TRUE_OR_POP_pop");
-    Value *test_value = fbuilder_->Pop();
-    fbuilder_->Push(test_value);
+        this->state_->CreateBasicBlock("JUMP_IF_TRUE_OR_POP_pop");
+    Value *test_value = this->fbuilder_->Pop();
+    this->fbuilder_->Push(test_value);
     // IsPythonTrue() will steal the reference to test_value, so make sure
     // the stack owns one too.
-    state_->IncRef(test_value);
-    Value *is_true = fbuilder_->IsPythonTrue(test_value);
-    fbuilder_->builder_.CreateCondBr(is_true, target, false_path);
-    fbuilder_->builder_.SetInsertPoint(false_path);
-    test_value = fbuilder_->Pop();
-    state_->DecRef(test_value);
-    fbuilder_->builder_.CreateBr(fallthrough);
+    this->state_->IncRef(test_value);
+    Value *is_true = this->fbuilder_->IsPythonTrue(test_value);
+    this->builder_.CreateCondBr(is_true, target, false_path);
+    this->builder_.SetInsertPoint(false_path);
+    test_value = this->fbuilder_->Pop();
+    this->state_->DecRef(test_value);
+    this->builder_.CreateBr(fallthrough);
 
     if (bail_to)
         this->FillPyCondBranchBailBlock(bail_to, bail_idx);

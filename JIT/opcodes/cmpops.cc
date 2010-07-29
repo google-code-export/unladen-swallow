@@ -36,7 +36,9 @@ static llvm::ManagedStatic<
 namespace py {
 
 OpcodeCmpops::OpcodeCmpops(LlvmFunctionBuilder *fbuilder) :
-    fbuilder_(fbuilder), state_(fbuilder->state())
+    fbuilder_(fbuilder),
+    state_(fbuilder->state()),
+    builder_(fbuilder->builder())
 {
 }
 
@@ -71,7 +73,7 @@ OpcodeCmpops::COMPARE_OP_fast(int cmp_op, const PyTypeObject *lhs_type,
 #undef CMPOP_NAME
     }
 
-    const char *name = fbuilder_->llvm_data_->optimized_ops.
+    const char *name = this->fbuilder_->llvm_data()->optimized_ops.
         Find(api_func, lhs_type, rhs_type);
 
     if (name == NULL) {
@@ -80,27 +82,27 @@ OpcodeCmpops::COMPARE_OP_fast(int cmp_op, const PyTypeObject *lhs_type,
 
     CMPOP_INC_STATS(optimized);
 
-    BasicBlock *success = state_->CreateBasicBlock("CMPOP_OPT_success");
-    BasicBlock *bailpoint = state_->CreateBasicBlock("CMPOP_OPT_bail");
+    BasicBlock *success = this->state_->CreateBasicBlock("CMPOP_OPT_success");
+    BasicBlock *bailpoint = this->state_->CreateBasicBlock("CMPOP_OPT_bail");
 
-    Value *rhs = fbuilder_->Pop();
-    Value *lhs = fbuilder_->Pop();
+    Value *rhs = this->fbuilder_->Pop();
+    Value *lhs = this->fbuilder_->Pop();
 
     Function *op =
-        state_->GetGlobalFunction<PyObject*(PyObject*, PyObject*)>(name);
-    Value *result = state_->CreateCall(op, lhs, rhs, "cmpop_result");
-    fbuilder_->builder_.CreateCondBr(state_->IsNull(result),
-                                     bailpoint, success);
+        this->state_->GetGlobalFunction<PyObject*(PyObject*, PyObject*)>(name);
+    Value *result = this->state_->CreateCall(op, lhs, rhs, "cmpop_result");
+    this->builder_.CreateCondBr(this->state_->IsNull(result),
+                                bailpoint, success);
 
-    fbuilder_->builder_.SetInsertPoint(bailpoint);
-    fbuilder_->Push(lhs);
-    fbuilder_->Push(rhs);
-    fbuilder_->CreateBailPoint(_PYFRAME_GUARD_FAIL);
+    this->builder_.SetInsertPoint(bailpoint);
+    this->fbuilder_->Push(lhs);
+    this->fbuilder_->Push(rhs);
+    this->fbuilder_->CreateBailPoint(_PYFRAME_GUARD_FAIL);
 
-    fbuilder_->builder_.SetInsertPoint(success);
-    state_->DecRef(lhs);
-    state_->DecRef(rhs);
-    fbuilder_->Push(result);
+    this->builder_.SetInsertPoint(success);
+    this->state_->DecRef(lhs);
+    this->state_->DecRef(rhs);
+    this->fbuilder_->Push(result);
     return true;
 }
 
@@ -108,8 +110,8 @@ void
 OpcodeCmpops::COMPARE_OP(int cmp_op)
 {
     CMPOP_INC_STATS(total);
-    const PyTypeObject *lhs_type = fbuilder_->GetTypeFeedback(0);
-    const PyTypeObject *rhs_type = fbuilder_->GetTypeFeedback(1);
+    const PyTypeObject *lhs_type = this->fbuilder_->GetTypeFeedback(0);
+    const PyTypeObject *rhs_type = this->fbuilder_->GetTypeFeedback(1);
     if (lhs_type != NULL && rhs_type != NULL) {
         // Returning true means the op was successfully optimized.
         if (this->COMPARE_OP_fast(cmp_op, lhs_type, rhs_type)) {
@@ -127,21 +129,20 @@ OpcodeCmpops::COMPARE_OP(int cmp_op)
 void
 OpcodeCmpops::COMPARE_OP_safe(int cmp_op)
 {
-    Value *rhs = fbuilder_->Pop();
-    Value *lhs = fbuilder_->Pop();
+    Value *rhs = this->fbuilder_->Pop();
+    Value *lhs = this->fbuilder_->Pop();
     Value *result;
     switch (cmp_op) {
     case PyCmp_IS:
-        result = fbuilder_->builder_.CreateICmpEQ(lhs, rhs,
-                                             "COMPARE_OP_is_same");
-        state_->DecRef(lhs);
-        state_->DecRef(rhs);
+        result = this->builder_.CreateICmpEQ(lhs, rhs, "COMPARE_OP_is_same");
+        this->state_->DecRef(lhs);
+        this->state_->DecRef(rhs);
         break;
     case PyCmp_IS_NOT:
-        result = fbuilder_->builder_.CreateICmpNE(lhs, rhs,
+        result = this->builder_.CreateICmpNE(lhs, rhs,
                                              "COMPARE_OP_is_not_same");
-        state_->DecRef(lhs);
-        state_->DecRef(rhs);
+        this->state_->DecRef(lhs);
+        this->state_->DecRef(rhs);
         break;
     case PyCmp_IN:
         // item in seq -> ContainerContains(seq, item)
@@ -150,7 +151,7 @@ OpcodeCmpops::COMPARE_OP_safe(int cmp_op)
     case PyCmp_NOT_IN:
     {
         Value *inverted_result = this->ContainerContains(rhs, lhs);
-        result = fbuilder_->builder_.CreateICmpEQ(
+        result = this->builder_.CreateICmpEQ(
             inverted_result, ConstantInt::get(inverted_result->getType(), 0),
             "COMPARE_OP_not_in_result");
         break;
@@ -172,56 +173,57 @@ OpcodeCmpops::COMPARE_OP_safe(int cmp_op)
         Py_FatalError("unknown COMPARE_OP oparg");
         return;  // Not reached.
     }
-    Value *value = fbuilder_->builder_.CreateSelect(
+    Value *value = this->builder_.CreateSelect(
         result,
-        state_->GetGlobalVariableFor((PyObject*)&_Py_TrueStruct),
-        state_->GetGlobalVariableFor((PyObject*)&_Py_ZeroStruct),
+        this->state_->GetGlobalVariableFor((PyObject*)&_Py_TrueStruct),
+        this->state_->GetGlobalVariableFor((PyObject*)&_Py_ZeroStruct),
         "COMPARE_OP_result");
-    state_->IncRef(value);
-    fbuilder_->Push(value);
+    this->state_->IncRef(value);
+    this->fbuilder_->Push(value);
 }
 
 void
 OpcodeCmpops::RichCompare(Value *lhs, Value *rhs, int cmp_op)
 {
-    Function *pyobject_richcompare = state_->GetGlobalFunction<
+    Function *pyobject_richcompare = this->state_->GetGlobalFunction<
         PyObject *(PyObject *, PyObject *, int)>("PyObject_RichCompare");
-    Value *result = state_->CreateCall(
+    Value *result = this->state_->CreateCall(
         pyobject_richcompare, lhs, rhs,
-        ConstantInt::get(PyTypeBuilder<int>::get(fbuilder_->context_), cmp_op),
+        ConstantInt::get(
+            PyTypeBuilder<int>::get(this->fbuilder_->context()), cmp_op),
         "COMPARE_OP_RichCompare_result");
-    state_->DecRef(lhs);
-    state_->DecRef(rhs);
-    fbuilder_->PropagateExceptionOnNull(result);
-    fbuilder_->Push(result);
+    this->state_->DecRef(lhs);
+    this->state_->DecRef(rhs);
+    this->fbuilder_->PropagateExceptionOnNull(result);
+    this->fbuilder_->Push(result);
 }
 
 Value *
 OpcodeCmpops::ContainerContains(Value *container, Value *item)
 {
     Function *contains =
-        state_->GetGlobalFunction<int(PyObject *, PyObject *)>(
+        this->state_->GetGlobalFunction<int(PyObject *, PyObject *)>(
             "PySequence_Contains");
-    Value *result = state_->CreateCall(
+    Value *result = this->state_->CreateCall(
         contains, container, item, "ContainerContains_result");
-    state_->DecRef(item);
-    state_->DecRef(container);
-    fbuilder_->PropagateExceptionOnNegative(result);
-    return state_->IsPositive(result);
+    this->state_->DecRef(item);
+    this->state_->DecRef(container);
+    this->fbuilder_->PropagateExceptionOnNegative(result);
+    return this->state_->IsPositive(result);
 }
 
 // TODO(twouters): test this (used in exception handling.)
 Value *
 OpcodeCmpops::ExceptionMatches(Value *exc, Value *exc_type)
 {
-    Function *exc_matches = state_->GetGlobalFunction<
+    Function *exc_matches = this->state_->GetGlobalFunction<
         int(PyObject *, PyObject *)>("_PyEval_CheckedExceptionMatches");
-    Value *result = state_->CreateCall(
+    Value *result = this->state_->CreateCall(
         exc_matches, exc, exc_type, "ExceptionMatches_result");
-    state_->DecRef(exc_type);
-    state_->DecRef(exc);
-    fbuilder_->PropagateExceptionOnNegative(result);
-    return state_->IsPositive(result);
+    this->state_->DecRef(exc_type);
+    this->state_->DecRef(exc);
+    this->fbuilder_->PropagateExceptionOnNegative(result);
+    return this->state_->IsPositive(result);
 }
 
 }

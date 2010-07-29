@@ -20,76 +20,78 @@ using llvm::Value;
 namespace py {
 
 OpcodeLoop::OpcodeLoop(LlvmFunctionBuilder *fbuilder) :
-    fbuilder_(fbuilder), state_(fbuilder->state())
+    fbuilder_(fbuilder),
+    state_(fbuilder->state()),
+    builder_(fbuilder->builder())
 {
 }
 
 void
 OpcodeLoop::GET_ITER()
 {
-    Value *obj = fbuilder_->Pop();
+    Value *obj = this->fbuilder_->Pop();
     Function *pyobject_getiter =
-        state_->GetGlobalFunction<PyObject*(PyObject*)>(
+        this->state_->GetGlobalFunction<PyObject*(PyObject*)>(
         "PyObject_GetIter");
-    Value *iter = state_->CreateCall(pyobject_getiter, obj);
-    state_->DecRef(obj);
-    fbuilder_->PropagateExceptionOnNull(iter);
-    fbuilder_->Push(iter);
+    Value *iter = this->state_->CreateCall(pyobject_getiter, obj);
+    this->state_->DecRef(obj);
+    this->fbuilder_->PropagateExceptionOnNull(iter);
+    this->fbuilder_->Push(iter);
 }
 
 void
 OpcodeLoop::FOR_ITER(llvm::BasicBlock *target,
                      llvm::BasicBlock *fallthrough)
 {
-    Value *iter = fbuilder_->Pop();
-    Value *iter_tp = fbuilder_->builder_.CreateBitCast(
-        fbuilder_->builder_.CreateLoad(
-            ObjectTy::ob_type(fbuilder_->builder_, iter)),
-        PyTypeBuilder<PyTypeObject *>::get(fbuilder_->context_),
+    Value *iter = this->fbuilder_->Pop();
+    Value *iter_tp = this->builder_.CreateBitCast(
+        this->builder_.CreateLoad(
+            ObjectTy::ob_type(this->builder_, iter)),
+        PyTypeBuilder<PyTypeObject *>::get(this->fbuilder_->context()),
         "iter_type");
-    Value *iternext = fbuilder_->builder_.CreateLoad(
-        TypeTy::tp_iternext(fbuilder_->builder_, iter_tp),
+    Value *iternext = this->builder_.CreateLoad(
+        TypeTy::tp_iternext(this->builder_, iter_tp),
         "iternext");
-    Value *next = state_->CreateCall(iternext, iter, "next");
-    BasicBlock *got_next = state_->CreateBasicBlock("got_next");
-    BasicBlock *next_null = state_->CreateBasicBlock("next_null");
-    fbuilder_->builder_.CreateCondBr(state_->IsNull(next),
-                                     next_null, got_next);
+    Value *next = this->state_->CreateCall(iternext, iter, "next");
+    BasicBlock *got_next = this->state_->CreateBasicBlock("got_next");
+    BasicBlock *next_null = this->state_->CreateBasicBlock("next_null");
+    this->builder_.CreateCondBr(this->state_->IsNull(next),
+                                next_null, got_next);
 
-    fbuilder_->builder_.SetInsertPoint(next_null);
-    Value *err_occurred = state_->CreateCall(
-        state_->GetGlobalFunction<PyObject*()>("PyErr_Occurred"));
-    BasicBlock *iter_ended = state_->CreateBasicBlock("iter_ended");
-    BasicBlock *exception = state_->CreateBasicBlock("exception");
-    fbuilder_->builder_.CreateCondBr(state_->IsNull(err_occurred),
-                                     iter_ended, exception);
+    this->builder_.SetInsertPoint(next_null);
+    Value *err_occurred = this->state_->CreateCall(
+        this->state_->GetGlobalFunction<PyObject*()>("PyErr_Occurred"));
+    BasicBlock *iter_ended = this->state_->CreateBasicBlock("iter_ended");
+    BasicBlock *exception = this->state_->CreateBasicBlock("exception");
+    this->builder_.CreateCondBr(this->state_->IsNull(err_occurred),
+                                iter_ended, exception);
 
-    fbuilder_->builder_.SetInsertPoint(exception);
-    Value *exc_stopiteration = fbuilder_->builder_.CreateLoad(
-        state_->GET_GLOBAL_VARIABLE(PyObject*, PyExc_StopIteration));
-    Value *was_stopiteration = state_->CreateCall(
-        state_->GetGlobalFunction<int(PyObject *)>("PyErr_ExceptionMatches"),
+    this->builder_.SetInsertPoint(exception);
+    Value *exc_stopiteration = this->builder_.CreateLoad(
+        this->state_->GET_GLOBAL_VARIABLE(PyObject*, PyExc_StopIteration));
+    Value *was_stopiteration = this->state_->CreateCall(
+        this->state_->GetGlobalFunction<int(PyObject *)>("PyErr_ExceptionMatches"),
         exc_stopiteration);
-    BasicBlock *clear_err = state_->CreateBasicBlock("clear_err");
-    BasicBlock *propagate = state_->CreateBasicBlock("propagate");
-    fbuilder_->builder_.CreateCondBr(state_->IsNonZero(was_stopiteration),
-                                     clear_err, propagate);
+    BasicBlock *clear_err = this->state_->CreateBasicBlock("clear_err");
+    BasicBlock *propagate = this->state_->CreateBasicBlock("propagate");
+    this->builder_.CreateCondBr(this->state_->IsNonZero(was_stopiteration),
+                                clear_err, propagate);
 
-    fbuilder_->builder_.SetInsertPoint(propagate);
-    state_->DecRef(iter);
-    fbuilder_->PropagateException();
+    this->builder_.SetInsertPoint(propagate);
+    this->state_->DecRef(iter);
+    this->fbuilder_->PropagateException();
 
-    fbuilder_->builder_.SetInsertPoint(clear_err);
-    state_->CreateCall(state_->GetGlobalFunction<void()>("PyErr_Clear"));
-    fbuilder_->builder_.CreateBr(iter_ended);
+    this->builder_.SetInsertPoint(clear_err);
+    this->state_->CreateCall(this->state_->GetGlobalFunction<void()>("PyErr_Clear"));
+    this->builder_.CreateBr(iter_ended);
 
-    fbuilder_->builder_.SetInsertPoint(iter_ended);
-    state_->DecRef(iter);
-    fbuilder_->builder_.CreateBr(target);
+    this->builder_.SetInsertPoint(iter_ended);
+    this->state_->DecRef(iter);
+    this->builder_.CreateBr(target);
 
-    fbuilder_->builder_.SetInsertPoint(got_next);
-    fbuilder_->Push(iter);
-    fbuilder_->Push(next);
+    this->builder_.SetInsertPoint(got_next);
+    this->fbuilder_->Push(iter);
+    this->fbuilder_->Push(next);
 }
 
 void
@@ -100,24 +102,27 @@ OpcodeLoop::CONTINUE_LOOP(llvm::BasicBlock *target,
     // Accept code after a continue statement, even though it's never executed.
     // Otherwise, CPython's willingness to insert code after block
     // terminators causes problems.
-    BasicBlock *dead_code = state_->CreateBasicBlock("dead_code");
-    fbuilder_->builder_.CreateStore(
-        ConstantInt::get(Type::getInt8Ty(fbuilder_->context_),
+    BasicBlock *dead_code = this->state_->CreateBasicBlock("dead_code");
+    this->builder_.CreateStore(
+        ConstantInt::get(Type::getInt8Ty(this->fbuilder_->context()),
                          UNWIND_CONTINUE),
-        fbuilder_->unwind_reason_addr_);
-    Value *unwind_target = fbuilder_->AddUnwindTarget(target, target_opindex);
+        this->fbuilder_->unwind_reason_addr());
+    Value *unwind_target =
+        this->fbuilder_->AddUnwindTarget(target, target_opindex);
     // Yes, store the unwind target in the return value slot. This is to
     // keep the translation from eval.cc as close as possible; deviation will
     // only introduce bugs. The UNWIND_CONTINUE cases in the unwind block
     // (see FillUnwindBlock()) will pick this up and deal with it.
-    const Type *long_type = PyTypeBuilder<long>::get(fbuilder_->context_);
-    Value *pytarget = state_->CreateCall(
-            state_->GetGlobalFunction<PyObject *(long)>("PyInt_FromLong"),
-            fbuilder_->builder_.CreateZExt(unwind_target, long_type));
-    fbuilder_->builder_.CreateStore(pytarget, fbuilder_->retval_addr_);
-    fbuilder_->builder_.CreateBr(fbuilder_->unwind_block_);
+    const Type *long_type =
+        PyTypeBuilder<long>::get(this->fbuilder_->context());
+    Value *pytarget = this->state_->CreateCall(
+            this->state_->GetGlobalFunction<PyObject *(long)>(
+                "PyInt_FromLong"),
+            this->builder_.CreateZExt(unwind_target, long_type));
+    this->builder_.CreateStore(pytarget, this->fbuilder_->retval_addr());
+    this->builder_.CreateBr(this->fbuilder_->unwind_block());
 
-    fbuilder_->builder_.SetInsertPoint(dead_code);
+    this->builder_.SetInsertPoint(dead_code);
 }
 
 void
@@ -126,14 +131,14 @@ OpcodeLoop::BREAK_LOOP()
     // Accept code after a break statement, even though it's never executed.
     // Otherwise, CPython's willingness to insert code after block
     // terminators causes problems.
-    BasicBlock *dead_code = state_->CreateBasicBlock("dead_code");
-    fbuilder_->builder_.CreateStore(
-        ConstantInt::get(Type::getInt8Ty(fbuilder_->context_),
+    BasicBlock *dead_code = this->state_->CreateBasicBlock("dead_code");
+    this->builder_.CreateStore(
+        ConstantInt::get(Type::getInt8Ty(this->fbuilder_->context()),
                          UNWIND_BREAK),
-        fbuilder_->unwind_reason_addr_);
-    fbuilder_->builder_.CreateBr(fbuilder_->unwind_block_);
+        this->fbuilder_->unwind_reason_addr());
+    this->builder_.CreateBr(this->fbuilder_->unwind_block());
 
-    fbuilder_->builder_.SetInsertPoint(dead_code);
+    this->builder_.SetInsertPoint(dead_code);
 }
 
 }

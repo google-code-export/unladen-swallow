@@ -23,79 +23,79 @@ OpcodeStack::OpcodeStack(LlvmFunctionBuilder *fbuilder) :
 void
 OpcodeStack::POP_TOP()
 {
-    state_->DecRef(fbuilder_->Pop());
+    this->state_->DecRef(this->fbuilder_->Pop());
 }
 
 void
 OpcodeStack::DUP_TOP()
 {
-    Value *first = fbuilder_->Pop();
-    state_->IncRef(first);
-    fbuilder_->Push(first);
-    fbuilder_->Push(first);
+    Value *first = this->fbuilder_->Pop();
+    this->state_->IncRef(first);
+    this->fbuilder_->Push(first);
+    this->fbuilder_->Push(first);
 }
 
 void
 OpcodeStack::DUP_TOP_TWO()
 {
-    Value *first = fbuilder_->Pop();
-    Value *second = fbuilder_->Pop();
-    state_->IncRef(first);
-    state_->IncRef(second);
-    fbuilder_->Push(second);
-    fbuilder_->Push(first);
-    fbuilder_->Push(second);
-    fbuilder_->Push(first);
+    Value *first = this->fbuilder_->Pop();
+    Value *second = this->fbuilder_->Pop();
+    this->state_->IncRef(first);
+    this->state_->IncRef(second);
+    this->fbuilder_->Push(second);
+    this->fbuilder_->Push(first);
+    this->fbuilder_->Push(second);
+    this->fbuilder_->Push(first);
 }
 
 void
 OpcodeStack::DUP_TOP_THREE()
 {
-    Value *first = fbuilder_->Pop();
-    Value *second = fbuilder_->Pop();
-    Value *third = fbuilder_->Pop();
-    state_->IncRef(first);
-    state_->IncRef(second);
-    state_->IncRef(third);
-    fbuilder_->Push(third);
-    fbuilder_->Push(second);
-    fbuilder_->Push(first);
-    fbuilder_->Push(third);
-    fbuilder_->Push(second);
-    fbuilder_->Push(first);
+    Value *first = this->fbuilder_->Pop();
+    Value *second = this->fbuilder_->Pop();
+    Value *third = this->fbuilder_->Pop();
+    this->state_->IncRef(first);
+    this->state_->IncRef(second);
+    this->state_->IncRef(third);
+    this->fbuilder_->Push(third);
+    this->fbuilder_->Push(second);
+    this->fbuilder_->Push(first);
+    this->fbuilder_->Push(third);
+    this->fbuilder_->Push(second);
+    this->fbuilder_->Push(first);
 }
 
 void
 OpcodeStack::ROT_TWO()
 {
-    Value *first = fbuilder_->Pop();
-    Value *second = fbuilder_->Pop();
-    fbuilder_->Push(first);
-    fbuilder_->Push(second);
+    Value *first = this->fbuilder_->Pop();
+    Value *second = this->fbuilder_->Pop();
+    this->fbuilder_->Push(first);
+    this->fbuilder_->Push(second);
 }
 
 void
 OpcodeStack::ROT_THREE()
 {
-    Value *first = fbuilder_->Pop();
-    Value *second = fbuilder_->Pop();
-    Value *third = fbuilder_->Pop();
-    fbuilder_->Push(first);
-    fbuilder_->Push(third);
-    fbuilder_->Push(second);
+    Value *first = this->fbuilder_->Pop();
+    Value *second = this->fbuilder_->Pop();
+    Value *third = this->fbuilder_->Pop();
+    this->fbuilder_->Push(first);
+    this->fbuilder_->Push(third);
+    this->fbuilder_->Push(second);
 }
 
 void
 OpcodeStack::ROT_FOUR()
 {
-    Value *first = fbuilder_->Pop();
-    Value *second = fbuilder_->Pop();
-    Value *third = fbuilder_->Pop();
-    Value *fourth = fbuilder_->Pop();
-    fbuilder_->Push(first);
-    fbuilder_->Push(fourth);
-    fbuilder_->Push(third);
-    fbuilder_->Push(second);
+    Value *first = this->fbuilder_->Pop();
+    Value *second = this->fbuilder_->Pop();
+    Value *third = this->fbuilder_->Pop();
+    Value *fourth = this->fbuilder_->Pop();
+    this->fbuilder_->Push(first);
+    this->fbuilder_->Push(fourth);
+    this->fbuilder_->Push(third);
+    this->fbuilder_->Push(second);
 }
 
 }

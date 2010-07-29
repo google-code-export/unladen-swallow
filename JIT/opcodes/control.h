@@ -6,6 +6,9 @@
 #error This header expects to be included only in C++ source
 #endif
 
+#include "llvm/Support/IRBuilder.h"
+#include "llvm/Support/TargetFolder.h"
+
 namespace llvm {
     class BasicBlock;
     class Value;
@@ -54,6 +57,8 @@ public:
                              llvm::BasicBlock *fallthrough);
 
 private:
+    typedef llvm::IRBuilder<true, llvm::TargetFolder> BuilderT;
+
     // Set exception information and jump to exception handling. The
     // arguments can be Value*'s representing NULL to implement the
     // four forms of the 'raise' statement. Steals all references.
@@ -87,6 +92,7 @@ private:
 
     LlvmFunctionBuilder *fbuilder_;
     LlvmFunctionState *state_;
+    BuilderT &builder_;
 };
 
 }

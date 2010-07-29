@@ -253,7 +253,7 @@ find_basic_blocks(PyObject *bytecode, py::LlvmFunctionBuilder &fbuilder,
         // doing this check here saves us having to iterate over the opcodes
         // again.
         case DELETE_FAST:
-            fbuilder.uses_delete_fast = true;
+            fbuilder.uses_delete_fast() = true;
             continue;
 
         default:

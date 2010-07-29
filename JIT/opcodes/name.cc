@@ -23,37 +23,40 @@ OpcodeName::OpcodeName(LlvmFunctionBuilder *fbuilder) :
 void
 OpcodeName::LOAD_NAME(int index)
 {
-    Value *result = state_->CreateCall(
-        state_->GetGlobalFunction<PyObject *(PyFrameObject*, int)>(
+    Value *result = this->state_->CreateCall(
+        this->state_->GetGlobalFunction<PyObject *(PyFrameObject*, int)>(
             "_PyEval_LoadName"),
-        fbuilder_->frame_,
-        ConstantInt::get(PyTypeBuilder<int>::get(fbuilder_->context_), index));
-    fbuilder_->PropagateExceptionOnNull(result);
-    fbuilder_->Push(result);
+        this->fbuilder_->frame(),
+        ConstantInt::get(
+            PyTypeBuilder<int>::get(this->fbuilder_->context()), index));
+    this->fbuilder_->PropagateExceptionOnNull(result);
+    this->fbuilder_->Push(result);
 }
 
 void
 OpcodeName::STORE_NAME(int index)
 {
-    Value *to_store = fbuilder_->Pop();
-    Value *err = state_->CreateCall(
-        state_->GetGlobalFunction<int(PyFrameObject*, int, PyObject*)>(
+    Value *to_store = this->fbuilder_->Pop();
+    Value *err = this->state_->CreateCall(
+        this->state_->GetGlobalFunction<int(PyFrameObject*, int, PyObject*)>(
             "_PyEval_StoreName"),
-        fbuilder_->frame_,
-        ConstantInt::get(PyTypeBuilder<int>::get(fbuilder_->context_), index),
+        this->fbuilder_->frame(),
+        ConstantInt::get(
+            PyTypeBuilder<int>::get(this->fbuilder_->context()), index),
         to_store);
-    fbuilder_->PropagateExceptionOnNonZero(err);
+    this->fbuilder_->PropagateExceptionOnNonZero(err);
 }
 
 void
 OpcodeName::DELETE_NAME(int index)
 {
-    Value *err = state_->CreateCall(
-        state_->GetGlobalFunction<int(PyFrameObject*, int)>(
+    Value *err = this->state_->CreateCall(
+        this->state_->GetGlobalFunction<int(PyFrameObject*, int)>(
             "_PyEval_DeleteName"),
-        fbuilder_->frame_,
-        ConstantInt::get(PyTypeBuilder<int>::get(fbuilder_->context_), index));
-    fbuilder_->PropagateExceptionOnNonZero(err);
+        this->fbuilder_->frame(),
+        ConstantInt::get(
+            PyTypeBuilder<int>::get(this->fbuilder_->context()), index));
+    this->fbuilder_->PropagateExceptionOnNonZero(err);
 }
 
 }
