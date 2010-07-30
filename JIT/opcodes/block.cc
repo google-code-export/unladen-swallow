@@ -93,6 +93,8 @@ void
 OpcodeBlock::END_FINALLY()
 {
     Value *finally_discriminator = this->fbuilder_->Pop();
+    Value *second = this->fbuilder_->Pop();
+    Value *third = this->fbuilder_->Pop();
     // END_FINALLY is fairly complicated. It decides what to do based
     // on the top value in the stack.  If that value is an int, it's
     // interpreted as one of the unwind reasons.  If it's an exception
@@ -129,27 +131,31 @@ OpcodeBlock::END_FINALLY()
         Type::getInt8Ty(this->fbuilder_->context()),
         "unwind_reason");
     this->state_->DecRef(finally_discriminator);
+    this->state_->DecRef(third);
     // Save the unwind reason for when we jump to the unwind block.
     this->builder_.CreateStore(unwind_reason,
                                this->fbuilder_->unwind_reason_addr());
     // Check if we need to pop the return value or loop target.
-    BasicBlock *pop_retval = this->state_->CreateBasicBlock("pop_retval");
-    llvm::SwitchInst *should_pop_retval =
-        this->builder_.CreateSwitch(unwind_reason,
-                                    this->fbuilder_->unwind_block(), 2);
-    should_pop_retval->addCase(
+    BasicBlock *store_retval = this->state_->CreateBasicBlock("store_retval");
+    BasicBlock *decref_second = this->state_->CreateBasicBlock("decref_second");
+    llvm::SwitchInst *should_store_retval =
+        this->builder_.CreateSwitch(unwind_reason, decref_second, 2);
+    should_store_retval->addCase(
         ConstantInt::get(Type::getInt8Ty(this->fbuilder_->context()),
                          UNWIND_RETURN),
-        pop_retval);
-    should_pop_retval->addCase(
+        store_retval);
+    should_store_retval->addCase(
         ConstantInt::get(Type::getInt8Ty(this->fbuilder_->context()),
                          UNWIND_CONTINUE),
-        pop_retval);
+        store_retval);
 
-    this->builder_.SetInsertPoint(pop_retval);
+    this->builder_.SetInsertPoint(store_retval);
     // We're continuing a return or continue.  Retrieve its argument.
-    this->builder_.CreateStore(this->fbuilder_->Pop(),
-                               this->fbuilder_->retval_addr());
+    this->builder_.CreateStore(second, this->fbuilder_->retval_addr());
+    this->builder_.CreateBr(this->fbuilder_->unwind_block());
+
+    this->builder_.SetInsertPoint(decref_second);
+    this->state_->DecRef(second);
     this->builder_.CreateBr(this->fbuilder_->unwind_block());
 
     this->builder_.SetInsertPoint(test_exception);
@@ -163,8 +169,8 @@ OpcodeBlock::END_FINALLY()
 
     this->builder_.SetInsertPoint(reraise_exception);
     Value *err_type = finally_discriminator;
-    Value *err_value = this->fbuilder_->Pop();
-    Value *err_traceback = this->fbuilder_->Pop();
+    Value *err_value = second;
+    Value *err_traceback = third;
     this->state_->CreateCall(
         this->state_->GetGlobalFunction<
             void(PyObject *, PyObject *, PyObject *)>("PyErr_Restore"),
@@ -188,6 +194,8 @@ OpcodeBlock::END_FINALLY()
         finally_discriminator,
         this->state_->GetGlobalVariableFor(&_Py_NoneStruct));
     this->state_->DecRef(finally_discriminator);
+    this->state_->DecRef(second);
+    this->state_->DecRef(third);
     this->builder_.CreateCondBr(is_none, finally_fallthrough, not_none);
 
     this->builder_.SetInsertPoint(not_none);
@@ -217,11 +225,11 @@ OpcodeBlock::END_FINALLY()
 void
 OpcodeBlock::WITH_CLEANUP()
 {
-    /* At the top of the stack are 1-3 values indicating
+    /* At the top of the stack are 3 values indicating
        how/why we entered the finally clause:
-       - TOP = None
-       - (TOP, SECOND) = (WHY_{RETURN,CONTINUE}), retval
-       - TOP = WHY_*; no retval below it
+       - (TOP, SECOND, THIRD) = None, None, None
+       - (TOP, SECOND, THIRD) = (UNWIND_{RETURN,CONTINUE}), retval, None
+       - (TOP, SECOND, THIRD) = UNWIND_*, None, None
        - (TOP, SECOND, THIRD) = exc_info()
        Below them is EXIT, the context.__exit__ bound method.
        In the last case, we must call
@@ -252,98 +260,35 @@ OpcodeBlock::WITH_CLEANUP()
         PyTypeBuilder<PyObject*>::get(this->fbuilder_->context()),
         NULL, "WITH_CLEANUP_exit_func");
 
-    BasicBlock *handle_none =
-        this->state_->CreateBasicBlock("WITH_CLEANUP_handle_none");
-    BasicBlock *check_int =
-        this->state_->CreateBasicBlock("WITH_CLEANUP_check_int");
     BasicBlock *handle_int =
         this->state_->CreateBasicBlock("WITH_CLEANUP_handle_int");
-    BasicBlock *handle_ret_cont =
-        this->state_->CreateBasicBlock("WITH_CLEANUP_handle_ret_cont");
-    BasicBlock *handle_default =
-        this->state_->CreateBasicBlock("WITH_CLEANUP_handle_default");
-    BasicBlock *handle_else =
-        this->state_->CreateBasicBlock("WITH_CLEANUP_handle_else");
     BasicBlock *main_block =
         this->state_->CreateBasicBlock("WITH_CLEANUP_main_block");
 
     Value *none = this->state_->GetGlobalVariableFor(&_Py_NoneStruct);
+
     this->builder_.CreateStore(this->fbuilder_->Pop(), exc_type);
-
-    Value *is_none = this->builder_.CreateICmpEQ(
-        this->builder_.CreateLoad(exc_type), none,
-        "reason_is_none");
-    this->builder_.CreateCondBr(is_none, handle_none, check_int);
-
-    this->builder_.SetInsertPoint(handle_none);
-    this->builder_.CreateStore(this->fbuilder_->Pop(), exit_func);
-    this->fbuilder_->Push(this->builder_.CreateLoad(exc_type));
-    this->builder_.CreateStore(none, exc_value);
-    this->builder_.CreateStore(none, exc_traceback);
-    this->builder_.CreateBr(main_block);
-
-    this->builder_.SetInsertPoint(check_int);
-    Value *is_int = this->state_->CreateCall(
-        this->state_->GetGlobalFunction<int(PyObject *)>(
-            "_PyLlvm_WrapIntCheck"),
-        this->builder_.CreateLoad(exc_type),
-        "WITH_CLEANUP_pyint_check");
-    this->builder_.CreateCondBr(this->state_->IsNonZero(is_int),
-                                handle_int, handle_else);
-
-    this->builder_.SetInsertPoint(handle_int);
-    Value *unboxed = this->builder_.CreateTrunc(
-        this->state_->CreateCall(
-            this->state_->GetGlobalFunction<long(PyObject *)>("PyInt_AsLong"),
-            this->builder_.CreateLoad(exc_type)),
-        Type::getInt8Ty(this->fbuilder_->context()),
-        "unboxed_unwind_reason");
-    // The LLVM equivalent of
-    // switch (reason)
-    //   case UNWIND_RETURN:
-    //   case UNWIND_CONTINUE:
-    //     ...
-    //     break;
-    //   default:
-    //     break;
-    llvm::SwitchInst *unwind_kind =
-        this->builder_.CreateSwitch(unboxed, handle_default, 2);
-    unwind_kind->addCase(
-        ConstantInt::get(Type::getInt8Ty(this->fbuilder_->context()),
-                         UNWIND_RETURN), handle_ret_cont);
-    unwind_kind->addCase(
-        ConstantInt::get(Type::getInt8Ty(this->fbuilder_->context()),
-                         UNWIND_CONTINUE), handle_ret_cont);
-
-    this->builder_.SetInsertPoint(handle_ret_cont);
-    Value *retval = this->fbuilder_->Pop();
-    this->builder_.CreateStore(this->fbuilder_->Pop(), exit_func);
-    this->fbuilder_->Push(retval);
-    this->fbuilder_->Push(this->builder_.CreateLoad(exc_type));
-    this->builder_.CreateStore(none, exc_type);
-    this->builder_.CreateStore(none, exc_value);
-    this->builder_.CreateStore(none, exc_traceback);
-    this->builder_.CreateBr(main_block);
-
-    this->builder_.SetInsertPoint(handle_default);
-    this->builder_.CreateStore(this->fbuilder_->Pop(), exit_func);
-    this->fbuilder_->Push(this->builder_.CreateLoad(exc_type));
-    this->builder_.CreateStore(none, exc_type);
-    this->builder_.CreateStore(none, exc_value);
-    this->builder_.CreateStore(none, exc_traceback);
-    this->builder_.CreateBr(main_block);
-
-    // This is the (TOP, SECOND, THIRD) = exc_info() case above.
-    this->builder_.SetInsertPoint(handle_else);
     this->builder_.CreateStore(this->fbuilder_->Pop(), exc_value);
     this->builder_.CreateStore(this->fbuilder_->Pop(), exc_traceback);
     this->builder_.CreateStore(this->fbuilder_->Pop(), exit_func);
     this->fbuilder_->Push(this->builder_.CreateLoad(exc_traceback));
     this->fbuilder_->Push(this->builder_.CreateLoad(exc_value));
     this->fbuilder_->Push(this->builder_.CreateLoad(exc_type));
-    this->builder_.CreateBr(main_block);
 
-    this->builder_.SetInsertPoint(main_block);
+    Value *is_int = this->state_->CreateCall(
+        this->state_->
+            GetGlobalFunction<int(PyObject *)>("_PyLlvm_WrapIntCheck"),
+        this->builder_.CreateLoad(exc_type),
+        "WITH_CLEANUP_pyint_check");
+    this->builder_.CreateCondBr(this->state_->IsNonZero(is_int),
+                                handle_int, main_block);
+
+    this->builder_.SetInsertPoint(handle_int);
+    this->builder_.CreateStore(none, exc_type);
+    this->builder_.CreateStore(none, exc_value);
+    this->builder_.CreateStore(none, exc_traceback);
+
+    this->fbuilder_->FallThroughTo(main_block);
     // Build a vector because there is no CreateCall5().
     // This is easier than building the tuple ourselves, but doing so would
     // probably be faster.
@@ -389,6 +334,10 @@ OpcodeBlock::WITH_CLEANUP()
     this->fbuilder_->Pop();
     this->fbuilder_->Pop();
     this->fbuilder_->Pop();
+    this->state_->IncRef(none);
+    this->fbuilder_->Push(none);
+    this->state_->IncRef(none);
+    this->fbuilder_->Push(none);
     this->state_->IncRef(none);
     this->fbuilder_->Push(none);
     this->state_->DecRef(this->builder_.CreateLoad(exc_type));

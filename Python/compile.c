@@ -773,7 +773,7 @@ opcode_stack_effect(int opcode, int oparg)
 		case BREAK_LOOP:
 			return 0;
 		case WITH_CLEANUP:
-			return -1; /* XXX Sometimes more */
+			return -1;
 		case RETURN_VALUE:
 			return -1;
 		case YIELD_VALUE:
@@ -782,7 +782,7 @@ opcode_stack_effect(int opcode, int oparg)
 		case POP_BLOCK:
 			return 0;
 		case END_FINALLY:
-			return -1; /* or -2 or -3 if exception occurred */
+			return -3;
 
 		case STORE_NAME:
 			return -1;
@@ -1862,6 +1862,8 @@ compiler_try_finally(struct compiler *c, stmt_ty s)
 	compiler_pop_fblock(c, FINALLY_TRY, body, end);
 
 	ADDOP_O(c, LOAD_CONST, Py_None, consts);
+	ADDOP(c, DUP_TOP);
+	ADDOP(c, DUP_TOP);
 	compiler_use_next_block(c, end);
 	if (!compiler_push_fblock(c, FINALLY_END, end, NULL))
 		return 0;
@@ -3023,6 +3025,8 @@ compiler_with(struct compiler *c, stmt_ty s)
     compiler_pop_fblock(c, FINALLY_TRY, block, finally);
 
     ADDOP_O(c, LOAD_CONST, Py_None, consts);
+    ADDOP(c, DUP_TOP);
+    ADDOP(c, DUP_TOP);
     compiler_use_next_block(c, finally);
     if (!compiler_push_fblock(c, FINALLY_END, finally, NULL))
 	return 0;

@@ -2173,17 +2173,19 @@ PyEval_EvalFrame(PyFrameObject *f)
 		PREDICTED(END_FINALLY);
 		TARGET(END_FINALLY)
 			v = POP();
+			w = POP();
+			u = POP();
 			if (PyInt_Check(v)) {
 				why = (enum _PyUnwindReason) PyInt_AS_LONG(v);
 				assert(why != UNWIND_YIELD);
 				if (why == UNWIND_RETURN ||
 				    why == UNWIND_CONTINUE)
-					retval = POP();
+					retval = w;
+				else
+					Py_DECREF(w);
 			}
 			else if (PyExceptionClass_Check(v) ||
 			         PyString_Check(v)) {
-				w = POP();
-				u = POP();
 				PyErr_Restore(v, w, u);
 				why = UNWIND_RERAISE;
 				break;
@@ -2192,8 +2194,10 @@ PyEval_EvalFrame(PyFrameObject *f)
 				PyErr_SetString(PyExc_SystemError,
 					"'finally' pops bad exception");
 				why = UNWIND_EXCEPTION;
+				Py_DECREF(w);
 			}
 			Py_DECREF(v);
+			Py_DECREF(u);
 			break;
 
 		TARGET(STORE_NAME)
@@ -2726,11 +2730,12 @@ PyEval_EvalFrame(PyFrameObject *f)
 
 		TARGET(WITH_CLEANUP)
 		{
-			/* At the top of the stack are 1-3 values indicating
+			/* At the top of the stack are 3 values indicating
 			   how/why we entered the finally clause:
-			   - TOP = None
-			   - (TOP, SECOND) = (UNWIND_{RETURN,CONTINUE}), retval
-			   - TOP = UNWIND_*; no retval below it
+			   - (TOP, SECOND, THIRD) = None, None, None
+			   - (TOP, SECOND, THIRD) = (UNWIND_{RETURN,CONTINUE}),
+			     retval, None
+			   - (TOP, SECOND, THIRD) = UNWIND_*, None, None
 			   - (TOP, SECOND, THIRD) = exc_info()
 			   Below them is EXIT, the context.__exit__ bound method.
 			   In the last case, we must call
@@ -2751,35 +2756,14 @@ PyEval_EvalFrame(PyFrameObject *f)
 			PyObject *exit_func;
 
 			u = POP();
-			if (u == Py_None) {
-			       	exit_func = TOP();
-				SET_TOP(u);
-				v = w = Py_None;
-			}
-			else if (PyInt_Check(u)) {
-				switch(PyInt_AS_LONG(u)) {
-				case UNWIND_RETURN:
-				case UNWIND_CONTINUE:
-					/* Retval in TOP. */
-					exit_func = SECOND();
-					SET_SECOND(TOP());
-					SET_TOP(u);
-					break;
-				default:
-					exit_func = TOP();
-					SET_TOP(u);
-					break;
-				}
+			v = TOP();
+			w = SECOND();
+			exit_func = THIRD();
+			SET_TOP(u);
+			SET_SECOND(v);
+			SET_THIRD(w);
+			if (PyInt_Check(u))
 				u = v = w = Py_None;
-			}
-			else {
-				v = TOP();
-				w = SECOND();
-				exit_func = THIRD();
-				SET_TOP(u);
-				SET_SECOND(v);
-				SET_THIRD(w);
-			}
 			/* XXX Not the fastest way to call it... */
 			x = PyObject_CallFunctionObjArgs(exit_func, u, v, w,
 							 NULL);
@@ -2801,9 +2785,12 @@ PyEval_EvalFrame(PyFrameObject *f)
 			}
 			else if (err > 0) {
 				/* There was an exception and a true return */
-				STACKADJ(-2);
 				Py_INCREF(Py_None);
 				SET_TOP(Py_None);
+				Py_INCREF(Py_None);
+				SET_SECOND(Py_None);
+				Py_INCREF(Py_None);
+				SET_THIRD(Py_None);
 				Py_DECREF(u);
 				Py_DECREF(v);
 				Py_DECREF(w);
@@ -3129,8 +3116,16 @@ fast_block_end:
 					PyErr_Clear();
 				}
 				else {
+					Py_INCREF(Py_None);
+					PUSH(Py_None);
 					if (why & (UNWIND_RETURN | UNWIND_CONTINUE))
+					{
 						PUSH(retval);
+					}
+					else {
+						Py_INCREF(Py_None);
+						PUSH(Py_None);
+					}
 					v = PyInt_FromLong((long)why);
 					PUSH(v);
 				}

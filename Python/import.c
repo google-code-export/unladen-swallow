@@ -82,9 +82,10 @@ extern time_t PyOS_GetLastModificationTime(char *, FILE *);
        Unladen Swallow 2009Q2: 62211 (undo vmgen-based opcodes)
        Unladen Swallow 2009Q3: 62221 (add CO_USES_EXEC flag)
        Unladen Swallow 2009Q4: 62231 (add IMPORT_NAME opcode back)
+       Unladen Swallow 2009Q4: 62241 (END_FINALLY always pops 3 values)
 .
 */
-#define MAGIC (62231 | ((long)'\r'<<16) | ((long)'\n'<<24))
+#define MAGIC (62241 | ((long)'\r'<<16) | ((long)'\n'<<24))
 
 /* Magic word as global; note that _PyImport_Init() can change the
    value of this global to accommodate for alterations of how the

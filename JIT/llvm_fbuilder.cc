@@ -517,17 +517,30 @@ LlvmFunctionBuilder::FillUnwindBlock()
         // Jump to the finally block, with the stack prepared for
         // END_FINALLY to continue unwinding.
 
+        BasicBlock *push_pseudo_exception =
+            this->state()->CreateBasicBlock("push_pseudo_exception");
         BasicBlock *push_retval =
             this->state()->CreateBasicBlock("push_retval");
+        BasicBlock *push_no_retval =
+            this->state()->CreateBasicBlock("push_no_retval");
         BasicBlock *handle_finally_end =
             this->state()->CreateBasicBlock("handle_finally_end");
-        llvm::SwitchInst *should_push_retval = this->builder_.CreateSwitch(
-            unwind_reason, handle_finally_end, 2);
         // When unwinding for an exception, we have to save the
         // exception onto the stack.
-        should_push_retval->addCase(
-            ConstantInt::get(Type::getInt8Ty(this->context_), UNWIND_EXCEPTION),
-            push_exception);
+        Value *unwinding_exception2 = this->builder_.CreateICmpEQ(
+            unwind_reason, ConstantInt::get(Type::getInt8Ty(this->context_),
+                                            UNWIND_EXCEPTION),
+            "currently_unwinding_exception");
+        this->builder_.CreateCondBr(unwinding_exception2,
+                                    push_exception, push_pseudo_exception);
+
+        this->builder_.SetInsertPoint(push_pseudo_exception);
+        Value *none = this->state()->GetGlobalVariableFor(&_Py_NoneStruct);
+        this->state()->IncRef(none);
+        this->Push(none);
+
+        llvm::SwitchInst *should_push_retval = this->builder_.CreateSwitch(
+            unwind_reason, push_no_retval, 2);
         // When unwinding for a return or continue, we have to save
         // the return value or continue target onto the stack.
         should_push_retval->addCase(
@@ -539,6 +552,11 @@ LlvmFunctionBuilder::FillUnwindBlock()
 
         this->builder_.SetInsertPoint(push_retval);
         this->Push(this->builder_.CreateLoad(this->retval_addr_, "retval"));
+        this->builder_.CreateBr(handle_finally_end);
+
+        this->builder_.SetInsertPoint(push_no_retval);
+        this->state()->IncRef(none);
+        this->Push(none);
 
         this->FallThroughTo(handle_finally_end);
         // END_FINALLY expects to find the unwind reason on the top of
