@@ -86,6 +86,8 @@ public:
     llvm::Value *globals() const { return this->globals_; }
     llvm::Value *builtins() const { return this->builtins_; }
     llvm::Value *fastlocals() const { return this->fastlocals_; }
+    
+    bool is_generator() const { return this->is_generator_; }
 
     llvm::Value *GetLocal(int i) const { return this->locals_[i]; }
 
