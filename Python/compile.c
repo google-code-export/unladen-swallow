@@ -816,6 +816,8 @@ opcode_stack_effect(int opcode, int oparg)
 			return 1;
 		case LOAD_ATTR:
 			return 0;
+		case LOAD_METHOD:
+			return 1;  /* Maybe set top, push one. */
 		case COMPARE_OP:
 			return -1;
 		case IMPORT_NAME:
@@ -860,6 +862,8 @@ opcode_stack_effect(int opcode, int oparg)
 #define NARGS(o) (((o) % 256) + 2*((o) / 256))
 		case CALL_FUNCTION:
 			return -NARGS(oparg);
+		case CALL_METHOD:
+			return -NARGS(oparg)-1;
 		case CALL_FUNCTION_VAR:
 		case CALL_FUNCTION_KW:
 			return -NARGS(oparg)-1;
@@ -2662,8 +2666,20 @@ compiler_call(struct compiler *c, expr_ty e)
 {
 	int n, code = 0;
 	int n_positional_args, n_keyword_args = 0;
+	expr_ty func = e->v.Call.func;
 
-	VISIT(c, expr, e->v.Call.func);
+	/* If this looks like a method call, emit specialized opcodes that
+	 * avoid bound method allocation.  */
+	if (!e->v.Call.starargs && !e->v.Call.kwargs &&
+	    func->kind == Attribute_kind &&
+	    func->v.Attribute.ctx == Load) {
+		VISIT(c, expr, func->v.Attribute.value);
+		ADDOP_NAME(c, LOAD_METHOD, func->v.Attribute.attr, names);
+		code = -1;
+	} else {
+		VISIT(c, expr, func);
+	}
+
 	n_positional_args = asdl_seq_LEN(e->v.Call.args);
 	VISIT_SEQ(c, expr, e->v.Call.args);
 	if (e->v.Call.keywords) {
@@ -2680,6 +2696,9 @@ compiler_call(struct compiler *c, expr_ty e)
 		code |= 2;
 	}
 	switch (code) {
+	case -1:
+		ADDOP_I(c, CALL_METHOD, n);
+		break;
 	case 0:
 		ADDOP_I(c, CALL_FUNCTION, n);
 		break;

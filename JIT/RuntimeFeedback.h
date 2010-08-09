@@ -34,10 +34,15 @@ namespace llvm {
 template<typename, unsigned> class SmallVector;
 }
 
+typedef std::pair<PyTypeObject*, PyMethodDef*> PyTypeMethodPair;
+
 // These are the counters used for feedback in the JUMP_IF opcodes.
 // The number of boolean inputs can be computed as (PY_FDO_JUMP_TRUE +
 // PY_FDO_JUMP_FALSE - PY_FDO_JUMP_NON_BOOLEAN).
 enum { PY_FDO_JUMP_TRUE = 0, PY_FDO_JUMP_FALSE, PY_FDO_JUMP_NON_BOOLEAN };
+
+// These are the counters used for feedback in the LOAD_METHOD opcode.
+enum { PY_FDO_LOADMETHOD_METHOD = 0, PY_FDO_LOADMETHOD_OTHER };
 
 class PyLimitedFeedback {
 public:
@@ -55,8 +60,9 @@ public:
 
     // Record that a given function was called.
     void AddFuncSeen(PyObject *obj);
-    // Clears result and fills it with the set of observed PyMethodDefs.
-    void GetSeenFuncsInto(llvm::SmallVector<PyMethodDef*, 3> &result) const;
+    // Clears result and fills it with the set of observed types and
+    // PyMethodDefs.
+    void GetSeenFuncsInto(llvm::SmallVector<PyTypeMethodPair, 3> &result) const;
     bool FuncsOverflowed() const {
         return GetFlagBit(SAW_MORE_THAN_THREE_OBJS_BIT);
     }
@@ -133,8 +139,9 @@ public:
 
     // Record that a given function was called.
     void AddFuncSeen(PyObject *obj);
-    // Clears result and fills it with the set of seen function objects.
-    void GetSeenFuncsInto(llvm::SmallVector<PyMethodDef*, 3> &result) const;
+    // Clears result and fills it with the set of observed types and
+    // PyMethodDefs.
+    void GetSeenFuncsInto(llvm::SmallVector<PyTypeMethodPair, 3> &result) const;
     bool FuncsOverflowed() const { return false; }
 
     void IncCounter(unsigned counter_id);
@@ -148,8 +155,8 @@ public:
 
 private:
     // Assume three pointers in the set to start with. We store either
-    // PyObject *s (when in object mode) or PyMethodDef *s (when in function
-    // mode).
+    // PyObject *s (when in object mode) or pairs of types and PyMethodDef *s
+    // (when in function mode).
     typedef llvm::SmallPtrSet<void*, 3> ObjSet;
 
     void Swap(PyFullFeedback *other);

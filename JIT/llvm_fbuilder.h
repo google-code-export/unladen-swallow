@@ -48,7 +48,8 @@ public:
     PyCodeObject *code_object() const { return this->code_object_; }
     PyGlobalLlvmData *llvm_data() const { return this->llvm_data_; }
     llvm::LLVMContext& context() { return this->context_; } 
-    bool& uses_delete_fast() { return this->uses_delete_fast_; }
+    bool &uses_delete_fast() { return this->uses_delete_fast_; }
+    std::vector<bool> &loads_optimized() { return this->loads_optimized_; }
 
     llvm::BasicBlock *unreachable_block() const
     { 
@@ -355,6 +356,13 @@ private:
     llvm::Value *retval_addr_;
 
     llvm::SmallPtrSet<PyTypeObject*, 5> types_used_;
+
+    // A stack that corresponds to LOAD_METHOD/CALL_METHOD pairs.  For every
+    // load, we push on a boolean for whether or not the load was optimized.
+    // The call uses this value to decide whether to expect an extra "self"
+    // argument.  The stack is necessary if the user wrote code with nested
+    // method calls, like this: f.foo(b.bar()).
+    std::vector<bool> loads_optimized_;
 
     // True if something went wrong and we need to stop compilation without
     // aborting the process. If this is true, a Python error has already

@@ -150,8 +150,9 @@ def_op('BUILD_MAP', 104)        # Number of dict entries (upto 255)
 name_op('LOAD_ATTR', 105)       # Index in name list
 def_op('COMPARE_OP', 106)       # Comparison operator
 hascompare.append(106)
-# name_op('IMPORT_FROM', 108)   # Replaced by #@import_from.
 
+# name_op('IMPORT_FROM', 108)   # Replaced by #@import_from.
+name_op('LOAD_METHOD', 109)     # Index in name list
 jrel_op('JUMP_FORWARD', 110)    # Number of bytes to skip
 jabs_op('JUMP_IF_FALSE_OR_POP', 111) # Target byte offset from beginning of code
 jabs_op('JUMP_IF_TRUE_OR_POP', 112)  # ""
@@ -175,6 +176,7 @@ haslocal.append(126)
 
 def_op('CALL_FUNCTION', 131)    # #args + (#kwargs << 8)
 # def_op('MAKE_FUNCTION', 132)  Replaced by #@make_function calls.
+def_op('CALL_METHOD', 133)      # #args + (#kwargs << 8)
 
 def_op('MAKE_CLOSURE', 134)
 def_op('LOAD_CLOSURE', 135)

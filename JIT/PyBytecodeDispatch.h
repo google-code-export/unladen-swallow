@@ -138,6 +138,7 @@ public:
     void COMPARE_OP(int cmp_op);
 
     void CALL_FUNCTION(int num_args);
+    void CALL_METHOD(int num_args);
     void CALL_FUNCTION_VAR(int num_args);
     void CALL_FUNCTION_KW(int num_args);
     void CALL_FUNCTION_VAR_KW(int num_args);
@@ -158,6 +159,7 @@ public:
     void DELETE_NAME(int index);
 
     void LOAD_ATTR(int index);
+    void LOAD_METHOD(int index);
     void STORE_ATTR(int index);
     void DELETE_ATTR(int index);
 

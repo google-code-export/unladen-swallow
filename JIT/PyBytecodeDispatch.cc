@@ -88,6 +88,13 @@ PyBytecodeDispatch::LOAD_ATTR(int names_index)
 }
 
 void
+PyBytecodeDispatch::LOAD_METHOD(int names_index)
+{
+    OpcodeAttributes attr(fbuilder_);
+    attr.LOAD_METHOD(names_index);
+}
+
+void
 PyBytecodeDispatch::STORE_ATTR(int names_index)
 {
     OpcodeAttributes attr(fbuilder_);
@@ -134,6 +141,13 @@ PyBytecodeDispatch::CALL_FUNCTION(int oparg)
 {
     OpcodeCall call(fbuilder_);
     call.CALL_FUNCTION(oparg);
+}
+
+void
+PyBytecodeDispatch::CALL_METHOD(int oparg)
+{
+    OpcodeCall call(fbuilder_);
+    call.CALL_METHOD(oparg);
 }
 
 void

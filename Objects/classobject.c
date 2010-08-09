@@ -2581,30 +2581,46 @@ instancemethod_call(PyObject *func, PyObject *arg, PyObject *kw)
 	return result;
 }
 
+/* Return true if we should bind the method to obj when getting as an attribute
+   of obj.  We do not rebind it if it is already bound, or if it is an unbound
+   method of a class that's not a base class of cls.  We return -1 if there is
+   an error.
+*/
+
+int
+_PyMethod_ShouldBind(PyObject *meth, PyObject *cls)
+{
+	if (PyMethod_GET_SELF(meth) != NULL)
+		return 0;  /* Already bound */
+
+	/* meth is an unbound method */
+	if (PyMethod_GET_CLASS(meth) != NULL && cls != NULL) {
+		/* Do subclass test.  If it fails, we should not bind it. */
+		int ok = PyObject_IsSubclass(cls, PyMethod_GET_CLASS(meth));
+		if (ok < 0)
+			return -1;
+		if (!ok)
+			return 0;
+	}
+
+	/* If either of those checks fail, we should bind the method.  */
+	return 1;
+}
+
 static PyObject *
 instancemethod_descr_get(PyObject *meth, PyObject *obj, PyObject *cls)
 {
-	/* Don't rebind an already bound method, or an unbound method
-	   of a class that's not a base class of cls. */
-
-	if (PyMethod_GET_SELF(meth) != NULL) {
-		/* Already bound */
+	int r = _PyMethod_ShouldBind(meth, cls);
+	if (r < 0) {
+		return NULL;
+	} else if (r > 0) {
+		/* Bind it to obj */
+		return PyMethod_New(PyMethod_GET_FUNCTION(meth), obj, cls);
+	} else {
+		/* Return meth unchanged.  */
 		Py_INCREF(meth);
 		return meth;
 	}
-	/* No, it is an unbound method */
-	if (PyMethod_GET_CLASS(meth) != NULL && cls != NULL) {
-		/* Do subclass test.  If it fails, return meth unchanged. */
-		int ok = PyObject_IsSubclass(cls, PyMethod_GET_CLASS(meth));
-		if (ok < 0)
-			return NULL;
-		if (!ok) {
-			Py_INCREF(meth);
-			return meth;
-		}
-	}
-	/* Bind it to obj */
-	return PyMethod_New(PyMethod_GET_FUNCTION(meth), obj, cls);
 }
 
 PyTypeObject PyMethod_Type = {

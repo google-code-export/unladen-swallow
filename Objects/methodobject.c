@@ -13,34 +13,9 @@ static int numfree = 0;
 #define PyCFunction_MAXFREELIST 256
 #endif
 
-PyObject *
-PyCFunction_NewEx(PyMethodDef *ml, PyObject *self, PyObject *module)
+int
+PyMethodDef_Ready(PyMethodDef *ml)
 {
-	PyCFunctionObject *op;
-
-	/* Sanity check early, to avoid having to clean up from the mixed
-	   free list/allocation scheme below. */
-	if (ml->ml_flags & METH_ARG_RANGE) {
-		if (ml->ml_min_arity < 0 || ml->ml_min_arity > PY_MAX_ARITY ||
-		    ml->ml_max_arity < 0 || ml->ml_max_arity > PY_MAX_ARITY ||
-		    ml->ml_max_arity < ml->ml_min_arity) {
-			PyErr_BadInternalCall();
-			return NULL;
-		}
-	}
-
-	op = free_list;
-	if (op != NULL) {
-		free_list = (PyCFunctionObject *)(op->m_self);
-		PyObject_INIT(op, &PyCFunction_Type);
-		numfree--;
-	}
-	else {
-		op = PyObject_GC_New(PyCFunctionObject, &PyCFunction_Type);
-		if (op == NULL)
-			return NULL;
-	}
-
 	/* Rewrite the old METH_O/METH_NOARGS flags to the new METH_ARG_RANGE
 	   so we only have to implement METH_ARG_RANGE. */
 	if (ml->ml_flags & METH_NOARGS) {
@@ -54,6 +29,42 @@ PyCFunction_NewEx(PyMethodDef *ml, PyObject *self, PyObject *module)
 		ml->ml_flags |= METH_ARG_RANGE;
 		ml->ml_min_arity = 1;
 		ml->ml_max_arity = 1;
+	}
+
+	/* Check that METH_ARG_RANGE methods have valid arities.  */
+	if (ml->ml_flags & METH_ARG_RANGE) {
+		if (ml->ml_min_arity < 0 || ml->ml_min_arity > PY_MAX_ARITY ||
+		    ml->ml_max_arity < 0 || ml->ml_max_arity > PY_MAX_ARITY ||
+		    ml->ml_max_arity < ml->ml_min_arity) {
+			PyErr_BadInternalCall();
+			return -1;
+		}
+	}
+
+	return 0;
+}
+
+PyObject *
+PyCFunction_NewEx(PyMethodDef *ml, PyObject *self, PyObject *module)
+{
+	PyCFunctionObject *op;
+
+	/* Sanity check early, to avoid having to clean up from the mixed
+	   free list/allocation scheme below.  */
+	if (PyMethodDef_Ready(ml) < 0) {
+		return NULL;
+	}
+
+	op = free_list;
+	if (op != NULL) {
+		free_list = (PyCFunctionObject *)(op->m_self);
+		PyObject_INIT(op, &PyCFunction_Type);
+		numfree--;
+	}
+	else {
+		op = PyObject_GC_New(PyCFunctionObject, &PyCFunction_Type);
+		if (op == NULL)
+			return NULL;
 	}
 
 	op->m_ml = ml;
@@ -98,12 +109,17 @@ PyCFunction_GetFlags(PyObject *op)
 PyObject *
 PyCFunction_Call(PyObject *func, PyObject *arg, PyObject *kw)
 {
-	PyCFunctionObject* f = (PyCFunctionObject*)func;
-	PyCFunction meth = PyCFunction_GET_FUNCTION(func);
-	PyObject *self = PyCFunction_GET_SELF(func);
+        return PyMethodDef_Call(PyCFunction_GET_METHODDEF(func),
+                                PyCFunction_GET_SELF(func), arg, kw);
+}
+
+PyObject *
+PyMethodDef_Call(PyMethodDef *ml, PyObject *self, PyObject *arg, PyObject *kw)
+{
+	PyCFunction meth = ml->ml_meth;
 	Py_ssize_t size;
 
-	switch (PyCFunction_GET_FLAGS(func) & ~(METH_CLASS | METH_STATIC | METH_COEXIST)) {
+	switch (ml->ml_flags & ~(METH_CLASS | METH_STATIC | METH_COEXIST)) {
 	case METH_VARARGS:
 		if (kw == NULL || PyDict_Size(kw) == 0)
 			return (*meth)(self, arg);
@@ -115,8 +131,8 @@ PyCFunction_Call(PyObject *func, PyObject *arg, PyObject *kw)
 	{
 		if (kw == NULL || PyDict_Size(kw) == 0) {
 			PyObject *args[PY_MAX_ARITY] = {NULL};
-			int min_arity = PyCFunction_GET_MIN_ARITY(func);
-			int max_arity = PyCFunction_GET_MAX_ARITY(func);
+			int min_arity = ml->ml_min_arity;
+			int max_arity = ml->ml_max_arity;
 			size = PyTuple_GET_SIZE(arg);
 			switch (size) {
 				default:
@@ -139,13 +155,13 @@ PyCFunction_Call(PyObject *func, PyObject *arg, PyObject *kw)
 				PyErr_Format(PyExc_TypeError,
 					"%.200s() takes exactly %d argument(s)"
 					" (%zd given)",
-					f->m_ml->ml_name, max_arity, size);
+					ml->ml_name, max_arity, size);
 			else
 				PyErr_Format(PyExc_TypeError,
 					"%.200s() takes %d-%d arguments"
 					" (%zd given)",
-					f->m_ml->ml_name,
-					min_arity, max_arity, size);
+					ml->ml_name, min_arity, max_arity,
+					size);
 
 			return NULL;
 		}
@@ -170,7 +186,7 @@ PyCFunction_Call(PyObject *func, PyObject *arg, PyObject *kw)
 		return NULL;
 	}
 	PyErr_Format(PyExc_TypeError, "%.200s() takes no keyword arguments",
-		     f->m_ml->ml_name);
+		     ml->ml_name);
 	return NULL;
 }
 

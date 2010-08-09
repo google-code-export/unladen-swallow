@@ -96,6 +96,8 @@ enum _PyFrameGuardType {
     _PYGUARD_CFUNC,
     _PYGUARD_BRANCH,
     _PYGUARD_STORE_SUBSCR,
+    _PYGUARD_LOAD_METHOD,
+    _PYGUARD_CALL_METHOD,
 };
 
 /* Standard object interface */

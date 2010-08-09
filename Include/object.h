@@ -489,6 +489,8 @@ PyAPI_FUNC(int) PyObject_Not(PyObject *);
 PyAPI_FUNC(int) PyCallable_Check(PyObject *);
 PyAPI_FUNC(int) PyNumber_Coerce(PyObject **, PyObject **);
 PyAPI_FUNC(int) PyNumber_CoerceEx(PyObject **, PyObject **);
+PyAPI_FUNC(int) _PyObject_ShouldBindMethod(PyObject *, PyObject *);
+PyAPI_FUNC(PyObject *) PyObject_GetMethod(PyObject *, PyObject *);
 
 PyAPI_FUNC(void) PyObject_ClearWeakRefs(PyObject *);
 

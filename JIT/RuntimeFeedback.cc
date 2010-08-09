@@ -14,12 +14,6 @@ using llvm::SmallPtrSet;
 using llvm::SmallVector;
 
 
-static bool
-is_duplicate_method(PyObject *a, PyMethodDef *b)
-{
-    return PyCFunction_Check(a) && PyCFunction_GET_FUNCTION(a) == b->ml_meth;
-}
-
 PyLimitedFeedback::PyLimitedFeedback()
 {
 }
@@ -112,8 +106,9 @@ PyLimitedFeedback::Clear()
     bool object_mode = this->InObjectMode();
 
     for (int i = 0; i < PyLimitedFeedback::NUM_POINTERS; ++i) {
-        if (object_mode)
+        if (object_mode) {
             Py_XDECREF((PyObject *)this->data_[i].getPointer());
+        }
         this->data_[i].setPointer(NULL);
         this->data_[i].setInt(0);
     }
@@ -173,41 +168,48 @@ PyLimitedFeedback::AddFuncSeen(PyObject *obj)
         this->SetFlagBit(SAW_A_NULL_OBJECT_BIT, true);
         return;
     }
-    if (!PyCFunction_Check(obj))
-        return;
 
-    for (int i = 0; i < PyLimitedFeedback::NUM_POINTERS; ++i) {
-        PyMethodDef *value = (PyMethodDef *)this->data_[i].getPointer();
-        if (value == NULL) {
-            this->data_[i].setPointer((void *)PyCFunction_GET_METHODDEF(obj));
-            return;
-        }
-        // Deal with the fact that "for x in y: l.append(x)" results in 
-        // multiple method objects for l.append.
-        if (is_duplicate_method(obj, value))
-            return;
+    // Record the type of the function, and the methoddef if it's a call to a C
+    // function.
+    PyTypeObject *type = Py_TYPE(obj);
+    PyMethodDef *ml = NULL;
+    if (PyCFunction_Check(obj)) {
+        ml = PyCFunction_GET_METHODDEF(obj);
+    } else if (PyMethodDescr_Check(obj)) {
+        ml = ((PyMethodDescrObject *)obj)->d_method;
     }
-    // Record overflow.
-    this->SetFlagBit(SAW_MORE_THAN_THREE_OBJS_BIT, true);
+
+    PyTypeObject *old_type = (PyTypeObject *)this->data_[0].getPointer();
+    PyMethodDef *old_ml = (PyMethodDef *)this->data_[1].getPointer();
+    if (old_type == NULL) {
+        // Record this method.
+        Py_INCREF(type);
+        this->data_[0].setPointer((void*)type);
+        this->data_[1].setPointer((void*)ml);
+    } else if (old_type != type || old_ml != ml) {
+        // We found something else here already.  Set this flag to indicate the
+        // call site is polymorphic, even if we haven't seen more than three
+        // objects.
+        this->SetFlagBit(SAW_MORE_THAN_THREE_OBJS_BIT, true);
+    }
+    // The call site is monomorphic, so we leave it as is.
 }
 
 void
 PyLimitedFeedback::GetSeenFuncsInto(
-    SmallVector<PyMethodDef*, 3> &result) const
+    SmallVector<PyTypeMethodPair, 3> &result) const
 {
     assert(this->InFuncMode());
 
     result.clear();
     if (this->GetFlagBit(SAW_A_NULL_OBJECT_BIT)) {
         // Saw a NULL value, so add NULL to the result.
-        result.push_back(NULL);
+        result.push_back(
+            std::make_pair<PyTypeObject*, PyMethodDef*>(NULL, NULL));
     }
-    for (int i = 0; i < PyLimitedFeedback::NUM_POINTERS; ++i) {
-        PyMethodDef *value = (PyMethodDef *)this->data_[i].getPointer();
-        if (value == NULL)
-            return;
-        result.push_back(value);
-    }
+    PyTypeObject *type = (PyTypeObject *)this->data_[0].getPointer();
+    PyMethodDef *ml = (PyMethodDef *)this->data_[1].getPointer();
+    result.push_back(std::make_pair<PyTypeObject*, PyMethodDef*>(type, ml));
 }
 
 
@@ -234,6 +236,13 @@ PyFullFeedback::PyFullFeedback(const PyFullFeedback &src)
 
 PyFullFeedback::~PyFullFeedback()
 {
+    if (this->InFuncMode()) {
+        // We have to free these pairs if we're in func mode.
+        for (ObjSet::const_iterator it = this->data_.begin(),
+                end = this->data_.end(); it != end; ++it) {
+            delete (PyTypeMethodPair*)*it;
+        }
+    }
     this->Clear();
 }
 
@@ -304,34 +313,40 @@ PyFullFeedback::AddFuncSeen(PyObject *obj)
     assert(this->InFuncMode());
     this->usage_ = FuncMode;
 
-    // We only record C functions for now.
-    if (!PyCFunction_Check(obj))
-        return;
-    if (obj == NULL)
-        this->data_.insert(NULL);
-    else if (!this->data_.count(obj)) {
-        // Deal with the fact that "for x in y: l.append(x)" results in 
-        // multiple method objects for l.append.
-        for (ObjSet::const_iterator it = this->data_.begin(),
-                end = this->data_.end(); it != end; ++it) {
-            if (is_duplicate_method(obj, (PyMethodDef *)*it))
-                return;
-        }
+    PyMethodDef *ml = NULL;
+    PyTypeObject *type = NULL;
+    if (obj != NULL) {
+        type = Py_TYPE(obj);
 
-        this->data_.insert((void *)PyCFunction_GET_METHODDEF(obj));
+        // We only record a methoddef if this is a C function.
+        if (PyCFunction_Check(obj)) {
+            ml = PyCFunction_GET_METHODDEF(obj);
+        } else if (PyMethodDescr_Check(obj)) {
+            ml = ((PyMethodDescrObject *)obj)->d_method;
+        }
     }
+
+    for (ObjSet::const_iterator it = this->data_.begin(),
+            end = this->data_.end(); it != end; ++it) {
+        PyTypeMethodPair *pair = (PyTypeMethodPair*)*it;
+        if (pair->first == type && pair->second == ml)
+            return;
+    }
+
+    PyTypeMethodPair *pair = new PyTypeMethodPair(type, ml);
+    this->data_.insert((void *)pair);
 }
 
 void
 PyFullFeedback::GetSeenFuncsInto(
-    SmallVector<PyMethodDef*, /*in-object elems=*/3> &result) const
+    SmallVector<PyTypeMethodPair, 3> &result) const
 {
     assert(this->InFuncMode());
 
     result.clear();
     for (ObjSet::const_iterator it = this->data_.begin(),
             end = this->data_.end(); it != end; ++it) {
-        result.push_back((PyMethodDef *)*it);
+        result.push_back(*((PyTypeMethodPair *)*it));
     }
 }
 

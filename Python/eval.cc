@@ -350,7 +350,7 @@ static inline int maybe_compile(PyCodeObject *co, PyFrameObject *f);
 static void record_type(PyCodeObject *, int, int, int, PyObject *);
 static void record_func(PyCodeObject *, int, int, int, PyObject *);
 static void record_object(PyCodeObject *, int, int, int, PyObject *);
-static void inc_feedback_counter(PyCodeObject *, int, int, int);
+static void inc_feedback_counter(PyCodeObject *, int, int, int, int);
 #endif  /* WITH_LLVM */
 
 int _Py_ProfilingPossible = 0;
@@ -433,7 +433,7 @@ static int pcall[PCALL_NUM];
 PyObject *
 PyEval_GetCallStats(PyObject *self)
 {
-	return Py_BuildValue("iiiiiiiiiii",
+	return Py_BuildValue("iiiiiiiiiiiii",
 			     pcall[0], pcall[1], pcall[2], pcall[3],
 			     pcall[4], pcall[5], pcall[6], pcall[7],
 			     pcall[8], pcall[9], pcall[10]);
@@ -968,18 +968,24 @@ PyEval_EvalFrame(PyFrameObject *f)
 	if(rec_feedback){record_object(co, opcode, f->f_lasti, arg_index, obj);}
 #define RECORD_FUNC(obj) \
 	if(rec_feedback){record_func(co, opcode, f->f_lasti, 0, obj);}
+#define INC_COUNTER(arg_index, counter_id) \
+	if (rec_feedback) { \
+		inc_feedback_counter(co, opcode, f->f_lasti, arg_index, \
+		                     counter_id); \
+	}
 #define RECORD_TRUE() \
-	if(rec_feedback){inc_feedback_counter(co, opcode, f->f_lasti, PY_FDO_JUMP_TRUE);}
+	INC_COUNTER(0, PY_FDO_JUMP_TRUE)
 #define RECORD_FALSE() \
-	if(rec_feedback){inc_feedback_counter(co, opcode, f->f_lasti, PY_FDO_JUMP_FALSE);}
+	INC_COUNTER(0, PY_FDO_JUMP_FALSE)
 #define RECORD_NONBOOLEAN() \
-	if(rec_feedback){inc_feedback_counter(co, opcode, f->f_lasti, PY_FDO_JUMP_NON_BOOLEAN);}
+	INC_COUNTER(0, PY_FDO_JUMP_NON_BOOLEAN)
 #define UPDATE_HOTNESS_JABS() \
 	do { if (oparg <= f->f_lasti) ++co->co_hotness; } while (0)
 #else
 #define RECORD_TYPE(arg_index, obj)
 #define RECORD_OBJECT(arg_index, obj)
 #define RECORD_FUNC(obj)
+#define INC_COUNTER(arg_index, counter_id)
 #define RECORD_TRUE()
 #define RECORD_FALSE()
 #define RECORD_NONBOOLEAN()
@@ -1128,18 +1134,21 @@ PyEval_EvalFrame(PyFrameObject *f)
 		bail_count_stats->RecordBail(f, bail_reason);
 #endif
 		if (_Py_BailError) {
-			PyErr_SetString(PyExc_RuntimeError,
-	        	                "bailed to the interpreter");
+			/* When we bail, we set f_lasti to the current opcode
+			 * minus 1, so we add one back.  */
+			int lasti = f->f_lasti + 1;
+			PyErr_Format(PyExc_RuntimeError, "bailed to the "
+				     "interpreter at opcode index %d", lasti);
 			goto exit_eval_frame;
 		}
 	}
 
-	// Create co_runtime_feedback now that we're about to use it.  You
-	// might think this would cause a problem if the user flips
-	// Py_JitControl from "never" to "whenhot", but since the value of
-	// rec_feedback is constant for the duration of this frame's execution,
-	// we will not accidentally try to record feedback without initializing
-	// co_runtime_feedback.
+	/* Create co_runtime_feedback now that we're about to use it.  You
+	 * might think this would cause a problem if the user flips
+	 * Py_JitControl from "never" to "whenhot", but since the value of
+	 * rec_feedback is constant for the duration of this frame's execution,
+	 * we will not accidentally try to record feedback without initializing
+	 * co_runtime_feedback.  */
 	if (rec_feedback && co->co_runtime_feedback == NULL) {
 #if Py_WITH_INSTRUMENTATION
 		feedback_map_counter->IncCounter();
@@ -2469,6 +2478,39 @@ PyEval_EvalFrame(PyFrameObject *f)
 			}
 			DISPATCH();
 
+		TARGET(LOAD_METHOD)
+			w = GETITEM(names, oparg);
+			v = TOP();
+			RECORD_TYPE(0, v);
+			x = PyObject_GetMethod(v, w);
+			if (((long)x) & 1) {
+				/* Record that this was a regular method. */
+				INC_COUNTER(1, PY_FDO_LOADMETHOD_METHOD);
+
+				/* Set up the stack as if self were the first
+				 * argument to the unbound method. */
+				x = (PyObject*)(((Py_uintptr_t)x) & ~1);
+				SET_TOP(x);
+				PUSH(v);
+			}
+			else {
+				/* Record that this was not a regular method.
+                                 */
+				INC_COUNTER(1, PY_FDO_LOADMETHOD_OTHER);
+
+				/* Set up the stack as if there were no self
+				 * argument.  Pad the stack with a NULL so
+				 * CALL_METHOD knows the method is bound. */
+				Py_DECREF(v);
+				SET_TOP(NULL);
+				PUSH(x);
+			}
+			if (x == NULL) {
+				why = UNWIND_EXCEPTION;
+				break;
+			}
+			DISPATCH();
+
 		TARGET(COMPARE_OP)
 			w = POP();
 			v = TOP();
@@ -2834,6 +2876,48 @@ PyEval_EvalFrame(PyFrameObject *f)
 						 num_args, num_kwargs);
 			/* +1 for the actual function object. */
 			num_stack_slots = num_args + 2 * num_kwargs + 1;
+			/* Clear the stack of the function object and
+			 * arguments. */
+			stack_pointer -= num_stack_slots;
+			PUSH(x);
+			if (x == NULL) {
+				why = UNWIND_EXCEPTION;
+				break;
+			}
+			DISPATCH();
+		}
+
+		TARGET(CALL_METHOD)
+		{
+			int num_args, num_kwargs, num_stack_slots;
+			PyObject *method;
+			PY_LOG_TSC_EVENT(CALL_START_EVAL);
+			PCALL(PCALL_ALL);
+			num_args = oparg & 0xff;
+			num_kwargs = (oparg>>8) & 0xff;
+			/* +1 for the actual function object, +1 for self. */
+			num_stack_slots = num_args + 2 * num_kwargs + 1 + 1;
+			method = stack_pointer[-num_stack_slots];
+			if (method != NULL) {
+				/* We loaded an unbound method.  Adjust
+				 * num_args to include the self argument pushed
+				 * on the stack after the method. */
+				num_args++;
+			}
+#ifdef WITH_LLVM
+			else {
+				/* The method is really in the next slot. */
+				method = stack_pointer[-num_stack_slots+1];
+			}
+			/* We'll focus on these simple calls with only
+			 * positional args for now (since they're easy to
+			 * implement). */
+			if (num_kwargs == 0) {
+				RECORD_FUNC(method);
+			}
+#endif
+			x = _PyEval_CallFunction(stack_pointer,
+						 num_args, num_kwargs);
 			/* Clear the stack of the function object and
 			 * arguments. */
 			stack_pointer -= num_stack_slots;
@@ -4217,29 +4301,24 @@ PyEval_GetFuncDesc(PyObject *func)
 }
 
 static void
-err_args(PyObject *func, int flags, int min_arity, int max_arity, int nargs)
+err_args(PyMethodDef *ml, int flags, int min_arity, int max_arity, int nargs)
 {
 	if (min_arity != max_arity)
 		PyErr_Format(PyExc_TypeError,
 				 "%.200s() takes %d-%d arguments (%d given)",
-				 ((PyCFunctionObject *)func)->m_ml->ml_name,
-				 min_arity, max_arity, nargs);
+				 ml->ml_name, min_arity, max_arity, nargs);
 	else if (min_arity == 0)
 		PyErr_Format(PyExc_TypeError,
 			     "%.200s() takes no arguments (%d given)",
-			     ((PyCFunctionObject *)func)->m_ml->ml_name,
-			     nargs);
+			     ml->ml_name, nargs);
 	else if (min_arity == 1)
 		PyErr_Format(PyExc_TypeError,
 			     "%.200s() takes exactly one argument (%d given)",
-			     ((PyCFunctionObject *)func)->m_ml->ml_name,
-			     nargs);
+			     ml->ml_name, nargs);
 	else
 		PyErr_Format(PyExc_TypeError,
 			     "%.200s() takes exactly %d arguments (%d given)",
-			     ((PyCFunctionObject *)func)->m_ml->ml_name,
-			     min_arity,
-			     nargs);
+			     ml->ml_name, min_arity, nargs);
 }
 
 #ifdef WITH_LLVM
@@ -4413,20 +4492,38 @@ _PyEval_CallFunction(PyObject **stack_pointer, int na, int nk)
 	PyObject **pfunc = stack_pointer - n - 1;
 	PyObject *func = *pfunc;
 	PyObject *x, *w;
+	PyMethodDef *ml = NULL;
+	PyObject *self = NULL;
 
-	/* Always dispatch PyCFunction first, because these are
-	   presumed to be the most frequent callable object.
-	*/
-	if (PyCFunction_Check(func) && nk == 0) {
-		int flags = PyCFunction_GET_FLAGS(func);
+	/* Always dispatch PyCFunction and PyMethodDescr first, because these
+	   both represent methods written in C, and are presumed to be the most
+	   frequently called objects.
+	   */
+	if (nk == 0) {
+		if (PyCFunction_Check(func)) {
+			ml = PyCFunction_GET_METHODDEF(func);
+			self = PyCFunction_GET_SELF(func);
+		}
+		else if (PyMethodDescr_Check(func)) {
+			ml = ((PyMethodDescrObject*)func)->d_method;
+			/* The first argument on the stack (the one immediately
+			   after func) is self.  We borrow the reference from
+			   the stack, which gets cleaned off and decrefed at
+			   the end of the function.
+			   */
+			self = pfunc[1];
+			na--;
+		}
+	}
+	if (ml != NULL) {
+		int flags = ml->ml_flags;
 		PyThreadState *tstate = PyThreadState_GET();
 
 		PCALL(PCALL_CFUNCTION);
 		if (flags & METH_ARG_RANGE) {
-			PyCFunction meth = PyCFunction_GET_FUNCTION(func);
-			PyObject *self = PyCFunction_GET_SELF(func);
-			int min_arity = PyCFunction_GET_MIN_ARITY(func);
-			int max_arity = PyCFunction_GET_MAX_ARITY(func);
+			PyCFunction meth = ml->ml_meth;
+			int min_arity = ml->ml_min_arity;
+			int max_arity = ml->ml_max_arity;
 			PyObject *args[PY_MAX_ARITY] = {NULL};
 
 			switch (na) {
@@ -4444,20 +4541,20 @@ _PyEval_CallFunction(PyObject **stack_pointer, int na, int nk)
 			   Yes, but C allows this. Go C. */
 			if (min_arity <= na && na <= max_arity) {
 				C_TRACE(x, (*(PyCFunctionThreeArgs)meth)
-				           (self, args[0], args[1], args[2]));
-				Py_XDECREF(args[0]);
-				Py_XDECREF(args[1]);
-				Py_XDECREF(args[2]);
+				        (self, args[0], args[1], args[2]));
 			}
 			else {
-				err_args(func, flags, min_arity, max_arity, na);
+				err_args(ml, flags, min_arity, max_arity, na);
 				x = NULL;
 			}
+			Py_XDECREF(args[0]);
+			Py_XDECREF(args[1]);
+			Py_XDECREF(args[2]);
 		}
 		else {
 			PyObject *callargs;
 			callargs = load_args(&stack_pointer, na);
-			C_TRACE(x, PyCFunction_Call(func,callargs,NULL));
+			C_TRACE(x, PyMethodDef_Call(ml, self, callargs, NULL));
 			Py_XDECREF(callargs);
 		}
 	} else {
@@ -4468,13 +4565,12 @@ _PyEval_CallFunction(PyObject **stack_pointer, int na, int nk)
 			PCALL(PCALL_BOUND_METHOD);
 			Py_INCREF(self);
 			func = PyMethod_GET_FUNCTION(func);
-			Py_INCREF(func);
 			Py_DECREF(*pfunc);
 			*pfunc = self;
 			na++;
 			n++;
-		} else
-			Py_INCREF(func);
+		}
+		Py_INCREF(func);
 		if (PyFunction_Check(func))
 			x = fast_function(func, &stack_pointer, n, na, nk);
 		else
@@ -4483,9 +4579,9 @@ _PyEval_CallFunction(PyObject **stack_pointer, int na, int nk)
 	}
 
 	/* Clear the stack of the function object.  Also removes
-           the arguments in case they weren't consumed already
-           (fast_function() and err_args() leave them on the stack).
-	 */
+	   the arguments in case they weren't consumed already
+	   (fast_function() and err_args() leave them on the stack).
+	   */
 	while (stack_pointer > pfunc) {
 		w = EXT_POP(stack_pointer);
 		Py_DECREF(w);
@@ -4695,6 +4791,18 @@ do_call(PyObject *func, PyObject ***pp_stack, int na, int nk)
 	PyObject *callargs = NULL;
 	PyObject *kwdict = NULL;
 	PyObject *result = NULL;
+	PyMethodDef *ml = NULL;
+	PyObject *self = NULL;
+
+	if (PyCFunction_Check(func)) {
+		ml = PyCFunction_GET_METHODDEF(func);
+		self = PyCFunction_GET_SELF(func);
+	}
+	else if (PyMethodDescr_Check(func)) {
+		ml = ((PyMethodDescrObject*)func)->d_method;
+		self = (*pp_stack)[-(na + 2 * nk)];
+		na--;
+	}
 
 	if (nk > 0) {
 		kwdict = update_keyword_args(NULL, nk, pp_stack, func);
@@ -4720,9 +4828,9 @@ do_call(PyObject *func, PyObject ***pp_stack, int na, int nk)
 	else
 		PCALL(PCALL_OTHER);
 #endif
-	if (PyCFunction_Check(func)) {
+	if (ml) {
 		PyThreadState *tstate = PyThreadState_GET();
-		C_TRACE(result, PyCFunction_Call(func, callargs, kwdict));
+		C_TRACE(result, PyMethodDef_Call(ml, self, callargs, kwdict));
 	}
 	else
 		result = PyObject_Call(func, callargs, kwdict);
@@ -4740,6 +4848,22 @@ ext_do_call(PyObject *func, PyObject ***pp_stack, int flags, int na, int nk)
 	PyObject *stararg = NULL;
 	PyObject *kwdict = NULL;
 	PyObject *result = NULL;
+	PyMethodDef *ml = NULL;
+	PyObject *self = NULL;
+
+	if (PyCFunction_Check(func)) {
+		ml = PyCFunction_GET_METHODDEF(func);
+		self = PyCFunction_GET_SELF(func);
+	}
+	else if (PyMethodDescr_Check(func)) {
+		/* Only apply C calling optimization if self is on the stack
+		 * and not the first element of callargs.  */
+		if (na > 0) {
+			ml = ((PyMethodDescrObject*)func)->d_method;
+			self = (*pp_stack)[-(na + 2 * nk)];
+			na--;
+		}
+	}
 
 	if (flags & CALL_FLAG_KW) {
 		kwdict = EXT_POP(*pp_stack);
@@ -4815,9 +4939,9 @@ ext_do_call(PyObject *func, PyObject ***pp_stack, int flags, int na, int nk)
 	else
 		PCALL(PCALL_OTHER);
 #endif
-	if (PyCFunction_Check(func)) {
+	if (ml) {
 		PyThreadState *tstate = PyThreadState_GET();
-		C_TRACE(result, PyCFunction_Call(func, callargs, kwdict));
+		C_TRACE(result, PyMethodDef_Call(ml, self, callargs, kwdict));
 	}
 	else
 		result = PyObject_Call(func, callargs, kwdict);
@@ -4830,7 +4954,7 @@ ext_call_fail:
 
 #ifdef WITH_LLVM
 void inc_feedback_counter(PyCodeObject *co, int expected_opcode,
-			  int opcode_index, int counter_id)
+			  int opcode_index, int arg_index, int counter_id)
 {
 #ifndef NDEBUG
 	unsigned char actual_opcode =
@@ -4841,7 +4965,7 @@ void inc_feedback_counter(PyCodeObject *co, int expected_opcode,
 #endif  /* NDEBUG */
 	PyRuntimeFeedback &feedback =
 		co->co_runtime_feedback->GetOrCreateFeedbackEntry(
-			opcode_index, 0);
+			opcode_index, arg_index);
 	feedback.IncCounter(counter_id);
 }
 

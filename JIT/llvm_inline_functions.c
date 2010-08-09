@@ -173,8 +173,8 @@ _PyLlvm_Frame_BlockPop(PyTryBlock *blocks, char *num_blocks)
 /* Keep this in sync with _PyObject_GetDictPtr.  We need it inlined in order
  * for constant propagation to work.
  */
-PyObject ** __attribute__((always_inline))
-_PyLlvm_Object_GetDictPtr(PyObject *obj, PyTypeObject *tp, long dictoffset)
+static inline PyObject **
+get_dict_ptr(PyObject *obj, PyTypeObject *tp, long dictoffset)
 {
     if (dictoffset == 0)
         return NULL;
@@ -197,43 +197,55 @@ _PyLlvm_Object_GetDictPtr(PyObject *obj, PyTypeObject *tp, long dictoffset)
     return (PyObject **) ((char *)obj + dictoffset);
 }
 
+/* Try to get an attribute from the attribute dictionary of obj, or return NULL
+ * on failure.
+ */
+static inline PyObject *
+get_attr_from_dict(PyObject *obj, PyTypeObject *tp, long dictoffset,
+                   PyObject *name)
+{
+    PyObject **dictptr = get_dict_ptr(obj, tp, dictoffset);
+    PyObject *dict = dictptr == NULL ? NULL : *dictptr;
+    PyObject *attr = NULL;
+
+    /* If the object has a dict, and the attribute is in it, return it.  */
+    if (dict != NULL) {
+        /* TODO(rnk): @reviewer: Are these refcounts necessary?  */
+        Py_INCREF(dict);
+        attr = PyDict_GetItem(dict, name);
+        Py_DECREF(dict);
+    }
+
+    return attr;
+}
+
 /* Keep this in sync with PyObject_GenericGetAttr.  The reason we take so many
  * extra arguments is to allow LLVM optimizers to notice that all of these
  * things are constant.  By passing them as parameters and always inlining this
  * function, we ensure that they will benefit from constant propagation.
  */
 PyObject * __attribute__((always_inline))
-_PyLlvm_Object_GenericGetAttr(PyObject *obj, PyTypeObject *type,
+_PyLlvm_Object_GenericGetAttr(PyObject *obj, PyTypeObject *tp,
                               PyObject *name, long dictoffset, PyObject *descr,
                               descrgetfunc descr_get, char is_data_descr)
 {
-    PyObject *res = NULL;
-    PyObject **dictptr;
-    PyObject *dict;
+    PyObject *dict_attr;
 
     /* If it's a data descriptor, that has the most precedence, so we just call
      * the getter.  */
     if (is_data_descr) {
-        return descr_get(descr, obj, (PyObject *)type);
+        return descr_get(descr, obj, (PyObject *)tp);
     }
 
-    dictptr = _PyLlvm_Object_GetDictPtr(obj, type, dictoffset);
-    dict = dictptr == NULL ? NULL : *dictptr;
-
-    /* If the object has a dict, and the attribute is in it, return it.  */
-    if (dict != NULL) {
-        Py_INCREF(dict);
-        res = PyDict_GetItem(dict, name);
-        Py_DECREF(dict);
-        if (res != NULL) {
-            Py_INCREF(res);
-            return res;
-        }
+    dict_attr = get_attr_from_dict(obj, tp, dictoffset, name);
+    if (dict_attr != NULL) {
+        Py_INCREF(dict_attr);
+        return dict_attr;
     }
 
     /* Otherwise, try calling the descriptor getter.  */
     if (descr_get != NULL) {
-        return descr_get(descr, obj, (PyObject *)type);
+        return descr_get(descr, obj, (PyObject *)tp);
     }
 
     /* If the descriptor has no getter, it's probably a vanilla PyObject
@@ -245,14 +257,92 @@ _PyLlvm_Object_GenericGetAttr(PyObject *obj, PyTypeObject *type,
 
     PyErr_Format(PyExc_AttributeError,
                  "'%.50s' object has no attribute '%.400s'",
-                 type->tp_name, PyString_AS_STRING(name));
+                 tp->tp_name, PyString_AS_STRING(name));
     return NULL;
+}
+
+/* A stripped down version of PyObject_GenericGetAttr that only gets methods or
+ * returns NULL if the object it would return is not a method.  Rather than try
+ * to handle those possible alternative cases, we focus on drastically reducing
+ * the final generated code size.  */
+PyObject *
+_PyLlvm_Object_GetUnknownMethod(PyObject *obj, PyObject *name)
+{
+    PyObject *descr;
+    PyObject *dict_attr;
+    PyTypeObject *tp = Py_TYPE(obj);
+
+    /* We only support string names.  */
+    /* TODO(rnk): Uncomment when NDEBUG works.
+     *assert(PyString_Check(name));
+     */
+
+    /* Bail if the type isn't ready.  We could call PyType_Ready, but that
+     * would add unecessary code.  */
+    if (tp->tp_dict == NULL) {
+        return NULL;
+    }
+
+    /* Bail for objects that have overridden tp_getattro.  */
+    if (tp->tp_getattro != &PyObject_GenericGetAttr) {
+        return NULL;
+    }
+
+    descr = _PyType_Lookup(tp, name);
+
+    /* Bail in any of the following cases:
+     * - There is no descriptor on the type.
+     * - The descriptor type does not have Py_TPFLAGS_HAVE_CLASS.
+     * - The descriptor is a data descriptor.
+     */
+    if (descr == NULL ||
+        !PyType_HasFeature(descr->ob_type, Py_TPFLAGS_HAVE_CLASS) ||
+        PyDescr_IsData(descr)) {
+        return NULL;
+    }
+
+    /* Bail if there is a dict attribute shadowing the method.  */
+    dict_attr = get_attr_from_dict(obj, tp, tp->tp_dictoffset, name);
+    if (dict_attr != NULL) {
+        return NULL;
+    }
+
+    /* Bail if this isn't a method that we should be binding to obj.  */
+    if (!_PyObject_ShouldBindMethod((PyObject*)tp, descr)) {
+        return NULL;
+    }
+
+    /* Otherwise, we've found ourselves a real method!  */
+    Py_INCREF(descr);
+    return descr;
+}
+
+PyObject * __attribute__((always_inline))
+_PyLlvm_Object_GetKnownMethod(PyObject *obj, PyTypeObject *tp,
+                              PyObject *name, long dictoffset,
+                              PyObject *method)
+{
+    PyObject *dict_attr;
+
+    /* Bail if there is a dict attribute shadowing the method.  */
+    dict_attr = get_attr_from_dict(obj, tp, dictoffset, name);
+    if (dict_attr != NULL) {
+        printf("shadowed dict attr!\n");
+        return NULL;
+    }
+
+    /* Otherwise, return the method descriptor unmodified.  */
+    /* TODO(rnk): Uncomment when NDEBUG works.
+     *assert(_PyObject_ShouldBindMethod(tp, method));
+     */
+    Py_INCREF(method);
+    return method;
 }
 
 /* Keep this in sync with PyObject_GenericSetAttr.  */
 int __attribute__((always_inline))
 _PyLlvm_Object_GenericSetAttr(PyObject *obj, PyObject *value,
-                              PyTypeObject *type, PyObject *name,
+                              PyTypeObject *tp, PyObject *name,
                               long dictoffset, PyObject *descr,
                               descrsetfunc descr_set, char is_data_descr)
 {
@@ -266,7 +356,7 @@ _PyLlvm_Object_GenericSetAttr(PyObject *obj, PyObject *value,
         return descr_set(descr, obj, value);
     }
 
-    dictptr = _PyLlvm_Object_GetDictPtr(obj, type, dictoffset);
+    dictptr = get_dict_ptr(obj, tp, dictoffset);
 
     /* If the object has a dict slot, store it in there.  */
     if (dictptr != NULL) {
@@ -298,13 +388,13 @@ _PyLlvm_Object_GenericSetAttr(PyObject *obj, PyObject *value,
     if (descr == NULL) {
         PyErr_Format(PyExc_AttributeError,
                      "'%.100s' object has no attribute '%.200s'",
-                     type->tp_name, PyString_AS_STRING(name));
+                     tp->tp_name, PyString_AS_STRING(name));
         return -1;
     }
 
     PyErr_Format(PyExc_AttributeError,
                  "'%.50s' object attribute '%.400s' is read-only",
-                 type->tp_name, PyString_AS_STRING(name));
+                 tp->tp_name, PyString_AS_STRING(name));
     return -1;
 }
 
@@ -777,6 +867,8 @@ PyStringObject *_dummy_StringObject;
 PyUnicodeObject *_dummy_UnicodeObject;
 /* PyCFunctionObject, */
 PyCFunctionObject *_dummy_CFunctionObject;
+/* PyMethodDescrObject, */
+PyMethodDescrObject *_dummy_MethodDescrObject;
 /* PyIntObject, */
 PyIntObject *_dummy_IntObject;
 /* PyLongObject, */

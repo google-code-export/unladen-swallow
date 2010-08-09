@@ -56,7 +56,8 @@ public:
           name_v_(0),
           dictoffset_v_(0),
           descr_v_(0),
-          is_data_descr_v_(0) { }
+          is_data_descr_v_(0),
+          bail_block_(0) { }
 
     // This helper method returns false if a LOAD_ATTR or STORE_ATTR opcode
     // cannot be optimized.  If the opcode can be optimized, it fills in
@@ -102,6 +103,8 @@ public:
     llvm::Value *descr_v_;
     llvm::Value *is_data_descr_v_;
 
+    llvm::BasicBlock *bail_block_;
+
 private:
     typedef llvm::IRBuilder<true, llvm::TargetFolder> BuilderT;
 
@@ -126,6 +129,7 @@ public:
     OpcodeAttributes(LlvmFunctionBuilder *fbuilder);
 
     void LOAD_ATTR(int index);
+    void LOAD_METHOD(int index);
     void STORE_ATTR(int index);
     void DELETE_ATTR(int index);
 
@@ -137,6 +141,8 @@ private:
     bool LOAD_ATTR_fast(int names_index);
     void STORE_ATTR_safe(int names_index);
     bool STORE_ATTR_fast(int names_index);
+    bool LOAD_METHOD_known(int names_index);
+    bool LOAD_METHOD_unknown(int names_index);
 
     typedef llvm::IRBuilder<true, llvm::TargetFolder> BuilderT;
 

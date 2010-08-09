@@ -51,6 +51,7 @@ PyAPI_FUNC(PyObject *) PyMethod_New(PyObject *, PyObject *, PyObject *);
 PyAPI_FUNC(PyObject *) PyMethod_Function(PyObject *);
 PyAPI_FUNC(PyObject *) PyMethod_Self(PyObject *);
 PyAPI_FUNC(PyObject *) PyMethod_Class(PyObject *);
+PyAPI_FUNC(int) _PyMethod_ShouldBind(PyObject *, PyObject *);
 
 /* Look up attribute with name (a string) on instance object pinst, using
  * only the instance and base class dicts.  If a descriptor is found in

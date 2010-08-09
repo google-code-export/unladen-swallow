@@ -4124,6 +4124,153 @@ def foo():
         self.assertFalse(foo.__code__.co_use_jit)
 
 
+class LoadMethodTests(LlvmTestCase, ExtraAssertsTestCase):
+
+    """Tests for the LOAD_METHOD/CALL_METHOD opcode optimization."""
+
+    def test_basic(self):
+        receiver_cell = [None]  # The method self arg goes here.
+        class C(object):
+            def meth(self):
+                receiver_cell[0] = self
+        c = C()
+        foo = compile_for_llvm("foo", "def foo(c): c.meth()",
+                               optimization_level=None)
+
+        foo(c)
+        self.assertEqual(c, receiver_cell[0])
+        spin_until_hot.__code__.co_use_jit = True
+        spin_until_hot(foo, [c])
+        receiver_cell[0] = None  # Reset the cell.
+
+        foo(c)
+        self.assertEqual(c, receiver_cell[0])
+
+    def test_c_method_descr(self):
+        foo = compile_for_llvm("foo", "def foo(l): l.append(1)",
+                               optimization_level=None)
+        spin_until_hot(foo, [[]])
+        l = []
+        foo(l)
+        self.assertEqual(l, [1])
+
+    def test_c_method_descr_arg_range(self):
+        # This test used to raise a SystemError for failed function
+        # verification because we weren't passing an extra NULL for the
+        # optional argument to pop.
+        foo = compile_for_llvm("foo", """\
+def foo(l):
+    l.append(0)  # Just so we'll have something to pop.
+    l.pop()
+""", optimization_level=None)
+        spin_until_hot(foo, [[]])
+        foo([])
+
+    def test_module_method(self):
+        tracer = sys.gettrace()
+        foo = compile_for_llvm("foo", "def foo(): return sys.gettrace()",
+                               optimization_level=None)
+        self.assertEqual(foo(), tracer)
+        spin_until_hot(foo, [])
+        self.assertEqual(foo(), tracer)
+
+    def test_nested_method_calls(self):
+        class C(object):
+            def bar(self, arg):
+                return arg
+            def baz(self):
+                return 1
+        c = C()
+        foo = compile_for_llvm("foo", "def foo(c): return c.bar(c.baz())",
+                               optimization_level=None)
+        self.assertEqual(foo(c), 1)
+        spin_until_hot(foo, [c])
+        self.assertEqual(foo(c), 1)
+
+    def test_other_class_methods(self):
+        # This test only tests the interpreter, but it's testing the
+        # _PyObject_ShouldBindMethod function that we also use in the JIT
+        # compiler.
+        receiver_cell = [None]
+        class C(object):
+            def bar(self):
+                receiver_cell[0] = self
+        class D(object):
+            def bar(self):
+                pass
+        D.bar = C.bar  # This won't work.
+        d = D()
+        self.assertRaises(TypeError, d.bar)
+
+        # This will, however, grab the underlying function, and work.
+        D.bar = C.__dict__["bar"]
+        d.bar()  # This should not raise.
+
+    def test_object_attrs(self):
+        # Test that we don't optimize method access to an object attribute,
+        # even though it looks like a method access.
+        class C(object):
+            def bar(self):
+                return 2
+        c = C()
+        c.bar = lambda: 1
+        foo = compile_for_llvm("foo", "def foo(c): return c.bar()",
+                               optimization_level=None)
+        self.assertEqual(foo(c), 1)
+        spin_until_hot(foo, [c])
+        self.assertEqual(foo(c), 1)
+
+        # This should not bail, because LOAD_METHOD should fall back to
+        # LOAD_ATTR when the feedback says we're not loading methods.
+        del c.bar
+        self.assertEqual(foo(c), 2)
+
+    def test_already_bound(self):
+        # Test that we don't optimize method access to an already bound method,
+        # even though it looks like a method access.
+        receiver_cell = [None]
+        class C(object):
+            pass
+        # We need two classes so we don't optimize the load attribute, which
+        # will invalidate the machine code if we change C.
+        class D(object):
+            def baz(self):
+                receiver_cell[0] = self
+        c = C()
+        d = D()
+        C.baz = d.baz  # Put this bound method on the class.
+        foo = compile_for_llvm("foo", "def foo(c): c.baz()",
+                               optimization_level=None)
+        spin_until_hot(foo, [c], [d])
+
+        # Check that c.baz() sets receiver_cell[0] to d.  If we didn't check if
+        # a method were already bound, we might have rebound D.baz to c.
+        receiver_cell[0] = None
+        foo(c)
+        self.assertEqual(receiver_cell[0], d)
+
+    def test_unknown_method(self):
+        # Train the function on two different types so that the classic
+        # LOAD_ATTR optimization doesn't apply, forcing us to use a different
+        # code path.
+        receiver_cell = [None]
+        class C(object):
+            def meth(self):
+                receiver_cell[0] = self
+        class D(object):
+            def meth(self):
+                receiver_cell[0] = self
+        foo = compile_for_llvm("foo", "def foo(o): o.meth()",
+                               optimization_level=None)
+        c = C()
+        d = D()
+        spin_until_hot(foo, [c], [d])
+        foo(c)
+        self.assertEqual(receiver_cell[0], c)
+        foo(d)
+        self.assertEqual(receiver_cell[0], d)
+
+
 class InliningTests(LlvmTestCase, ExtraAssertsTestCase):
 
     def test_manual_optimization(self):
@@ -4350,7 +4497,7 @@ def test_main():
                  OperatorTests, LiteralsTests, BailoutTests, InliningTests,
                  LlvmRebindBuiltinsTests, OptimizationTests,
                  SetJitControlTests, TypeBasedAnalysisTests,
-                 CrashRegressionTests]
+                 CrashRegressionTests, LoadMethodTests]
     if sys.flags.optimize >= 1:
         print >>sys.stderr, "test_llvm -- skipping some tests due to -O flag."
         sys.stderr.flush()

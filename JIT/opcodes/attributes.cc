@@ -78,9 +78,32 @@ public:
 
 static llvm::ManagedStatic<AccessAttrStats> access_attr_stats;
 
+class MethodStats {
+public:
+    ~MethodStats() {
+        errs() << "\nLOAD/CALL_METHOD optimization:\n";
+        errs() << "Total load opcodes: " << this->total << "\n";
+        errs() << "Optimized opcodes: "
+               << (this->known + this->unknown) << "\n";
+        errs() << "Predictable methods: " << this->known << "\n";
+        errs() << "Unpredictable methods: " << this->unknown << "\n";
+    }
+
+    // Total number of LOAD_METHOD opcodes compiled.
+    unsigned total;
+    // Number of monomorphic method call sites.
+    unsigned known;
+    // Number of polymorphic method call sites that were still optimized.
+    unsigned unknown;
+};
+
+static llvm::ManagedStatic<MethodStats> method_stats;
+
 #define ACCESS_ATTR_INC_STATS(field) access_attr_stats->field++
+#define METHOD_INC_STATS(field) method_stats->field++
 #else
 #define ACCESS_ATTR_INC_STATS(field)
+#define METHOD_INC_STATS(field)
 #endif /* Py_WITH_INSTRUMENTATION */
 
 namespace py {
@@ -236,6 +259,148 @@ OpcodeAttributes::STORE_ATTR_fast(int names_index)
     return true;
 }
 
+void
+OpcodeAttributes::LOAD_METHOD(int names_index)
+{
+    const PyRuntimeFeedback *counters = this->fbuilder_->GetFeedback(1);
+    int method_count = 0;
+    int nonmethod_count = 0;
+    if (counters != NULL) {
+        method_count = counters->GetCounter(PY_FDO_LOADMETHOD_METHOD);
+        nonmethod_count = counters->GetCounter(PY_FDO_LOADMETHOD_OTHER);
+    }
+
+    METHOD_INC_STATS(total);
+
+    bool optimized = false;
+    if (method_count > 0 && nonmethod_count == 0) {
+        // We have data, and all loads have turned out to be methods.
+        optimized = this->LOAD_METHOD_known(names_index);
+        // If we can't use type feedback, fall back to a simpler optimization.
+        if (!optimized) {
+            optimized = this->LOAD_METHOD_unknown(names_index);
+        }
+    }
+
+    if (!optimized) {
+        // No data, conflicting data, or we couldn't do the optimization.  Emit
+        // the unoptimized, safe code.
+        this->LOAD_ATTR(names_index);
+        Value *attr = this->fbuilder_->Pop();
+        this->fbuilder_->Push(this->state_->GetNull<PyObject*>());
+        this->fbuilder_->Push(attr);
+    } else {
+        // We currently count LOAD_METHODs as attribute loads.  LOAD_ATTR will
+        // automatically count the opcode, but we won't call it if we took the
+        // optimized path.
+        ACCESS_ATTR_INC_STATS(loads);
+    }
+
+    this->fbuilder_->loads_optimized().push_back(optimized);
+}
+
+bool
+OpcodeAttributes::LOAD_METHOD_unknown(int names_index)
+{
+    PyObject *name =
+        PyTuple_GET_ITEM(this->fbuilder_->code_object()->co_names, names_index);
+
+    // This optimization only supports string names.
+    if (!PyString_Check(name)) {
+        return false;
+    }
+
+    METHOD_INC_STATS(unknown);
+
+    // Call the inline function that deals with the lookup.  LLVM propagates
+    // these constant arguments through the body of the function.
+    Value *obj_v = this->fbuilder_->Pop();
+    Value *name_v = this->state_->EmbedPointer<PyObject*>(name);
+    Value *getattr_func = this->state_->GetGlobalFunction<
+        PyObject *(PyObject *obj, PyObject *name)>(
+                "_PyLlvm_Object_GetUnknownMethod");
+    Value *method = this->state_->CreateCall(getattr_func, obj_v, name_v);
+
+    // Bail if method is NULL.
+    BasicBlock *bail_block =
+        this->state_->CreateBasicBlock("LOAD_METHOD_unknown_bail_block");
+    BasicBlock *push_result =
+        this->state_->CreateBasicBlock("LOAD_METHOD_unknown_push_result");
+    this->builder_.CreateCondBr(this->state_->IsNull(method),
+                                           bail_block, push_result);
+
+    // Fill in the bail bb.
+    this->builder_.SetInsertPoint(bail_block);
+    this->fbuilder_->Push(obj_v);
+    this->fbuilder_->CreateGuardBailPoint(_PYGUARD_LOAD_METHOD);
+
+    // Put the method and self on the stack.  We bail instead of raising
+    // exceptions.
+    this->builder_.SetInsertPoint(push_result);
+    this->fbuilder_->Push(method);
+    this->fbuilder_->Push(obj_v);
+    return true;
+}
+
+bool
+OpcodeAttributes::LOAD_METHOD_known(int names_index)
+{
+    // Do an optimized LOAD_ATTR with the optimized LOAD_METHOD.
+    PyObject *name =
+        PyTuple_GET_ITEM(this->fbuilder_->code_object()->co_names, names_index);
+    AttributeAccessor accessor(this->fbuilder_, name, ATTR_ACCESS_LOAD);
+
+    // Check that we can optimize this load.
+    if (!accessor.CanOptimizeAttrAccess()) {
+        return false;
+    }
+
+    // Check that the descriptor is in fact a method.  The only way this could
+    // fail is if between recording feedback and optimizing this code, the type
+    // is modified and the method replaced.
+    if (!_PyObject_ShouldBindMethod((PyObject*)accessor.guard_type_,
+                                    accessor.descr_)) {
+        return false;
+    }
+
+    METHOD_INC_STATS(known);
+    ACCESS_ATTR_INC_STATS(optimized_loads);
+
+    // Emit the appropriate guards.
+    Value *obj_v = this->fbuilder_->Pop();
+    BasicBlock *do_load = state_->CreateBasicBlock("LOAD_METHOD_do_load");
+    accessor.GuardAttributeAccess(obj_v, do_load);
+
+    // Call the inline function that deals with the lookup.  LLVM propagates
+    // these constant arguments through the body of the function.
+    this->builder_.SetInsertPoint(do_load);
+    Value *getattr_func = state_->GetGlobalFunction<
+        PyObject *(PyObject *obj, PyTypeObject *tp, PyObject *name,
+                   long dictoffset, PyObject *method)>(
+                           "_PyLlvm_Object_GetKnownMethod");
+    Value *args[] = {
+        obj_v,
+        accessor.guard_type_v_,
+        accessor.name_v_,
+        accessor.dictoffset_v_,
+        accessor.descr_v_,
+    };
+    Value *method_v = state_->CreateCall(getattr_func, args, array_endof(args));
+
+    // Bail if method_v is NULL.
+    BasicBlock *push_result =
+        state_->CreateBasicBlock("LOAD_METHOD_push_result");
+    this->builder_.CreateCondBr(state_->IsNull(method_v),
+                                     accessor.bail_block_, push_result);
+
+    // Put the method and self on the stack.  We bail instead of raising
+    // exceptions.
+    this->builder_.SetInsertPoint(push_result);
+    this->fbuilder_->Push(method_v);
+    this->fbuilder_->Push(obj_v);
+    return true;
+}
+
 bool
 AttributeAccessor::CanOptimizeAttrAccess()
 {
@@ -309,12 +474,6 @@ AttributeAccessor::CanOptimizeAttrAccess()
         return false;
     }
 
-    // Now that we know for sure that we are going to optimize this lookup, add
-    // the type to the list of types we need to listen for modifications from
-    // and make the llvm::Values.
-    this->fbuilder_->WatchType(type);
-    MakeLlvmValues();
-
     return true;
 }
 
@@ -359,9 +518,16 @@ AttributeAccessor::GuardAttributeAccess(
     BuilderT &builder = this->fbuilder_->builder();
     LlvmFunctionState *state = this->fbuilder_->state();
 
+    // Now that we know for sure that we are going to optimize this lookup, add
+    // the type to the list of types we need to listen for modifications from
+    // and make the llvm::Values.
+    fbuilder->WatchType(this->guard_type_);
+    this->MakeLlvmValues();
+
     BasicBlock *bail_block = state->CreateBasicBlock("ATTR_bail_block");
     BasicBlock *guard_type = state->CreateBasicBlock("ATTR_check_valid");
     BasicBlock *guard_descr = state->CreateBasicBlock("ATTR_check_descr");
+    this->bail_block_ = bail_block;
 
     // Make sure that the code object is still valid.  This may fail if the
     // code object is invalidated inside of a call to the code object.

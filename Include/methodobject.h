@@ -66,6 +66,13 @@ typedef struct PyMethodDef {
 
 PyAPI_FUNC(PyObject *) Py_FindMethod(PyMethodDef[], PyObject *, const char *);
 
+/* Make sure a method definition is ready by performing checks and updating old
+   method protocols to new ones.  This must be called before the method
+   definition can be used to make a call.  */
+PyAPI_FUNC(int) PyMethodDef_Ready(PyMethodDef *ml);
+PyAPI_FUNC(PyObject *) PyMethodDef_Call(PyMethodDef *, PyObject *, PyObject *,
+					PyObject *);
+
 #define PyCFunction_New(ML, SELF) PyCFunction_NewEx((ML), (SELF), NULL)
 PyAPI_FUNC(PyObject *) PyCFunction_NewEx(PyMethodDef *, PyObject *,
 					 PyObject *);

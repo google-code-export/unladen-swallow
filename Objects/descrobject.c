@@ -206,11 +206,14 @@ getset_set(PyGetSetDescrObject *descr, PyObject *obj, PyObject *value)
 	return -1;
 }
 
+/* When calling a method descriptor or wrapper descriptor, check the arguments
+ * this way.  Return self or NULL on exception.
+ */
 static PyObject *
-methoddescr_call(PyMethodDescrObject *descr, PyObject *args, PyObject *kwds)
+descr_call_check(PyDescrObject *descr, PyObject *args)
 {
 	Py_ssize_t argc;
-	PyObject *self, *func, *result;
+	PyObject *self;
 
 	/* Make sure that the first argument is acceptable as 'self' */
 	assert(PyTuple_Check(args));
@@ -234,18 +237,27 @@ methoddescr_call(PyMethodDescrObject *descr, PyObject *args, PyObject *kwds)
 			     self->ob_type->tp_name);
 		return NULL;
 	}
+	return self;
+}
 
-	func = PyCFunction_New(descr->d_method, self);
-	if (func == NULL)
-		return NULL;
-	args = PyTuple_GetSlice(args, 1, argc);
-	if (args == NULL) {
-		Py_DECREF(func);
+static PyObject *
+methoddescr_call(PyMethodDescrObject *descr, PyObject *args, PyObject *kwds)
+{
+	PyObject *self, *result;
+
+	self = descr_call_check((PyDescrObject*)descr, args);
+	if (self == NULL) {
 		return NULL;
 	}
-	result = PyEval_CallObjectWithKeywords(func, args, kwds);
+
+	/* This is an allocation, but we can probably avoid it best by special
+	 * casing descriptor objects in _PyEval_CallFunction.  */
+	args = PyTuple_GetSlice(args, 1, PyTuple_GET_SIZE(args));
+	if (args == NULL) {
+		return NULL;
+	}
+	result = PyMethodDef_Call(descr->d_method, self, args, kwds);
 	Py_DECREF(args);
-	Py_DECREF(func);
 	return result;
 }
 
@@ -264,48 +276,8 @@ classmethoddescr_call(PyMethodDescrObject *descr, PyObject *args,
 	return result;
 }
 
-static PyObject *
-wrapperdescr_call(PyWrapperDescrObject *descr, PyObject *args, PyObject *kwds)
-{
-	Py_ssize_t argc;
-	PyObject *self, *func, *result;
-
-	/* Make sure that the first argument is acceptable as 'self' */
-	assert(PyTuple_Check(args));
-	argc = PyTuple_GET_SIZE(args);
-	if (argc < 1) {
-		PyErr_Format(PyExc_TypeError,
-			     "descriptor '%.300s' of '%.100s' "
-			     "object needs an argument",
-			     descr_name((PyDescrObject *)descr),
-			     descr->d_type->tp_name);
-		return NULL;
-	}
-	self = PyTuple_GET_ITEM(args, 0);
-	if (!PyObject_IsInstance(self, (PyObject *)(descr->d_type))) {
-		PyErr_Format(PyExc_TypeError,
-			     "descriptor '%.200s' "
-			     "requires a '%.100s' object "
-			     "but received a '%.100s'",
-			     descr_name((PyDescrObject *)descr),
-			     descr->d_type->tp_name,
-			     self->ob_type->tp_name);
-		return NULL;
-	}
-
-	func = PyWrapper_New((PyObject *)descr, self);
-	if (func == NULL)
-		return NULL;
-	args = PyTuple_GetSlice(args, 1, argc);
-	if (args == NULL) {
-		Py_DECREF(func);
-		return NULL;
-	}
-	result = PyEval_CallObjectWithKeywords(func, args, kwds);
-	Py_DECREF(args);
-	Py_DECREF(func);
-	return result;
-}
+static PyObject *wrapperdescr_call(PyWrapperDescrObject *descr, PyObject *args,
+                                   PyObject *kwds);
 
 static PyObject *
 method_get_doc(PyMethodDescrObject *descr, void *closure)
@@ -381,7 +353,7 @@ descr_traverse(PyObject *self, visitproc visit, void *arg)
 	return 0;
 }
 
-static PyTypeObject PyMethodDescr_Type = {
+PyTypeObject PyMethodDescr_Type = {
 	PyVarObject_HEAD_INIT(&PyType_Type, 0)
 	"method_descriptor",
 	sizeof(PyMethodDescrObject),
@@ -590,6 +562,9 @@ PyDescr_NewMethod(PyTypeObject *type, PyMethodDef *method)
 {
 	PyMethodDescrObject *descr;
 
+	if (PyMethodDef_Ready(method) < 0)
+		return NULL;
+
 	descr = (PyMethodDescrObject *)descr_new(&PyMethodDescr_Type,
 						 type, method->ml_name);
 	if (descr != NULL)
@@ -601,6 +576,9 @@ PyObject *
 PyDescr_NewClassMethod(PyTypeObject *type, PyMethodDef *method)
 {
 	PyMethodDescrObject *descr;
+
+	if (PyMethodDef_Ready(method) < 0)
+		return NULL;
 
 	descr = (PyMethodDescrObject *)descr_new(&PyClassMethodDescr_Type,
 						 type, method->ml_name);
@@ -989,6 +967,31 @@ wrapper_call(wrapperobject *wp, PyObject *args, PyObject *kwds)
 		return NULL;
 	}
 	return (*wrapper)(self, args, wp->descr->d_wrapped);
+}
+
+static PyTypeObject wrappertype;
+
+static PyObject *
+wrapperdescr_call(PyWrapperDescrObject *descr, PyObject *args, PyObject *kwds)
+{
+	PyObject *self, *result;
+	/* Stack allocate the wrapper to avoid heap allocations.  */
+	wrapperobject func = {PyObject_HEAD_INIT(&wrappertype) NULL, NULL};
+
+	self = descr_call_check((PyDescrObject*)descr, args);
+	if (self == NULL) {
+		return NULL;
+	}
+
+	func.descr = descr;
+	func.self = self;
+	args = PyTuple_GetSlice(args, 1, PyTuple_GET_SIZE(args));
+	if (args == NULL) {
+		return NULL;
+	}
+	result = wrapper_call(&func, args, kwds);
+	Py_DECREF(args);
+	return result;
 }
 
 static int

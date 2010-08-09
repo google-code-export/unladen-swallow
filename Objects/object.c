@@ -1272,7 +1272,7 @@ PyObject_SetAttr(PyObject *v, PyObject *name, PyObject *value)
 }
 
 /* Helper to get a pointer to an object's __dict__ slot, if any.  Keep in sync
-   with _PyLlvm_Object_GetDictPtr.  */
+ * with get_dict_ptr in llvm_inline_functions.c. */
 
 PyObject **
 _PyObject_GetDictPtr(PyObject *obj)
@@ -1308,6 +1308,166 @@ PyObject_SelfIter(PyObject *obj)
 	return obj;
 }
 
+/* This does the first part of generic attribute lookup, which is when data
+ * descriptors get called and dict attributes returned.
+ */
+static inline int
+generic_getattr_part1(PyObject *obj, PyObject *name, PyTypeObject *tp,
+		      PyObject **descr, descrgetfunc *f, PyObject **res)
+{
+	PyObject **dictptr;
+
+	/* Make the type dict ready if it isn't already.  */
+	if (tp->tp_dict == NULL) {
+		if (PyType_Ready(tp) < 0)
+			return -1;
+	}
+
+	*descr = _PyType_Lookup(tp, name);
+	Py_XINCREF(*descr);
+
+	/* Data descriptors have highest precedence.  */
+	*f = NULL;
+	if (*descr != NULL &&
+	    PyType_HasFeature((*descr)->ob_type, Py_TPFLAGS_HAVE_CLASS)) {
+		*f = (*descr)->ob_type->tp_descr_get;
+		if (*f != NULL && PyDescr_IsData(*descr)) {
+			*res = (*f)(*descr, obj, (PyObject *)tp);
+			Py_DECREF(*descr);
+			return 1;
+		}
+	}
+
+	/* Instance attributes have the next level of precedence.  */
+	dictptr = _PyObject_GetDictPtr(obj);
+	if (dictptr != NULL) {
+		PyObject *dict = *dictptr;
+		if (dict != NULL) {
+			Py_INCREF(dict);
+			*res = PyDict_GetItem(dict, name);
+			if (*res != NULL) {
+				Py_INCREF(*res);
+				Py_XDECREF(*descr);
+				Py_DECREF(dict);
+				return 1;
+			}
+                        Py_DECREF(dict);
+		}
+	}
+
+	/* We are not done doing attribute lookup yet.  */
+	return 0;
+}
+
+/* This does the second part of generic attribute lookup, which is when
+ * non-data descriptors (method descriptors) get called or class attributes get
+ * returned.
+ */
+static inline void
+generic_getattr_part2(PyObject *obj, PyObject *name, PyTypeObject *tp,
+		      PyObject *descr, descrgetfunc f, PyObject **res)
+{
+	/* Non-data descriptors (methods) come next.  */
+	if (f != NULL) {
+		*res = f(descr, obj, (PyObject *)Py_TYPE(obj));
+		Py_DECREF(descr);
+		return;
+	}
+
+	/* Class attributes have lowest precedence.  */
+	if (descr != NULL) {
+		*res = descr;
+		/* descr was already increfed */
+		return;
+	}
+
+	PyErr_Format(PyExc_AttributeError,
+		     "'%.50s' object has no attribute '%.400s'",
+		     tp->tp_name, PyString_AS_STRING(name));
+	return;
+}
+
+/* Return true if descr is a function or method that should be bound when
+ * loaded as an attribute of obj.  */
+int
+_PyObject_ShouldBindMethod(PyObject *tp, PyObject *descr)
+{
+	if (PyMethod_Check(descr)) {
+		int r = _PyMethod_ShouldBind(descr, tp);
+		if (r < 0) {
+			/* Swallow exceptions that shouldn't occur.  */
+			PyErr_Clear();
+		}
+		else {
+			return r;
+		}
+	}
+	else if (PyFunction_Check(descr)) {
+		/* PyFunctionObjects should always be bound to the
+		 * instance.  */
+		return 1;
+	}
+	else if (PyMethodDescr_Check(descr) ||
+	         PyWrapperDescr_Check(descr)) {
+		/* Method and wrapper descriptors are always unbound, so we
+		 * just have to check that the types match.  */
+		PyObject *d_type = (PyObject*)((PyDescrObject*)descr)->d_type;
+		return (tp == d_type || PyObject_IsSubclass(tp, d_type));
+	}
+	/* You might think that we should also special case PyCFunctionObjects,
+	 * but those don't actually have a tp_descr_get slot.  */
+	return 0;
+}
+
+/* Similar to PyObject_GetAttr, except that it attempts to return method
+ * objects without allocating a bound method for them by calling the
+ * descriptor.  If we can return the method unbound, we set the lowest bit of
+ * the result to 1, and otherwise we fall back to the behavior of
+ * PyObject_GetAttr and leave the bit 0.  Keep this in sync with
+ * PyObject_GenericGetAttr.  */
+PyObject *
+PyObject_GetMethod(PyObject *obj, PyObject *name)
+{
+	PyTypeObject *tp = Py_TYPE(obj);
+	PyObject *descr = NULL;
+	PyObject *res = NULL;
+	descrgetfunc f;
+
+	assert(PyString_Check(name));
+	Py_INCREF(name);
+
+	/* We fall back to normal lookup for objects that have overridden
+	 * tp_getattro.  */
+	if (tp->tp_getattro != &PyObject_GenericGetAttr) {
+		res = PyObject_GetAttr(obj, name);
+		goto done;
+	}
+
+	/* Do the first part of generic attribute lookup.  */
+	if (generic_getattr_part1(obj, name, tp, &descr, &f, &res))
+		goto done;
+
+	if (descr != NULL) {
+		/* Instead of binding unbound pure Python methods, or method
+		 * descriptors, set their low bit and return them directly so
+		 * we can avoid calling tp_descr_get, which does an allocation.
+		 */
+		if (_PyObject_ShouldBindMethod((PyObject*)tp, descr)) {
+			res = descr;
+			res = (PyObject*)(((Py_uintptr_t)res) | 1);
+			/* descr was already increfed above */
+			goto done;
+		}
+	}
+
+	/* Do the second part of generic attribute lookup.  */
+	generic_getattr_part2(obj, name, tp, descr, f, &res);
+
+  done:
+	Py_DECREF(name);
+	return res;
+}
+
 /* Generic GetAttr functions - put these in your tp_[gs]etattro slot.  Keep in
  * sync with _PyLlvm_Object_Generic[GS]etAttr.  */
 
@@ -1318,8 +1478,6 @@ PyObject_GenericGetAttr(PyObject *obj, PyObject *name)
 	PyObject *descr = NULL;
 	PyObject *res = NULL;
 	descrgetfunc f;
-	Py_ssize_t dictoffset;
-	PyObject **dictptr;
 
 	if (!PyString_Check(name)){
 #ifdef Py_USING_UNICODE
@@ -1343,75 +1501,13 @@ PyObject_GenericGetAttr(PyObject *obj, PyObject *name)
 	else
 		Py_INCREF(name);
 
-	if (tp->tp_dict == NULL) {
-		if (PyType_Ready(tp) < 0)
-			goto done;
-	}
-
-        /* TODO(rnk): This function uses a cache.  Someone should try using
-           partial inlining for the cache hits. */
-	descr = _PyType_Lookup(tp, name);
-
-	Py_XINCREF(descr);
-
-	f = NULL;
-	if (descr != NULL &&
-	    PyType_HasFeature(descr->ob_type, Py_TPFLAGS_HAVE_CLASS)) {
-		f = descr->ob_type->tp_descr_get;
-		if (f != NULL && PyDescr_IsData(descr)) {
-			res = f(descr, obj, (PyObject *)obj->ob_type);
-			Py_DECREF(descr);
-			goto done;
-		}
-	}
-
-	/* Inline _PyObject_GetDictPtr */
-	dictoffset = tp->tp_dictoffset;
-	if (dictoffset != 0) {
-		PyObject *dict;
-		if (dictoffset < 0) {
-			Py_ssize_t tsize;
-			size_t size;
-
-			tsize = ((PyVarObject *)obj)->ob_size;
-			if (tsize < 0)
-				tsize = -tsize;
-			size = _PyObject_VAR_SIZE(tp, tsize);
-
-			dictoffset += (long)size;
-			assert(dictoffset > 0);
-			assert(dictoffset % SIZEOF_VOID_P == 0);
-		}
-		dictptr = (PyObject **) ((char *)obj + dictoffset);
-		dict = *dictptr;
-		if (dict != NULL) {
-			Py_INCREF(dict);
-			res = PyDict_GetItem(dict, name);
-			if (res != NULL) {
-				Py_INCREF(res);
-				Py_XDECREF(descr);
-                                Py_DECREF(dict);
-				goto done;
-			}
-                        Py_DECREF(dict);
-		}
-	}
-
-	if (f != NULL) {
-		res = f(descr, obj, (PyObject *)Py_TYPE(obj));
-		Py_DECREF(descr);
+	/* Do the first part of generic attribute lookup.  */
+	if (generic_getattr_part1(obj, name, tp, &descr, &f, &res))
 		goto done;
-	}
 
-	if (descr != NULL) {
-		res = descr;
-		/* descr was already increfed above */
-		goto done;
-	}
+	/* Do the second part of generic attribute lookup.  */
+	generic_getattr_part2(obj, name, tp, descr, f, &res);
 
-	PyErr_Format(PyExc_AttributeError,
-		     "'%.50s' object has no attribute '%.400s'",
-		     tp->tp_name, PyString_AS_STRING(name));
   done:
 	Py_DECREF(name);
 	return res;

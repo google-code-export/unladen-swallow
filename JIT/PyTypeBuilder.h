@@ -564,6 +564,22 @@ public:
     DEFINE_FIELD(PyCFunctionObject, m_module)
 };
 
+template<> class TypeBuilder<PyMethodDescrObject, false> {
+public:
+    static const StructType *get(llvm::LLVMContext &context) {
+        static const StructType *const result =
+            cast<StructType>(PyGlobalLlvmData::Get()->module()->getTypeByName(
+                // Clang's name for the PyMethodDescrObject struct.
+                "struct.PyMethodDescrObject"));
+        return result;
+    }
+
+    DEFINE_OBJECT_HEAD_FIELDS(PyMethodDescrObject)
+    DEFINE_FIELD(PyMethodDescrObject, d_type)
+    DEFINE_FIELD(PyMethodDescrObject, d_name)
+    DEFINE_FIELD(PyMethodDescrObject, d_method)
+};
+
 template<> class TypeBuilder<PyMethodDef, false> {
 public:
     static const StructType *get(llvm::LLVMContext &context) {
@@ -640,6 +656,7 @@ typedef PyTypeBuilder<PyMethodObject> MethodTy;
 typedef PyTypeBuilder<PyFrameObject> FrameTy;
 typedef PyTypeBuilder<PyThreadState> ThreadStateTy;
 typedef PyTypeBuilder<PyCFunctionObject> CFunctionTy;
+typedef PyTypeBuilder<PyMethodDescrObject> MethodDescrTy;
 typedef PyTypeBuilder<PyMethodDef> MethodDefTy;
 }  // namespace py
 

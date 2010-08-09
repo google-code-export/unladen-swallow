@@ -46,7 +46,7 @@ typedef struct {
 	PyDescr_COMMON;
 } PyDescrObject;
 
-typedef struct {
+typedef struct PyMethodDescrObject {
 	PyDescr_COMMON;
 	PyMethodDef *d_method;
 } PyMethodDescrObject;
@@ -85,10 +85,12 @@ PyAPI_FUNC(PyObject *) PyDescr_NewWrapper(PyTypeObject *,
 PyAPI_FUNC(PyObject *) PyDictProxy_New(PyObject *);
 PyAPI_FUNC(PyObject *) PyWrapper_New(PyObject *, PyObject *);
 
+#define PyMethodDescr_Check(d) (Py_TYPE(d) == &PyMethodDescr_Type)
+#define PyWrapperDescr_Check(d) (Py_TYPE(d) == &PyWrapperDescr_Type)
 
+PyAPI_DATA(PyTypeObject) PyMethodDescr_Type;
 PyAPI_DATA(PyTypeObject) PyProperty_Type;
 #ifdef __cplusplus
 }
 #endif
 #endif /* !Py_DESCROBJECT_H */
-

@@ -6,7 +6,6 @@
 #error This header expects to be included only in C++ source
 #endif
 
-#include "JIT/RuntimeFeedback.h"
 #include "llvm/Support/IRBuilder.h"
 #include "llvm/Support/TargetFolder.h"
 
@@ -22,6 +21,7 @@ public:
     OpcodeCall(LlvmFunctionBuilder *fbuilder);
 
     void CALL_FUNCTION(int num_args);
+    void CALL_METHOD(int num_args);
     void CALL_FUNCTION_VAR(int num_args);
     void CALL_FUNCTION_KW(int num_args);
     void CALL_FUNCTION_VAR_KW(int num_args);
@@ -38,7 +38,7 @@ private:
     // work, while CALL_FUNCTION_fast takes advantage of data gathered while
     // running through the eval loop to omit as much flexibility as possible.
     void CALL_FUNCTION_safe(int num_args);
-    void CALL_FUNCTION_fast(int num_args, const PyRuntimeFeedback *);
+    bool CALL_FUNCTION_fast(int num_args);
 
     // Specialized version of CALL_FUNCTION for len() on certain types.
     void CALL_FUNCTION_fast_len(llvm::Value *actual_func,

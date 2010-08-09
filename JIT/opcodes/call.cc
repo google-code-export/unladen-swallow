@@ -35,6 +35,7 @@ public:
         errs() << "Inlined: " << this->inlined << "\n";
         errs() << "No opt: callsite kwargs: " << this->no_opt_kwargs << "\n";
         errs() << "No opt: function params: " << this->no_opt_params << "\n";
+        errs() << "No opt: not C function: " << this->no_opt_not_cfunc << "\n";
         errs() << "No opt: no data: " << this->no_opt_no_data << "\n";
         errs() << "No opt: polymorphic: " << this->no_opt_polymorphic << "\n";
     }
@@ -56,6 +57,8 @@ public:
     unsigned no_opt_no_data;
     // We only optimize monomorphic callsites so far.
     unsigned no_opt_polymorphic;
+    // We only optimize direct calls to C functions.
+    unsigned no_opt_not_cfunc;
 };
 
 static llvm::ManagedStatic<CallFunctionStats> call_function_stats;
@@ -75,22 +78,28 @@ OpcodeCall::OpcodeCall(LlvmFunctionBuilder *fbuilder) :
 {
 }
 
-void
-OpcodeCall::CALL_FUNCTION_fast(int oparg,
-                               const PyRuntimeFeedback *feedback)
+bool
+OpcodeCall::CALL_FUNCTION_fast(int oparg)
 {
-    CF_INC_STATS(total);
-
     // Check for keyword arguments; we only optimize callsites with positional
     // arguments.
     if ((oparg >> 8) & 0xff) {
         CF_INC_STATS(no_opt_kwargs);
-        this->CALL_FUNCTION_safe(oparg);
-        return;
+        return false;
     }
 
     // Only optimize monomorphic callsites.
-    llvm::SmallVector<PyMethodDef*, 3> fdo_data;
+    const PyRuntimeFeedback *feedback = this->fbuilder_->GetFeedback();
+    if (!feedback) {
+        CF_INC_STATS(no_opt_no_data);
+        return false;
+    }
+    if (feedback->FuncsOverflowed()) {
+        CF_INC_STATS(no_opt_polymorphic);
+        return false;
+    }
+
+    llvm::SmallVector<PyTypeMethodPair, 3> fdo_data;
     feedback->GetSeenFuncsInto(fdo_data);
     if (fdo_data.size() != 1) {
 #ifdef Py_WITH_INSTRUMENTATION
@@ -99,11 +108,20 @@ OpcodeCall::CALL_FUNCTION_fast(int oparg,
         else
             CF_INC_STATS(no_opt_polymorphic);
 #endif
-        this->CALL_FUNCTION_safe(oparg);
-        return;
+        return false;
     }
 
-    PyMethodDef *func_record = fdo_data[0];
+    PyMethodDef *func_record = fdo_data[0].second;
+    PyTypeObject *type_record = (PyTypeObject *)fdo_data[0].first;
+    // We embed a pointer to type_record but we don't incref it because it can
+    // only be PyCFunction_Type or PyMethodDescr_Type, which are statically
+    // allocated anyway.
+    if (type_record != &PyCFunction_Type &&
+        type_record != &PyMethodDescr_Type) {
+        CF_INC_STATS(no_opt_not_cfunc);
+        return false;
+    }
+    bool func_is_cfunc = (type_record == &PyCFunction_Type);
 
     // Only optimize calls to C functions with a known number of parameters,
     // where the number of arguments we have is in that range.
@@ -114,8 +132,7 @@ OpcodeCall::CALL_FUNCTION_fast(int oparg,
     if (!(flags & METH_ARG_RANGE &&
           min_arity <= num_args && num_args <= max_arity)) {
         CF_INC_STATS(no_opt_params);
-        this->CALL_FUNCTION_safe(oparg);
-        return;
+        return false;
     }
     assert(num_args <= PY_MAX_ARITY);
 
@@ -161,26 +178,36 @@ OpcodeCall::CALL_FUNCTION_fast(int oparg,
                 Type::getInt64Ty(this->fbuilder_->context()),
                 -num_args - 1)));
 
-    // Make sure it's a PyCFunction; if not, bail.
-    Value *is_cfunction = this->state_->CreateCall(
-        this->state_->GetGlobalFunction<int(PyObject *)>(
-            "_PyLlvm_WrapCFunctionCheck"),
-        actual_func,
-        "is_cfunction");
-    Value *is_cfunction_guard = this->builder_.CreateICmpEQ(
-        is_cfunction, ConstantInt::get(is_cfunction->getType(), 1),
-        "is_cfunction_guard");
-    this->builder_.CreateCondBr(is_cfunction_guard, check_is_same_func,
+    // Make sure it's the right type; if not, bail.
+    Value *actual_type = this->builder_.CreateLoad(
+            ObjectTy::ob_type(this->builder_, actual_func));
+    Value *right_type = this->state_->EmbedPointer<PyTypeObject*>(type_record);
+    Value *is_right_type = this->builder_.CreateICmpEQ(
+            actual_type, right_type, "is_right_type");
+    this->builder_.CreateCondBr(is_right_type, check_is_same_func,
                                 invalid_assumptions);
 
     // Make sure we got the same underlying function pointer; if not, bail.
     this->builder_.SetInsertPoint(check_is_same_func);
-    Value *actual_as_pycfunc = this->builder_.CreateBitCast(
-        actual_func,
-        PyTypeBuilder<PyCFunctionObject *>::get(this->fbuilder_->context()));
-    Value *actual_method_def = this->builder_.CreateLoad(
-        CFunctionTy::m_ml(this->builder_, actual_as_pycfunc),
-        "CALL_FUNCTION_actual_method_def");
+    Value *actual_as_righttype, *actual_method_def;
+    if (func_is_cfunc) {
+        const Type *pycfunction_ty =
+            PyTypeBuilder<PyCFunctionObject *>::get(this->fbuilder_->context());
+        actual_as_righttype = this->builder_.CreateBitCast(
+            actual_func, pycfunction_ty);
+        actual_method_def = this->builder_.CreateLoad(
+            CFunctionTy::m_ml(this->builder_, actual_as_righttype),
+            "CALL_FUNCTION_actual_method_def");
+    } else {
+        actual_as_righttype = this->builder_.CreateBitCast(
+            actual_func,
+            PyTypeBuilder<PyMethodDescrObject *>::get(
+                this->fbuilder_->context()));
+        actual_method_def = this->builder_.CreateLoad(
+            MethodDescrTy::d_method(this->builder_, actual_as_righttype),
+            "CALL_FUNCTION_actual_method_def");
+    }
+
     Value *actual_func_ptr = this->builder_.CreateLoad(
         MethodDefTy::ml_meth(this->builder_, actual_method_def),
         "CALL_FUNCTION_actual_func_ptr");
@@ -220,7 +247,7 @@ OpcodeCall::CALL_FUNCTION_fast(int oparg,
                                          invalid_assumptions,
                                          function_name);
             CF_INC_STATS(inlined);
-            return;
+            return true;
         }
     }
 
@@ -231,14 +258,16 @@ OpcodeCall::CALL_FUNCTION_fast(int oparg,
     // functions like len() and C-level methods like list.append(), we pull the
     // invocant (called m_self) from the PyCFunction object we popped
     // off the stack. Once the function returns, we patch up the stack pointer.
-    Value *self = this->builder_.CreateLoad(
-        CFunctionTy::m_self(this->builder_, actual_as_pycfunc),
-        "CALL_FUNCTION_actual_self");
     llvm::SmallVector<Value*, PY_MAX_ARITY + 1> args;  // +1 for self.
-    args.push_back(self);
-    if (num_args == 0 && max_arity == 0) {
-        args.push_back(this->state_->GetNull<PyObject *>());
+    // If the function is a PyCFunction, pass its self member.
+    if (func_is_cfunc) {
+        Value *self = this->builder_.CreateLoad(
+            CFunctionTy::m_self(this->builder_, actual_as_righttype),
+            "CALL_FUNCTION_actual_self");
+        args.push_back(self);
     }
+
+    // Pass the arguments that are on the stack.
     for (int i = num_args; i >= 1; --i) {
         args.push_back(
             this->builder_.CreateLoad(
@@ -247,7 +276,14 @@ OpcodeCall::CALL_FUNCTION_fast(int oparg,
                     ConstantInt::getSigned(
                         Type::getInt64Ty(this->fbuilder_->context()), -i))));
     }
-    for(int i = 0; i < (max_arity - num_args); ++i) {
+
+    // Pad optional arguments with NULLs.
+    for (int i = args.size(); i < max_arity + 1; ++i) {
+        args.push_back(this->state_->GetNull<PyObject *>());
+    }
+
+    // Pass a single NULL after self for METH_NOARGS functions.
+    if (args.size() == 1 && max_arity == 0) {
         args.push_back(this->state_->GetNull<PyObject *>());
     }
 
@@ -257,11 +293,16 @@ OpcodeCall::CALL_FUNCTION_fast(int oparg,
     Value *result =
         this->state_->CreateCall(llvm_func, args.begin(), args.end());
 
+    // Decref and the function and all of its arguments.
     this->state_->DecRef(actual_func);
-    // Decrefing args[0] will cause self to be double-decrefed, so avoid that.
-    for (int i = 1; i <= num_args; ++i) {
-        this->state_->DecRef(args[i]);
+    // If func is a cfunc, decrefing args[0] will cause self to be
+    // double-decrefed, so avoid that.
+    for (unsigned i = (func_is_cfunc ? 1 : 0); i < args.size(); ++i) {
+        // If LLVM knows that args[i] is NULL, it will delete this code.
+        this->state_->XDecRef(args[i]);
     }
+
+    // Adjust the stack pointer to pop the function and its arguments.
     Value *new_stack_pointer = this->builder_.CreateGEP(
         stack_pointer,
         ConstantInt::getSigned(
@@ -274,7 +315,9 @@ OpcodeCall::CALL_FUNCTION_fast(int oparg,
 
     // Check signals and maybe switch threads after each function call.
     this->fbuilder_->CheckPyTicker();
+
     CF_INC_STATS(direct_calls);
+    return true;
 }
 
 void
@@ -350,11 +393,74 @@ OpcodeCall::CALL_FUNCTION_safe(int oparg)
 void
 OpcodeCall::CALL_FUNCTION(int oparg)
 {
-    const PyRuntimeFeedback *feedback = this->fbuilder_->GetFeedback();
-    if (feedback == NULL || feedback->FuncsOverflowed())
+    CF_INC_STATS(total);
+    if (!this->CALL_FUNCTION_fast(oparg)) {
         this->CALL_FUNCTION_safe(oparg);
-    else
-        this->CALL_FUNCTION_fast(oparg, feedback);
+    }
+}
+
+void
+OpcodeCall::CALL_METHOD(int oparg)
+{
+    // We only want to generate code to handle one case, but we need to be
+    // robust in the face of malformed code objects, which might cause there to
+    // be mismatched LOAD_METHOD/CALL_METHOD opcodes.  Therefore the value we
+    // get from the loads_optimized_ stack is only a guess, but it should be
+    // accurate for all code objects with matching loads and calls.
+    bool load_optimized = false;
+    std::vector<bool> &loads_optimized = this->fbuilder_->loads_optimized();
+    if (!loads_optimized.empty()) {
+        load_optimized = loads_optimized.back();
+        loads_optimized.pop_back();
+    }
+
+    BasicBlock *call_block = state_->CreateBasicBlock("CALL_METHOD_call");
+    BasicBlock *bail_block = state_->CreateBasicBlock("CALL_METHOD_bail");
+
+    int num_args = (oparg & 0xff);
+    int num_kwargs = (oparg>>8) & 0xff;
+    // +1 for the actual function object, +1 for self.
+    int num_stack_slots = num_args + 2 * num_kwargs + 1 + 1;
+
+    // Look down the stack for the cell that is either padding or a method.
+    Value *stack_pointer =
+        this->builder_.CreateLoad(this->fbuilder_->stack_pointer_addr());
+    Value *stack_idx =
+        ConstantInt::getSigned(Type::getInt32Ty(this->fbuilder_->context()),
+                               -num_stack_slots);
+    Value *padding_ptr = this->builder_.CreateGEP(stack_pointer,
+                                                       stack_idx);
+    Value *method_or_padding = this->builder_.CreateLoad(padding_ptr);
+
+    // Depending on how we optimized the load, we either expect it to be NULL
+    // or we expect it to be non-NULL.  We bail if it's not what we expect.
+    Value *bail_cond = state_->IsNull(method_or_padding);
+    if (!load_optimized) {
+        bail_cond = this->builder_.CreateNot(bail_cond);
+    }
+    this->builder_.CreateCondBr(bail_cond, bail_block, call_block);
+
+    // Restore the stack in the bail bb.
+    this->builder_.SetInsertPoint(bail_block);
+    this->fbuilder_->CreateGuardBailPoint(_PYGUARD_CALL_METHOD);
+
+    this->builder_.SetInsertPoint(call_block);
+    if (load_optimized) {
+        // Increment the argument count in oparg and do a regular CALL_FUNCTION.
+        assert((num_args + 1) <= 0xff &&
+               "TODO(rnk): Deal with oparg overflow.");
+        oparg = (oparg & ~0xff) | ((num_args + 1) & 0xff);
+    }
+
+    this->CALL_FUNCTION(oparg);
+
+    if (!load_optimized) {
+        // Pop off the padding cell.
+        Value *result = fbuilder_->Pop();
+        Value *padding = fbuilder_->Pop();
+        state_->Assert(state_->IsNull(padding), "Padding was non-NULL!");
+        fbuilder_->Push(result);
+    }
 }
 
 // Keep this in sync with eval.cc

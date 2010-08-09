@@ -115,8 +115,9 @@ enum _Py_opcode {
     BUILD_MAP =		104,	/* Always zero for now */
     LOAD_ATTR =		105,	/* Index in name list */
     COMPARE_OP =	106,	/* Comparison operator */
-/*  IMPORT_FROM	=	108,	 Replaced by #@import_from builtin. */
 
+/*  IMPORT_FROM	=	108,	 Replaced by #@import_from builtin. */
+    LOAD_METHOD =	109,	/* Index in name list */
     JUMP_FORWARD =	110,	/* Number of bytes to skip */
     JUMP_IF_FALSE_OR_POP =	111,  /* Target byte offset from beginning
                                     of code */
@@ -138,7 +139,7 @@ enum _Py_opcode {
 /* CALL_FUNCTION_XXX opcodes defined below depend on this definition */
     CALL_FUNCTION =	131,	/* #args + (#kwargs<<8) */
 /*  MAKE_FUNCTION =	132,	Replaced by #@make_function() builtin. */
-
+    CALL_METHOD =	133,	/* #args + (#kwargs<<8) */
     MAKE_CLOSURE =	134,      /* #free vars */
     LOAD_CLOSURE =	135,      /* Load free variable from closure */
     LOAD_DEREF =	136,      /* Load and dereference from closure cell */
