@@ -230,6 +230,10 @@ PyFullFeedback::PyFullFeedback(const PyFullFeedback &src)
         if (src.usage_ == ObjectMode) {
             Py_XINCREF((PyObject *)obj);
         }
+        else if (src.InFuncMode()) {
+            PyTypeMethodPair &src_pair_ref = *(PyTypeMethodPair*)obj;
+            obj = new PyTypeMethodPair(src_pair_ref);
+        }
         this->data_.insert(obj);
     }
 }

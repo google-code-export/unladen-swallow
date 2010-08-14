@@ -154,11 +154,11 @@ TEST_F(PyLimitedFeedbackTest, SingleFunc)
     // bound invocant alive longer than necessary.
     EXPECT_EQ(start_refcount, Py_REFCNT(meth1));
 
-    SmallVector<PyMethodDef*, 3> seen;
+    SmallVector<PyTypeMethodPair, 3> seen;
     feedback->GetSeenFuncsInto(seen);
     ASSERT_EQ(1U, seen.size());
     EXPECT_EQ((void *)PyCFunction_GET_FUNCTION(meth1),
-              (void *)seen[0]->ml_meth);
+              (void *)seen[0].second->ml_meth);
     EXPECT_FALSE(feedback->FuncsOverflowed());
 
     delete feedback;
@@ -177,16 +177,12 @@ TEST_F(PyLimitedFeedbackTest, ThreeFuncs)
     feedback->AddFuncSeen(meth2);
     feedback->AddFuncSeen(meth3);
 
-    SmallVector<PyMethodDef*, 3> seen;
+    SmallVector<PyTypeMethodPair, 3> seen;
     feedback->GetSeenFuncsInto(seen);
-    ASSERT_EQ(3U, seen.size());
+    ASSERT_EQ(1U, seen.size());
     EXPECT_EQ((void *)PyCFunction_GET_FUNCTION(meth1),
-              (void *)seen[0]->ml_meth);
-    EXPECT_EQ((void *)PyCFunction_GET_FUNCTION(meth2),
-              (void *)seen[1]->ml_meth);
-    EXPECT_EQ((void *)PyCFunction_GET_FUNCTION(meth3),
-              (void *)seen[2]->ml_meth);
-    EXPECT_FALSE(feedback->FuncsOverflowed());
+              (void *)seen[0].second->ml_meth);
+    EXPECT_TRUE(feedback->FuncsOverflowed());
 
     delete feedback;
     Py_DECREF(meth1);
@@ -197,19 +193,15 @@ TEST_F(PyLimitedFeedbackTest, ThreeFuncs)
 TEST_F(PyLimitedFeedbackTest, DuplicateFuncs)
 {
     PyObject *meth1 = PyObject_GetAttrString(this->a_string_, "join");
-    PyObject *meth2 = PyObject_GetAttrString(this->a_string_, "split");
 
     this->feedback_.AddFuncSeen(meth1);
-    this->feedback_.AddFuncSeen(meth2);
     this->feedback_.AddFuncSeen(meth1);
 
-    SmallVector<PyMethodDef*, 3> seen;
+    SmallVector<PyTypeMethodPair, 3> seen;
     this->feedback_.GetSeenFuncsInto(seen);
-    ASSERT_EQ(2U, seen.size());
+    ASSERT_EQ(1U, seen.size());
     EXPECT_EQ((void *)PyCFunction_GET_FUNCTION(meth1),
-              (void *)seen[0]->ml_meth);
-    EXPECT_EQ((void *)PyCFunction_GET_FUNCTION(meth2),
-              (void *)seen[1]->ml_meth);
+              (void *)seen[0].second->ml_meth);
     EXPECT_FALSE(this->feedback_.FuncsOverflowed());
 }
 
@@ -225,7 +217,7 @@ TEST_F(PyLimitedFeedbackTest, SameMethodSameObject)
     this->feedback_.AddFuncSeen(join_meth1);
     this->feedback_.AddFuncSeen(join_meth2);
 
-    SmallVector<PyMethodDef*, 3> seen;
+    SmallVector<PyTypeMethodPair, 3> seen;
     this->feedback_.GetSeenFuncsInto(seen);
     ASSERT_EQ(1U, seen.size());
 
@@ -246,7 +238,7 @@ TEST_F(PyLimitedFeedbackTest, SameMethodSameTypeDifferentObjects)
     this->feedback_.AddFuncSeen(join_meth1);
     this->feedback_.AddFuncSeen(join_meth2);
 
-    SmallVector<PyMethodDef*, 3> seen;
+    SmallVector<PyTypeMethodPair, 3> seen;
     this->feedback_.GetSeenFuncsInto(seen);
     ASSERT_EQ(1U, seen.size());
 
@@ -307,21 +299,21 @@ TEST_F(PyLimitedFeedbackTest, CopyableFuncs)
 {
     PyObject *join_meth = PyObject_GetAttrString(this->a_string_, "join");
     PyObject *split_meth = PyObject_GetAttrString(this->a_string_, "split");
-    PyObject *count_meth = PyObject_GetAttrString(this->a_string_, "count");
 
     this->feedback_.AddFuncSeen(join_meth);
-    this->feedback_.AddFuncSeen(split_meth);
     PyLimitedFeedback second = this->feedback_;
-    SmallVector<PyMethodDef*, 3> seen;
+    SmallVector<PyTypeMethodPair, 3> seen;
     second.GetSeenFuncsInto(seen);
-    ASSERT_EQ(2U, seen.size());
+    ASSERT_EQ(1U, seen.size());
 
     // Demonstrate that the copies are independent.
-    second.AddFuncSeen(count_meth);
+    second.AddFuncSeen(split_meth);
     second.GetSeenFuncsInto(seen);
-    ASSERT_EQ(3U, seen.size());
+    ASSERT_EQ(1U, seen.size());
+    EXPECT_TRUE(second.ObjectsOverflowed());
     this->feedback_.GetSeenFuncsInto(seen);
-    ASSERT_EQ(2U, seen.size());
+    ASSERT_EQ(1U, seen.size());
+    EXPECT_FALSE(this->feedback_.ObjectsOverflowed());
 }
 
 TEST_F(PyLimitedFeedbackTest, Assignment)
@@ -451,7 +443,7 @@ TEST_F(PyFullFeedbackTest, CopyableFuncs)
     this->feedback_.AddFuncSeen(join_meth);
     this->feedback_.AddFuncSeen(split_meth);
     PyFullFeedback second = this->feedback_;
-    SmallVector<PyMethodDef*, 3> seen;
+    SmallVector<PyTypeMethodPair, 3> seen;
     second.GetSeenFuncsInto(seen);
     ASSERT_EQ(2U, seen.size());
 
@@ -488,13 +480,13 @@ TEST_F(PyFullFeedbackTest, DuplicateFuncs)
     this->feedback_.AddFuncSeen(meth2);
     this->feedback_.AddFuncSeen(meth1);
 
-    SmallVector<PyMethodDef*, 3> seen;
+    SmallVector<PyTypeMethodPair, 3> seen;
     this->feedback_.GetSeenFuncsInto(seen);
     ASSERT_EQ(2U, seen.size());
     EXPECT_EQ((void *)PyCFunction_GET_FUNCTION(meth1),
-              (void *)seen[0]->ml_meth);
+              (void *)seen[0].second->ml_meth);
     EXPECT_EQ((void *)PyCFunction_GET_FUNCTION(meth2),
-              (void *)seen[1]->ml_meth);
+              (void *)seen[1].second->ml_meth);
     EXPECT_FALSE(this->feedback_.FuncsOverflowed());
 }
 
@@ -510,7 +502,7 @@ TEST_F(PyFullFeedbackTest, SameMethodSameObject)
     this->feedback_.AddFuncSeen(join_meth1);
     this->feedback_.AddFuncSeen(join_meth2);
 
-    SmallVector<PyMethodDef*, 3> seen;
+    SmallVector<PyTypeMethodPair, 3> seen;
     this->feedback_.GetSeenFuncsInto(seen);
     ASSERT_EQ(1U, seen.size());
 
@@ -531,7 +523,7 @@ TEST_F(PyFullFeedbackTest, SameMethodSameTypeDifferentObjects)
     this->feedback_.AddFuncSeen(join_meth1);
     this->feedback_.AddFuncSeen(join_meth2);
 
-    SmallVector<PyMethodDef*, 3> seen;
+    SmallVector<PyTypeMethodPair, 3> seen;
     this->feedback_.GetSeenFuncsInto(seen);
     ASSERT_EQ(1U, seen.size());
 
