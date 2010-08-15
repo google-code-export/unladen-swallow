@@ -12,6 +12,7 @@ public:
     // Initializes the iterator to point to the first opcode in the
     // bytecode string.
     PyBytecodeIterator(PyObject *bytecode_string);
+    PyBytecodeIterator(PyBytecodeIterator &iter, int index);
     // Allow the default copy operations.
 
     int Opcode() const { return this->opcode_; }

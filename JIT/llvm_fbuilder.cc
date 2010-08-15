@@ -6,8 +6,9 @@
 #include "frameobject.h"
 
 #include "JIT/ConstantMirror.h"
-#include "JIT/global_llvm_data.h"
+#include "JIT/PyBytecodeIterator.h"
 #include "JIT/PyTypeBuilder.h"
+#include "JIT/global_llvm_data.h"
 #include "Util/EventTimer.h"
 
 #include "llvm/ADT/DenseMap.h"
@@ -55,7 +56,92 @@ using llvm::errs;
 #define GET_GLOBAL_VARIABLE(TYPE, VARIABLE) \
     state()->GetGlobalVariable<TYPE>(&VARIABLE, #VARIABLE)
 
+extern "C" {
+    extern int _Py_OpcodeStackEffect(int opcode, int oparg);
+}
+
 namespace py {
+
+// find_stack_top fills stack info with the absolute stack levels
+// for each opcode. This takes jumps into account.
+
+static int
+find_stack_top(PyBytecodeIterator iter,
+               int stack_level,
+               std::vector<int>& stack_info)
+{
+    // Stop recursion if stack_info for this block is already set.
+    // Sanity check if both codepaths return the same stack level.
+    if (stack_info[iter.CurIndex()] >= 0) {
+        assert(stack_level == stack_info[iter.CurIndex()]);
+        return 0;
+    }
+
+    for (; !iter.Done() && !iter.Error(); iter.Advance()) {
+        stack_info[iter.CurIndex()] = stack_level;
+        stack_level += _Py_OpcodeStackEffect(iter.Opcode(), iter.Oparg());
+        switch (iter.Opcode()) {
+        case RETURN_VALUE:
+            return 0;
+        case JUMP_IF_FALSE_OR_POP:
+        case JUMP_IF_TRUE_OR_POP:
+            find_stack_top(PyBytecodeIterator(iter, iter.Oparg()),
+                           stack_level,
+                           stack_info);
+            stack_level -= 1;
+            break;
+        case POP_JUMP_IF_FALSE:
+        case POP_JUMP_IF_TRUE:
+            // Jump abs, cond
+            find_stack_top(PyBytecodeIterator(iter, iter.Oparg()),
+                           stack_level,
+                           stack_info);
+            break;
+
+        case JUMP_ABSOLUTE:
+        case CONTINUE_LOOP:
+            // Jump abs, always
+            find_stack_top(PyBytecodeIterator(iter, iter.Oparg()),
+                           stack_level,
+                           stack_info);
+            return 0;
+            break;
+
+        case FOR_ITER:
+            find_stack_top(PyBytecodeIterator(iter,
+                                              iter.NextIndex() + iter.Oparg()),
+                           stack_level - 2,
+                           stack_info);
+            break;
+
+        case SETUP_LOOP:
+            find_stack_top(PyBytecodeIterator(iter,
+                                              iter.NextIndex() + iter.Oparg()),
+                           stack_level,
+                           stack_info);
+            break;
+        case SETUP_EXCEPT:
+        case SETUP_FINALLY:
+            find_stack_top(PyBytecodeIterator(iter,
+                                              iter.NextIndex() + iter.Oparg()),
+                           stack_level,
+                           stack_info);
+            stack_level -= 3;
+            break;
+
+        case JUMP_FORWARD:
+            // Jump rel, always
+            find_stack_top(PyBytecodeIterator(iter,
+                                              iter.NextIndex() + iter.Oparg()),
+                           stack_level,
+                           stack_info);
+            return 0;
+            break;
+
+        }
+    }
+    return 0;
+}
 
 static llvm::StringRef
 pystring_to_stringref(const PyObject* str)
@@ -92,6 +178,7 @@ LlvmFunctionBuilder::LlvmFunctionBuilder(
                             llvm::DIType(),
                             false,   // Not local to unit.
                             true)),  // Is definition.
+      stack_info_(0),
       error_(false),
       is_generator_(code_object->co_flags & CO_GENERATOR),
       uses_delete_fast_(false)
@@ -303,6 +390,15 @@ LlvmFunctionBuilder::LlvmFunctionBuilder(
 }
 
 void
+LlvmFunctionBuilder::UpdateStackInfo()
+{
+    this->stack_info_
+        .resize(PyString_GET_SIZE(this->code_object_->co_code), -1);
+    PyBytecodeIterator iter(this->code_object_->co_code);
+    find_stack_top(iter, 0, this->stack_info_);
+}
+
+void
 LlvmFunctionBuilder::FillPropagateExceptionBlock()
 {
     this->builder_.SetInsertPoint(this->propagate_exception_block_);
@@ -500,17 +596,17 @@ LlvmFunctionBuilder::FillUnwindBlock()
                 "_PyLlvm_FastEnterExceptOrFinally"),
             exc_info,
             block_type);
-        this->Push(this->builder_.CreateLoad(
-                       this->builder_.CreateStructGEP(
-                           exc_info, PyTypeBuilder<PyExcInfo>::FIELD_TB)));
-        this->Push(this->builder_.CreateLoad(
-                       this->builder_.CreateStructGEP(
-                           exc_info,
-                           PyTypeBuilder<PyExcInfo>::FIELD_VAL)));
-        this->Push(this->builder_.CreateLoad(
-                       this->builder_.CreateStructGEP(
-                           exc_info,
-                           PyTypeBuilder<PyExcInfo>::FIELD_EXC)));
+        this->PushRel(this->builder_.CreateLoad(
+                          this->builder_.CreateStructGEP(
+                              exc_info, PyTypeBuilder<PyExcInfo>::FIELD_TB)));
+        this->PushRel(this->builder_.CreateLoad(
+                          this->builder_.CreateStructGEP(
+                              exc_info,
+                              PyTypeBuilder<PyExcInfo>::FIELD_VAL)));
+        this->PushRel(this->builder_.CreateLoad(
+                          this->builder_.CreateStructGEP(
+                              exc_info,
+                              PyTypeBuilder<PyExcInfo>::FIELD_EXC)));
         this->builder_.CreateBr(goto_block_handler);
 
         this->builder_.SetInsertPoint(handle_finally);
@@ -537,7 +633,7 @@ LlvmFunctionBuilder::FillUnwindBlock()
         this->builder_.SetInsertPoint(push_pseudo_exception);
         Value *none = this->state()->GetGlobalVariableFor(&_Py_NoneStruct);
         this->state()->IncRef(none);
-        this->Push(none);
+        this->PushRel(none);
 
         llvm::SwitchInst *should_push_retval = this->builder_.CreateSwitch(
             unwind_reason, push_no_retval, 2);
@@ -551,12 +647,12 @@ LlvmFunctionBuilder::FillUnwindBlock()
             push_retval);
 
         this->builder_.SetInsertPoint(push_retval);
-        this->Push(this->builder_.CreateLoad(this->retval_addr_, "retval"));
+        this->PushRel(this->builder_.CreateLoad(this->retval_addr_, "retval"));
         this->builder_.CreateBr(handle_finally_end);
 
         this->builder_.SetInsertPoint(push_no_retval);
         this->state()->IncRef(none);
-        this->Push(none);
+        this->PushRel(none);
 
         this->FallThroughTo(handle_finally_end);
         // END_FINALLY expects to find the unwind reason on the top of
@@ -569,7 +665,7 @@ LlvmFunctionBuilder::FillUnwindBlock()
             this->builder_.CreateZExt(unwind_reason,
                                       PyTypeBuilder<long>::get(this->context_)),
             "unwind_reason_as_pyint");
-        this->Push(unwind_reason_as_pyint);
+        this->PushRel(unwind_reason_as_pyint);
 
         this->FallThroughTo(goto_block_handler);
         // Clear the unwind reason while running through the block's
@@ -778,7 +874,7 @@ LlvmFunctionBuilder::PopAndDecrefTo(Value *target_stack_pointer)
     this->builder_.CreateCondBr(finished_popping, pop_done, pop_block);
 
     this->builder_.SetInsertPoint(pop_block);
-    this->state()->XDecRef(this->Pop());
+    this->state()->XDecRef(this->PopRel());
     this->builder_.CreateBr(pop_loop);
 
     this->builder_.SetInsertPoint(pop_done);
@@ -878,6 +974,7 @@ void
 LlvmFunctionBuilder::SetLasti(int current_instruction_index)
 {
     this->f_lasti_ = current_instruction_index;
+    this->stack_top_ = this->stack_info_[current_instruction_index];
 }
 
 void
@@ -1066,6 +1163,24 @@ LlvmFunctionBuilder::Push(Value *value)
 {
     Value *stack_pointer = this->builder_.CreateLoad(this->stack_pointer_addr_);
     this->llvm_data_->tbaa_stack.MarkInstruction(stack_pointer);
+    Value *new_stack_pointer = this->builder_.CreateGEP(
+        stack_pointer, ConstantInt::get(Type::getInt32Ty(this->context_), 1));
+    this->llvm_data_->tbaa_stack.MarkInstruction(stack_pointer);
+    this->builder_.CreateStore(new_stack_pointer, this->stack_pointer_addr_);
+    
+    Value *from_bottom = this->builder_.CreateGEP(
+        this->stack_bottom_,
+        ConstantInt::get(Type::getInt32Ty(this->context_), this->stack_top_));
+    this->builder_.CreateStore(value, from_bottom);
+    this->llvm_data_->tbaa_stack.MarkInstruction(from_bottom);
+    ++this->stack_top_;
+}
+
+void
+LlvmFunctionBuilder::PushRel(Value *value)
+{
+    Value *stack_pointer = this->builder_.CreateLoad(this->stack_pointer_addr_);
+    this->llvm_data_->tbaa_stack.MarkInstruction(stack_pointer);
 
     this->builder_.CreateStore(value, stack_pointer);
     Value *new_stack_pointer = this->builder_.CreateGEP(
@@ -1077,6 +1192,26 @@ LlvmFunctionBuilder::Push(Value *value)
 
 Value *
 LlvmFunctionBuilder::Pop()
+{
+    Value *stack_pointer = this->builder_.CreateLoad(this->stack_pointer_addr_);
+    this->llvm_data_->tbaa_stack.MarkInstruction(stack_pointer);
+    Value *new_stack_pointer = this->builder_.CreateGEP(
+        stack_pointer, ConstantInt::getSigned(Type::getInt32Ty(this->context_),
+                                              -1));
+    this->llvm_data_->tbaa_stack.MarkInstruction(new_stack_pointer);
+    this->builder_.CreateStore(new_stack_pointer, this->stack_pointer_addr_);
+
+    --this->stack_top_;
+    Value *from_bottom = this->builder_.CreateGEP(
+        this->stack_bottom_,
+        ConstantInt::get(Type::getInt32Ty(this->context_), this->stack_top_));
+
+    Value *former_top = this->builder_.CreateLoad(from_bottom);
+    return former_top;
+}
+
+Value *
+LlvmFunctionBuilder::PopRel()
 {
     Value *stack_pointer = this->builder_.CreateLoad(this->stack_pointer_addr_);
     this->llvm_data_->tbaa_stack.MarkInstruction(stack_pointer);
@@ -1101,6 +1236,81 @@ LlvmFunctionBuilder::GetStackLevel()
     return this->builder_.CreateTrunc(level64,
                                       PyTypeBuilder<int>::get(this->context_),
                                       "stack_level");
+}
+
+void
+LlvmFunctionBuilder::SetOpcodeArguments(int amount)
+{
+    if (amount > 0) {
+        this->stack_top_ -= amount;
+
+        Value *stack_pointer =
+            this->builder_.CreateLoad(this->stack_pointer_addr_);
+        this->llvm_data_->tbaa_stack.MarkInstruction(stack_pointer);
+
+        Value *new_stack_pointer = this->builder_.CreateGEP(
+            stack_pointer,
+            ConstantInt::getSigned(Type::getInt32Ty(this->context_),
+                                   -amount));
+        this->llvm_data_->tbaa_stack.MarkInstruction(new_stack_pointer);
+        this->builder_.CreateStore(new_stack_pointer,
+                                   this->stack_pointer_addr_);
+    }
+}
+
+void
+LlvmFunctionBuilder::SetOpcodeArgsWithGuard(int amount)
+{
+    this->stack_top_ -= amount;
+}
+
+void
+LlvmFunctionBuilder::BeginOpcodeImpl()
+{
+    Value *from_bottom = this->builder_.CreateGEP(
+        this->stack_bottom_,
+        ConstantInt::get(Type::getInt32Ty(this->context_),
+                         this->stack_top_));
+    this->llvm_data_->tbaa_stack.MarkInstruction(from_bottom);
+    this->builder_.CreateStore(from_bottom,
+                               this->stack_pointer_addr_);
+}
+
+Value *
+LlvmFunctionBuilder::GetOpcodeArg(int i)
+{
+    Value *from_bottom = this->builder_.CreateGEP(
+        this->stack_bottom_,
+        ConstantInt::get(Type::getInt32Ty(this->context_),
+                         this->stack_top_ + i));
+    this->llvm_data_->tbaa_stack.MarkInstruction(from_bottom);
+    return this->builder_.CreateLoad(from_bottom);
+}
+
+void
+LlvmFunctionBuilder::SetOpcodeResult(int i, llvm::Value *value)
+{
+    Value *stack_pointer = this->builder_.CreateLoad(this->stack_pointer_addr_);
+    this->llvm_data_->tbaa_stack.MarkInstruction(stack_pointer);
+
+    Value *new_stack_pointer = this->builder_.CreateGEP(
+        stack_pointer, ConstantInt::getSigned(Type::getInt32Ty(this->context_),
+                                              1));
+    this->llvm_data_->tbaa_stack.MarkInstruction(new_stack_pointer);
+    this->builder_.CreateStore(new_stack_pointer, this->stack_pointer_addr_);
+
+    Value *from_bottom = this->builder_.CreateGEP(
+        this->stack_bottom_,
+        ConstantInt::get(Type::getInt32Ty(this->context_),
+                         this->stack_top_ + i));
+    this->builder_.CreateStore(value, from_bottom);
+    this->llvm_data_->tbaa_stack.MarkInstruction(from_bottom);
+}
+
+void
+LlvmFunctionBuilder::FinishOpcodeImpl(int i)
+{
+    this->stack_top_ += i;
 }
 
 void

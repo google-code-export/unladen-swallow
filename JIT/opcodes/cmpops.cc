@@ -85,8 +85,10 @@ OpcodeCmpops::COMPARE_OP_fast(int cmp_op, const PyTypeObject *lhs_type,
     BasicBlock *success = this->state_->CreateBasicBlock("CMPOP_OPT_success");
     BasicBlock *bailpoint = this->state_->CreateBasicBlock("CMPOP_OPT_bail");
 
-    Value *rhs = this->fbuilder_->Pop();
-    Value *lhs = this->fbuilder_->Pop();
+    this->fbuilder_->SetOpcodeArgsWithGuard(2);
+
+    Value *lhs = this->fbuilder_->GetOpcodeArg(0);
+    Value *rhs = this->fbuilder_->GetOpcodeArg(1);
 
     Function *op =
         this->state_->GetGlobalFunction<PyObject*(PyObject*, PyObject*)>(name);
@@ -95,14 +97,13 @@ OpcodeCmpops::COMPARE_OP_fast(int cmp_op, const PyTypeObject *lhs_type,
                                 bailpoint, success);
 
     this->builder_.SetInsertPoint(bailpoint);
-    this->fbuilder_->Push(lhs);
-    this->fbuilder_->Push(rhs);
     this->fbuilder_->CreateBailPoint(_PYFRAME_GUARD_FAIL);
 
     this->builder_.SetInsertPoint(success);
+    this->fbuilder_->BeginOpcodeImpl();
     this->state_->DecRef(lhs);
     this->state_->DecRef(rhs);
-    this->fbuilder_->Push(result);
+    this->fbuilder_->SetOpcodeResult(0, result);
     return true;
 }
 
@@ -129,8 +130,10 @@ OpcodeCmpops::COMPARE_OP(int cmp_op)
 void
 OpcodeCmpops::COMPARE_OP_safe(int cmp_op)
 {
-    Value *rhs = this->fbuilder_->Pop();
-    Value *lhs = this->fbuilder_->Pop();
+    this->fbuilder_->SetOpcodeArguments(2);
+
+    Value *lhs = this->fbuilder_->GetOpcodeArg(0);
+    Value *rhs = this->fbuilder_->GetOpcodeArg(1);
     Value *result;
     switch (cmp_op) {
     case PyCmp_IS:
@@ -179,7 +182,7 @@ OpcodeCmpops::COMPARE_OP_safe(int cmp_op)
         this->state_->GetGlobalVariableFor((PyObject*)&_Py_ZeroStruct),
         "COMPARE_OP_result");
     this->state_->IncRef(value);
-    this->fbuilder_->Push(value);
+    this->fbuilder_->SetOpcodeResult(0, value);
 }
 
 void
@@ -195,7 +198,7 @@ OpcodeCmpops::RichCompare(Value *lhs, Value *rhs, int cmp_op)
     this->state_->DecRef(lhs);
     this->state_->DecRef(rhs);
     this->fbuilder_->PropagateExceptionOnNull(result);
-    this->fbuilder_->Push(result);
+    this->fbuilder_->SetOpcodeResult(0, result);
 }
 
 Value *

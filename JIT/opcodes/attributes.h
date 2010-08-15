@@ -67,8 +67,7 @@ public:
 
     // This helper method emits the common type guards for an optimized
     // LOAD_ATTR or STORE_ATTR.
-    void GuardAttributeAccess(llvm::Value *obj_v,
-                              llvm::BasicBlock *do_access);
+    void GuardAttributeAccess(llvm::Value *obj_v, llvm::BasicBlock *do_access);
 
     LlvmFunctionBuilder *fbuilder_;
     AttrAccessKind access_kind_;

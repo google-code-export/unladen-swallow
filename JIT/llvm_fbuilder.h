@@ -81,7 +81,8 @@ public:
     llvm::Value *f_lasti_addr() const { return this->f_lasti_addr_; }
 
     llvm::Value *stack_bottom() const { return this->stack_bottom_; }
-
+    int stack_top() const { return this->stack_top_; }
+    
     llvm::Value *freevars() const { return this->freevars_; }
     llvm::Value *frame() const { return this->frame_; }
     llvm::Value *globals() const { return this->globals_; }
@@ -92,6 +93,7 @@ public:
 
     llvm::Value *GetLocal(int i) const { return this->locals_[i]; }
 
+    void UpdateStackInfo();
     bool Error() { return this->error_; }
 
     /// Sets the current instruction index.  This is only put into the
@@ -134,8 +136,41 @@ public:
     /// Push() consumes a reference and gives ownership of it to the
     /// new value on the stack, and Pop() returns a pointer that owns
     /// a reference (which it got from the stack).
+    /// Push/Pop are legacy methods to provide compatibility to existing
+    /// opcode implementations. They should not be used any more.
+    /// You must call Push only once per argument and Pop only once
+    /// per result.
     void Push(llvm::Value *value);
     llvm::Value *Pop();
+
+    /// Set the number of arguments the next opcode uses.
+    /// This serves as a baseline for reading/writing to the stack.
+    /// It also resets the stack pointer to it's base value.
+    void SetOpcodeArguments(int amount);
+    
+    /// Sets the number of arguments the next opcode uses.
+    /// Use this when the opcode needs to implement guards.
+    /// GetOpcodeArg can be used as usual. Call BeginOpcodeImpl
+    /// if the guard was successfully passed.
+    void SetOpcodeArgsWithGuard(int amount);
+    /// Changes the stack pointer after a successfully passed guard.
+    void BeginOpcodeImpl();
+    /// Retrieve an opcode argument. Must be called after SetOpcodeArguments.
+    /// Can be called unlimited.
+    /// Increasing the argument reads in the direction of stack growth.
+    llvm::Value *GetOpcodeArg(int i);
+    /// Sets the result of an opcode. Must be called after SetOpcodeArguments.
+    /// Must only be called once per result per IR-codepath.
+    void SetOpcodeResult(int i, llvm::Value *value);
+
+    /// Normally it is not needed to specify the number of result values an
+    /// opcode produces, as the stack top will be set to the correct value
+    /// at the beginning of each opcode
+    /// If you want to use SetOpcodeArguments/SetOpocodeArgsWithGuard twice
+    /// in one opcode (e.g. to split the opcode in to sub-implementations)
+    /// call FinishOpcodeImpl with the number of results from the previous
+    /// opcode.
+    void FinishOpcodeImpl(int amount);
 
     /// Takes a target stack pointer and pops values off the stack
     /// until it gets there, decref'ing as it goes.
@@ -280,6 +315,11 @@ public:
     void AddYieldResumeBB(llvm::ConstantInt *number, llvm::BasicBlock *block);
 
 private:
+    // Stack pointer relative push and pop methods are for internal
+    // use only.
+    void PushRel(llvm::Value *value);
+    llvm::Value *PopRel();
+
     LlvmFunctionState *state_;
     PyGlobalLlvmData *const llvm_data_;
     // The code object is used for looking up peripheral information
@@ -363,6 +403,10 @@ private:
     // argument.  The stack is necessary if the user wrote code with nested
     // method calls, like this: f.foo(b.bar()).
     std::vector<bool> loads_optimized_;
+
+    // Stores information about the stack top for every opcode
+    std::vector<int> stack_info_;
+    int stack_top_;
 
     // True if something went wrong and we need to stop compilation without
     // aborting the process. If this is true, a Python error has already

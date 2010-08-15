@@ -86,6 +86,7 @@ void OpcodeGlobals::LOAD_GLOBAL_fast(int index)
 
 void OpcodeGlobals::LOAD_GLOBAL_safe(int index)
 {
+    this->fbuilder_->SetOpcodeArguments(0);
     BasicBlock *global_missing =
             this->state_->CreateBasicBlock("LOAD_GLOBAL_global_missing");
     BasicBlock *global_success =
@@ -108,7 +109,7 @@ void OpcodeGlobals::LOAD_GLOBAL_safe(int index)
 
     this->builder_.SetInsertPoint(global_success);
     this->state_->IncRef(global);
-    this->fbuilder_->Push(global);
+    this->fbuilder_->SetOpcodeResult(0, global);
     this->builder_.CreateBr(done);
 
     this->builder_.SetInsertPoint(global_missing);
@@ -127,7 +128,7 @@ void OpcodeGlobals::LOAD_GLOBAL_safe(int index)
 
     this->builder_.SetInsertPoint(builtin_success);
     this->state_->IncRef(builtin);
-    this->fbuilder_->Push(builtin);
+    this->fbuilder_->SetOpcodeResult(0, builtin);
     this->builder_.CreateBr(done);
 
     this->builder_.SetInsertPoint(done);

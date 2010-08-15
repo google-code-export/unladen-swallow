@@ -129,14 +129,15 @@ void
 OpcodeAttributes::LOAD_ATTR_safe(int names_index)
 {
     Value *attr = this->fbuilder_->LookupName(names_index);
-    Value *obj = this->fbuilder_->Pop();
+    this->fbuilder_->SetOpcodeArguments(1);
+    Value *obj = this->fbuilder_->GetOpcodeArg(0);
     Function *pyobj_getattr = this->state_->GetGlobalFunction<
         PyObject *(PyObject *, PyObject *)>("PyObject_GetAttr");
     Value *result = this->state_->CreateCall(
         pyobj_getattr, obj, attr, "LOAD_ATTR_result");
     this->state_->DecRef(obj);
     this->fbuilder_->PropagateExceptionOnNull(result);
-    this->fbuilder_->Push(result);
+    this->fbuilder_->SetOpcodeResult(0, result);
 }
 
 bool
@@ -152,14 +153,17 @@ OpcodeAttributes::LOAD_ATTR_fast(int names_index)
     }
     ACCESS_ATTR_INC_STATS(optimized_loads);
 
+    this->fbuilder_->SetOpcodeArgsWithGuard(1);
+
     // Emit the appropriate guards.
-    Value *obj_v = this->fbuilder_->Pop();
+    Value *obj_v = this->fbuilder_->GetOpcodeArg(0);
     BasicBlock *do_load = this->state_->CreateBasicBlock("LOAD_ATTR_do_load");
     accessor.GuardAttributeAccess(obj_v, do_load);
 
     // Call the inline function that deals with the lookup.  LLVM propagates
     // these constant arguments through the body of the function.
     this->builder_.SetInsertPoint(do_load);
+    this->fbuilder_->BeginOpcodeImpl();
     PyConstantMirror &mirror = llvm_data_->constant_mirror();
     Value *descr_get_v = mirror.GetGlobalForFunctionPointer<descrgetfunc>(
             (void*)accessor.descr_get_, "");
@@ -182,7 +186,7 @@ OpcodeAttributes::LOAD_ATTR_fast(int names_index)
     // Put the result on the stack and possibly propagate an exception.
     this->state_->DecRef(obj_v);
     this->fbuilder_->PropagateExceptionOnNull(result);
-    this->fbuilder_->Push(result);
+    this->fbuilder_->SetOpcodeResult(0, result);
     return true;
 }
 
@@ -223,8 +227,11 @@ OpcodeAttributes::STORE_ATTR_fast(int names_index)
     }
     ACCESS_ATTR_INC_STATS(optimized_stores);
 
+    this->fbuilder_->SetOpcodeArgsWithGuard(2);
+
     // Emit appropriate guards.
-    Value *obj_v = this->fbuilder_->Pop();
+    Value *val_v = this->fbuilder_->GetOpcodeArg(0);
+    Value *obj_v = this->fbuilder_->GetOpcodeArg(1);
     BasicBlock *do_store =
       this->state_->CreateBasicBlock("STORE_ATTR_do_store");
     accessor.GuardAttributeAccess(obj_v, do_store);
@@ -232,7 +239,7 @@ OpcodeAttributes::STORE_ATTR_fast(int names_index)
     // Call the inline function that deals with the lookup.  LLVM propagates
     // these constant arguments through the body of the function.
     this->builder_.SetInsertPoint(do_store);
-    Value *val_v = this->fbuilder_->Pop();
+    this->fbuilder_->BeginOpcodeImpl();
     PyConstantMirror &mirror = llvm_data_->constant_mirror();
     Value *descr_set_v = mirror.GetGlobalForFunctionPointer<descrsetfunc>(
         (void*)accessor.descr_set_, "");
@@ -286,9 +293,13 @@ OpcodeAttributes::LOAD_METHOD(int names_index)
         // No data, conflicting data, or we couldn't do the optimization.  Emit
         // the unoptimized, safe code.
         this->LOAD_ATTR(names_index);
-        Value *attr = this->fbuilder_->Pop();
-        this->fbuilder_->Push(this->state_->GetNull<PyObject*>());
-        this->fbuilder_->Push(attr);
+        // Use a sub-opcode to insert the padding.
+        this->fbuilder_->FinishOpcodeImpl(1);
+        this->fbuilder_->SetOpcodeArguments(1);
+        Value *attr = this->fbuilder_->GetOpcodeArg(0);
+        this->fbuilder_->SetOpcodeResult(0,
+                                         this->state_->GetNull<PyObject*>());
+        this->fbuilder_->SetOpcodeResult(1, attr);
     } else {
         // We currently count LOAD_METHODs as attribute loads.  LOAD_ATTR will
         // automatically count the opcode, but we won't call it if we took the
@@ -312,9 +323,10 @@ OpcodeAttributes::LOAD_METHOD_unknown(int names_index)
 
     METHOD_INC_STATS(unknown);
 
+    this->fbuilder_->SetOpcodeArgsWithGuard(1);
     // Call the inline function that deals with the lookup.  LLVM propagates
     // these constant arguments through the body of the function.
-    Value *obj_v = this->fbuilder_->Pop();
+    Value *obj_v = this->fbuilder_->GetOpcodeArg(0);
     Value *name_v = this->state_->EmbedPointer<PyObject*>(name);
     Value *getattr_func = this->state_->GetGlobalFunction<
         PyObject *(PyObject *obj, PyObject *name)>(
@@ -331,14 +343,14 @@ OpcodeAttributes::LOAD_METHOD_unknown(int names_index)
 
     // Fill in the bail bb.
     this->builder_.SetInsertPoint(bail_block);
-    this->fbuilder_->Push(obj_v);
     this->fbuilder_->CreateGuardBailPoint(_PYGUARD_LOAD_METHOD);
 
     // Put the method and self on the stack.  We bail instead of raising
     // exceptions.
     this->builder_.SetInsertPoint(push_result);
-    this->fbuilder_->Push(method);
-    this->fbuilder_->Push(obj_v);
+    this->fbuilder_->BeginOpcodeImpl();
+    this->fbuilder_->SetOpcodeResult(0, method);
+    this->fbuilder_->SetOpcodeResult(1, obj_v);
     return true;
 }
 
@@ -366,8 +378,10 @@ OpcodeAttributes::LOAD_METHOD_known(int names_index)
     METHOD_INC_STATS(known);
     ACCESS_ATTR_INC_STATS(optimized_loads);
 
+    this->fbuilder_->SetOpcodeArgsWithGuard(1);
+
     // Emit the appropriate guards.
-    Value *obj_v = this->fbuilder_->Pop();
+    Value *obj_v = this->fbuilder_->GetOpcodeArg(0);
     BasicBlock *do_load = state_->CreateBasicBlock("LOAD_METHOD_do_load");
     accessor.GuardAttributeAccess(obj_v, do_load);
 
@@ -396,8 +410,9 @@ OpcodeAttributes::LOAD_METHOD_known(int names_index)
     // Put the method and self on the stack.  We bail instead of raising
     // exceptions.
     this->builder_.SetInsertPoint(push_result);
-    this->fbuilder_->Push(method_v);
-    this->fbuilder_->Push(obj_v);
+    this->fbuilder_->BeginOpcodeImpl();
+    this->fbuilder_->SetOpcodeResult(0, method_v);
+    this->fbuilder_->SetOpcodeResult(1, obj_v);
     return true;
 }
 
@@ -511,8 +526,7 @@ AttributeAccessor::MakeLlvmValues()
 }
 
 void
-AttributeAccessor::GuardAttributeAccess(
-    Value *obj_v, BasicBlock *do_access)
+AttributeAccessor::GuardAttributeAccess(Value *obj_v, BasicBlock *do_access)
 {
     LlvmFunctionBuilder *fbuilder = this->fbuilder_;
     BuilderT &builder = this->fbuilder_->builder();
@@ -561,7 +575,6 @@ AttributeAccessor::GuardAttributeAccess(
 
     // Fill in the bail bb.
     builder.SetInsertPoint(bail_block);
-    fbuilder->Push(obj_v);
     fbuilder->CreateGuardBailPoint(_PYGUARD_ATTR);
 }
 

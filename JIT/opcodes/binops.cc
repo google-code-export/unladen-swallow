@@ -96,12 +96,14 @@ OpcodeBinops::OptimizedBinOp(const char *apifunc)
         }
     }
 
+    this->fbuilder_->SetOpcodeArgsWithGuard(2);
+
     BINOP_INC_STATS(optimized);
     BasicBlock *success = this->state_->CreateBasicBlock("BINOP_OPT_success");
     BasicBlock *bailpoint = this->state_->CreateBasicBlock("BINOP_OPT_bail");
 
-    Value *rhs = this->fbuilder_->Pop();
-    Value *lhs = this->fbuilder_->Pop();
+    Value *lhs = this->fbuilder_->GetOpcodeArg(0);
+    Value *rhs = this->fbuilder_->GetOpcodeArg(1);
 
     // This strategy of bailing may duplicate the work (once in the inlined
     // version, once again in the eval loop). This is generally (in a Halting
@@ -115,14 +117,13 @@ OpcodeBinops::OptimizedBinOp(const char *apifunc)
                                             bailpoint, success);
 
     this->fbuilder_->builder().SetInsertPoint(bailpoint);
-    this->fbuilder_->Push(lhs);
-    this->fbuilder_->Push(rhs);
     this->fbuilder_->CreateGuardBailPoint(_PYGUARD_BINOP);
 
     this->fbuilder_->builder().SetInsertPoint(success);
+    this->fbuilder_->BeginOpcodeImpl();
     this->state_->DecRef(lhs);
     this->state_->DecRef(rhs);
-    this->fbuilder_->Push(result);
+    this->fbuilder_->SetOpcodeResult(0, result);
 }
 
 #define BINOP_METH(OPCODE, APIFUNC)     \

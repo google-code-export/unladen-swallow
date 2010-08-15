@@ -302,16 +302,9 @@ OpcodeCall::CALL_FUNCTION_fast(int oparg)
         this->state_->XDecRef(args[i]);
     }
 
-    // Adjust the stack pointer to pop the function and its arguments.
-    Value *new_stack_pointer = this->builder_.CreateGEP(
-        stack_pointer,
-        ConstantInt::getSigned(
-            Type::getInt64Ty(this->fbuilder_->context()),
-            -num_args - 1));
-    this->builder_.CreateStore(new_stack_pointer,
-                               this->fbuilder_->stack_pointer_addr());
+    this->fbuilder_->SetOpcodeArguments(num_args + 1);
     this->fbuilder_->PropagateExceptionOnNull(result);
-    this->fbuilder_->Push(result);
+    this->fbuilder_->SetOpcodeResult(0, result);
 
     // Check signals and maybe switch threads after each function call.
     this->fbuilder_->CheckPyTicker();
@@ -327,8 +320,9 @@ OpcodeCall::CALL_FUNCTION_fast_len(Value *actual_func,
                                    const char *function_name)
 {
     BasicBlock *success = this->state_->CreateBasicBlock("BUILTIN_LEN_success");
+    this->fbuilder_->SetOpcodeArguments(2);
 
-    Value *obj = this->fbuilder_->Pop();
+    Value *obj = this->fbuilder_->GetOpcodeArg(1);
     Function *builtin_len =
         this->state_->GetGlobalFunction<PyObject *(PyObject *)>(function_name);
 
@@ -341,15 +335,7 @@ OpcodeCall::CALL_FUNCTION_fast_len(Value *actual_func,
     this->state_->DecRef(actual_func);
     this->state_->DecRef(obj);
 
-    Value *new_stack_pointer = this->builder_.CreateGEP(
-        stack_pointer,
-        ConstantInt::getSigned(
-            Type::getInt64Ty(this->fbuilder_->context()),
-            -2));  // -1 for the function, -1 for the argument.
-    this->builder_.CreateStore(new_stack_pointer,
-                               this->fbuilder_->stack_pointer_addr());
-
-    this->fbuilder_->Push(result);
+    this->fbuilder_->SetOpcodeResult(0, result);
 
     // Check signals and maybe switch threads after each function call.
     this->fbuilder_->CheckPyTicker();
@@ -377,14 +363,10 @@ OpcodeCall::CALL_FUNCTION_safe(int oparg)
         ConstantInt::get(PyTypeBuilder<int>::get(this->fbuilder_->context()),
                          num_kwargs),
         "CALL_FUNCTION_result");
-    Value *new_stack_pointer = this->builder_.CreateGEP(
-        stack_pointer,
-        ConstantInt::getSigned(Type::getInt64Ty(this->fbuilder_->context()),
-                               -num_args - 2*num_kwargs - 1));
-    this->builder_.CreateStore(new_stack_pointer,
-                               this->fbuilder_->stack_pointer_addr());
+
+    this->fbuilder_->SetOpcodeArguments(num_args + 2*num_kwargs + 1);
     this->fbuilder_->PropagateExceptionOnNull(result);
-    this->fbuilder_->Push(result);
+    this->fbuilder_->SetOpcodeResult(0, result);
 
     // Check signals and maybe switch threads after each function call.
     this->fbuilder_->CheckPyTicker();
@@ -455,11 +437,16 @@ OpcodeCall::CALL_METHOD(int oparg)
     this->CALL_FUNCTION(oparg);
 
     if (!load_optimized) {
+        // Use a sub-opcode to remove the padding.
+        this->fbuilder_->FinishOpcodeImpl(1);
+
         // Pop off the padding cell.
-        Value *result = fbuilder_->Pop();
-        Value *padding = fbuilder_->Pop();
-        state_->Assert(state_->IsNull(padding), "Padding was non-NULL!");
-        fbuilder_->Push(result);
+        this->fbuilder_->SetOpcodeArguments(2);
+        Value *result = this->fbuilder_->GetOpcodeArg(1);
+        Value *padding = this->fbuilder_->GetOpcodeArg(0);
+        this->state_->Assert(this->state_->IsNull(padding),
+                             "Padding was non-NULL!");
+        this->fbuilder_->SetOpcodeResult(0, result);
     }
 }
 
@@ -498,14 +485,9 @@ OpcodeCall::CallVarKwFunction(int oparg, int call_flag)
     if (call_flag & CALL_FLAG_KW) {
         ++stack_items;
     }
-    Value *new_stack_pointer = this->builder_.CreateGEP(
-        stack_pointer,
-        ConstantInt::getSigned(Type::getInt64Ty(this->fbuilder_->context()),
-                               -stack_items));
-    this->builder_.CreateStore(new_stack_pointer,
-                               this->fbuilder_->stack_pointer_addr());
+    this->fbuilder_->SetOpcodeArguments(stack_items);
     this->fbuilder_->PropagateExceptionOnNull(result);
-    this->fbuilder_->Push(result);
+    this->fbuilder_->SetOpcodeResult(0, result);
 
     // Check signals and maybe switch threads after each function call.
     this->fbuilder_->CheckPyTicker();

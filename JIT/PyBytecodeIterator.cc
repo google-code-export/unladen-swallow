@@ -17,6 +17,15 @@ PyBytecodeIterator::PyBytecodeIterator(PyObject *bytecode_string)
     this->Advance();
 }
 
+PyBytecodeIterator::PyBytecodeIterator(PyBytecodeIterator &iter, int index)
+  : error_(false),
+    bytecode_str_(iter.bytecode_str_),
+    bytecode_size_(iter.bytecode_size_)
+{
+  this->next_index_ = index;
+  this->Advance();
+}
+
 void
 PyBytecodeIterator::Advance()
 {

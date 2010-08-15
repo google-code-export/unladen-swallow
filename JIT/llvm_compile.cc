@@ -312,7 +312,6 @@ find_basic_blocks(PyObject *bytecode, py::LlvmFunctionBuilder &fbuilder,
     return 0;
 }
 
-
 extern "C" _LlvmFunction *
 _PyCode_ToLlvmIr(PyCodeObject *code)
 {
@@ -345,6 +344,10 @@ _PyCode_ToLlvmIr(PyCodeObject *code)
     if (-1 == validate_bytecode(code)) {
         return NULL;
     }
+
+    // This calculates the absolute stack offsets for each opcode.
+    // Must be run after validate_bytecode.
+    fbuilder.UpdateStackInfo();
 
     py::PyBytecodeDispatch dispatch(&fbuilder);
     PyBytecodeIterator iter(code->co_code);
