@@ -59,6 +59,10 @@ OpcodeBlock::SETUP_EXCEPT(llvm::BasicBlock *target,
                           llvm::BasicBlock *fallthrough)
 {
     this->CallBlockSetup(::SETUP_EXCEPT, target, target_opindex);
+    llvm::BasicBlock *block = this->builder_.GetInsertBlock();
+    this->builder_.SetInsertPoint(target);
+    this->fbuilder_->PushException();
+    this->builder_.SetInsertPoint(block);
 }
 
 void
@@ -66,7 +70,14 @@ OpcodeBlock::SETUP_FINALLY(llvm::BasicBlock *target,
                            int target_opindex,
                            llvm::BasicBlock *fallthrough)
 {
-    this->CallBlockSetup(::SETUP_FINALLY, target, target_opindex);
+    BasicBlock *unwind =
+        this->state_->CreateBasicBlock("SETUP_FINALLY_unwind");
+    this->CallBlockSetup(::SETUP_FINALLY, unwind, target_opindex);
+    llvm::BasicBlock *block = this->builder_.GetInsertBlock();
+    this->builder_.SetInsertPoint(unwind);
+    this->fbuilder_->PushException();
+    this->builder_.CreateBr(target);
+    this->builder_.SetInsertPoint(block);
 }
 
 void

@@ -302,6 +302,7 @@ public:
     /// Return the BasicBlock we should jump to in order to handle a Python
     /// exception.
     llvm::BasicBlock *GetExceptionBlock() const;
+    void PushException();
 
     // Add a Type to the watch list.
     void WatchType(PyTypeObject *type);
@@ -317,7 +318,6 @@ public:
 private:
     // Stack pointer relative push and pop methods are for internal
     // use only.
-    void PushRel(llvm::Value *value);
     llvm::Value *PopRel();
 
     LlvmFunctionState *state_;
@@ -392,6 +392,9 @@ private:
     // Stores one of the UNWIND_XXX constants defined at the top of
     // llvm_fbuilder.cc
     llvm::Value *unwind_reason_addr_;
+    llvm::Value *exception_tb_;
+    llvm::Value *exception_val_;
+    llvm::Value *exception_exc_;
     llvm::BasicBlock *do_return_block_;
     llvm::Value *retval_addr_;
 

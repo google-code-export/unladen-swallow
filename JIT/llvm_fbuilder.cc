@@ -596,17 +596,38 @@ LlvmFunctionBuilder::FillUnwindBlock()
                 "_PyLlvm_FastEnterExceptOrFinally"),
             exc_info,
             block_type);
-        this->PushRel(this->builder_.CreateLoad(
-                          this->builder_.CreateStructGEP(
-                              exc_info, PyTypeBuilder<PyExcInfo>::FIELD_TB)));
-        this->PushRel(this->builder_.CreateLoad(
-                          this->builder_.CreateStructGEP(
-                              exc_info,
-                              PyTypeBuilder<PyExcInfo>::FIELD_VAL)));
-        this->PushRel(this->builder_.CreateLoad(
-                          this->builder_.CreateStructGEP(
-                              exc_info,
-                              PyTypeBuilder<PyExcInfo>::FIELD_EXC)));
+
+        // We don't know for sure what the absolute stack position will be
+        // after handling an exception. We store the exception in allocas,
+        // the opcode implementation must take care to copy it on the stack.
+        this->exception_tb_ = this->state_->CreateAllocaInEntryBlock(
+            PyTypeBuilder<PyObject*>::get(this->context_),
+            NULL,
+            "exception_tb");
+        this->exception_val_ = this->state_->CreateAllocaInEntryBlock(
+            PyTypeBuilder<PyObject*>::get(this->context_),
+            NULL,
+            "exception_val");
+        this->exception_exc_ = this->state_->CreateAllocaInEntryBlock(
+            PyTypeBuilder<PyObject*>::get(this->context_),
+            NULL,
+            "exception_exc");
+
+        this->builder_.CreateStore(
+            this->builder_.CreateLoad(
+                this->builder_.CreateStructGEP(
+                    exc_info, PyTypeBuilder<PyExcInfo>::FIELD_TB)),
+            this->exception_tb_);
+        this->builder_.CreateStore(
+            this->builder_.CreateLoad(
+                this->builder_.CreateStructGEP(
+                    exc_info, PyTypeBuilder<PyExcInfo>::FIELD_VAL)),
+            this->exception_val_);
+        this->builder_.CreateStore(
+            this->builder_.CreateLoad(
+                this->builder_.CreateStructGEP(
+                    exc_info, PyTypeBuilder<PyExcInfo>::FIELD_EXC)),
+            this->exception_exc_);
         this->builder_.CreateBr(goto_block_handler);
 
         this->builder_.SetInsertPoint(handle_finally);
@@ -633,7 +654,7 @@ LlvmFunctionBuilder::FillUnwindBlock()
         this->builder_.SetInsertPoint(push_pseudo_exception);
         Value *none = this->state()->GetGlobalVariableFor(&_Py_NoneStruct);
         this->state()->IncRef(none);
-        this->PushRel(none);
+        this->builder_.CreateStore(none, this->exception_tb_);
 
         llvm::SwitchInst *should_push_retval = this->builder_.CreateSwitch(
             unwind_reason, push_no_retval, 2);
@@ -647,12 +668,14 @@ LlvmFunctionBuilder::FillUnwindBlock()
             push_retval);
 
         this->builder_.SetInsertPoint(push_retval);
-        this->PushRel(this->builder_.CreateLoad(this->retval_addr_, "retval"));
+        this->builder_.CreateStore(
+            this->builder_.CreateLoad(this->retval_addr_, "retval"),
+            this->exception_val_);
         this->builder_.CreateBr(handle_finally_end);
 
         this->builder_.SetInsertPoint(push_no_retval);
         this->state()->IncRef(none);
-        this->PushRel(none);
+        this->builder_.CreateStore(none, this->exception_val_);
 
         this->FallThroughTo(handle_finally_end);
         // END_FINALLY expects to find the unwind reason on the top of
@@ -665,7 +688,9 @@ LlvmFunctionBuilder::FillUnwindBlock()
             this->builder_.CreateZExt(unwind_reason,
                                       PyTypeBuilder<long>::get(this->context_)),
             "unwind_reason_as_pyint");
-        this->PushRel(unwind_reason_as_pyint);
+        this->builder_.CreateStore(
+            unwind_reason_as_pyint,
+            this->exception_exc_);
 
         this->FallThroughTo(goto_block_handler);
         // Clear the unwind reason while running through the block's
@@ -856,6 +881,17 @@ LlvmFunctionBuilder::GetExceptionBlock() const
 {
     // TODO(collinwinter): exception block chaining needs to change this.
     return this->propagate_exception_block_;
+}
+
+void
+LlvmFunctionBuilder::PushException()
+{
+    this->SetOpcodeResult(0,
+         this->builder_.CreateLoad(this->exception_tb_));
+    this->SetOpcodeResult(1,
+         this->builder_.CreateLoad(this->exception_val_));
+    this->SetOpcodeResult(2,
+         this->builder_.CreateLoad(this->exception_exc_));
 }
 
 void
@@ -1174,20 +1210,6 @@ LlvmFunctionBuilder::Push(Value *value)
     this->builder_.CreateStore(value, from_bottom);
     this->llvm_data_->tbaa_stack.MarkInstruction(from_bottom);
     ++this->stack_top_;
-}
-
-void
-LlvmFunctionBuilder::PushRel(Value *value)
-{
-    Value *stack_pointer = this->builder_.CreateLoad(this->stack_pointer_addr_);
-    this->llvm_data_->tbaa_stack.MarkInstruction(stack_pointer);
-
-    this->builder_.CreateStore(value, stack_pointer);
-    Value *new_stack_pointer = this->builder_.CreateGEP(
-        stack_pointer, ConstantInt::get(Type::getInt32Ty(this->context_), 1));
-    this->llvm_data_->tbaa_stack.MarkInstruction(stack_pointer);
-
-    this->builder_.CreateStore(new_stack_pointer, this->stack_pointer_addr_);
 }
 
 Value *
