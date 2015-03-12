@@ -1,0 +1,5 @@
+There are 2 fundamental ways to do exceptions. Either, for each function you return a pair of (Exception, Value) (the current python way is a variant of this where the Value is returned through the C return slot, and the Exception is returned through a thread-local variable), or when an exception is thrown you unwind the stack looking for a handler, calling finally blocks on the way, and then jump directly to the handler. The first costs a predictable if on each function call but requires no changes to CPython functions and makes exceptions reasonably cheap. The second makes ordinary code a bit faster and smaller but apparently makes exceptions quite expensive. Since CPython uses exceptions for certain kinds of ordinary control flow, I think we'll want to go with the first for a while.
+
+Later we'll want to revisit this
+
+http://lists.cs.uiuc.edu/pipermail/llvmdev/2008-December/018989.html may be useful.

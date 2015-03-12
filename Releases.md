@@ -1,0 +1,7 @@
+Unladen Swallow is released every three months, with bug-fix releases in between as needed.
+
+  * **[Release2009Q1](Release2009Q1.md)** (Released: 1 April 2009).<br>Features a new, faster interpreter loop based on <a href='http://www.complang.tuwien.ac.at/anton/vmgen/'>vmgen</a>; the <code>cPickle</code> module has been sped up significantly.</li></ul>
+
+<ul><li><b><a href='Release2009Q2.md'>Release2009Q2</a></b> (Released: 13 July 2009).<br>First release to be based on <a href='http://llvm.org/'>LLVM</a>, which is used to compile CPython bytecode to machine code. All Python code can be translated to machine code, and all tests pass for major projects like Twisted, Django, Swig and NumPy. Interpreter startup has been improved over 2009Q1. The 2009Q2 release is intended as a progress checkpoint, rather than a target for general adoption. This release sets the stage for more aggressive optimizations in Q3.</li></ul>
+
+  * **[Release2009Q3](Release2009Q3.md)** (Released: 20 October 2009).<br>First release to use runtime feedback for optimization. Memory usage has been reduced by up to 930% compared to the 2009Q2 release. 2009Q3 supports integration with gdb 7.0 and OProfile 0.9.4 for improved debugging and profiling experiences across Python and C code. Execution performance has improved compared to 2009Q2, but not as much as desired; LLVM's JIT and other infrastructure required more work than anticipated.
